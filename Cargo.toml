@@ -1,0 +1,17 @@
+[package]
+name = "outlay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "Keyboard-driven xrandr layout editor that draws your monitors to scale in the terminal"
+repository = "https://github.com/Papayah/outlay"
+readme = "README.md"
+keywords = ["xrandr", "monitor", "display", "tui", "x11"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
