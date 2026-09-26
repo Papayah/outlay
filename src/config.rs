@@ -21,6 +21,8 @@ pub struct Config {
     pub directions: String,
     /// Cell height over cell width; detected from the terminal when omitted.
     pub cell_aspect: Option<f64>,
+    /// The old look: double borders on the focused display's parent and the stick target.
+    pub double_borders: bool,
     /// Shell commands run after a layout is kept, e.g. to redraw the wallpaper.
     pub post_apply: Vec<String>,
 }
@@ -34,6 +36,7 @@ impl Default for Config {
             animations: true,
             directions: "hjkl".to_owned(),
             cell_aspect: None,
+            double_borders: false,
             post_apply: Vec::new(),
         }
     }
@@ -111,6 +114,7 @@ mod tests {
             animations = false
             directions = "hjkl"
             cell_aspect = 2.1
+            double_borders = true
             post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
             "#,
         )
@@ -119,9 +123,22 @@ mod tests {
         assert_eq!(config.nudge_step, 5);
         assert!(!config.animations);
         assert_eq!(config.cell_aspect, Some(2.1));
+        assert!(config.double_borders);
         assert_eq!(config.post_apply.len(), 1);
         assert!(config.layouts_dir().ends_with("layouts"));
         assert!(!config.layouts_dir().starts_with("~"));
+    }
+
+    #[test]
+    fn double_borders_are_off_unless_asked_for() {
+        assert!(!Config::parse("").unwrap().double_borders);
+        assert!(
+            Config::parse("double_borders = true")
+                .unwrap()
+                .double_borders
+        );
+        let err = Config::parse("double_borders = 1").unwrap_err().to_string();
+        assert!(err.contains("double_borders"), "{err}");
     }
 
     #[test]

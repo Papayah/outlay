@@ -385,6 +385,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   animations = true
   directions = "hjkl"        # focus letters: left, down, up, right
   # cell_aspect = 2.0        # auto-detected when omitted
+  double_borders = false     # true: double border on the stick target and the focused display's parent
   post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
   ```
 - **Release profile:** `lto = true`, `codegen-units = 1`, `strip = true`. The README documents a static musl build (`rustup target add x86_64-unknown-linux-musl`).

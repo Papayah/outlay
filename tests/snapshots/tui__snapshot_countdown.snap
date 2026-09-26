@@ -1,6 +1,6 @@
 ---
 source: tests/tui.rs
-assertion_line: 468
+assertion_line: 612
 expression: "screen(&mut app, 100, 30).backend()"
 ---
 " outlay · 3 on · 1 off                                                        ● 1 pending · a apply "
@@ -8,12 +8,12 @@ expression: "screen(&mut app, 100, 30).backend()"
 "│                                                                  ││ AUO B156HAN12.H              │"
 "│                                                                  ││ mode  1920x1080@165.01       │"
 "│                                                                  ││ pos   2240,1440 → 2250,1440  │"
-"│                            ╔═══════════════════════════════════╗ ││ rot   normal                 │"
-"│                            ║                                   ║ ││ link  below 2 DP-1-2, centre │"
-"│                            ║                                   ║ ││ +10                          │"
-"│ ┌──────────────────────────╢                                   ║ ││ size  344x193 mm · 142 dpi   │"
-"│ │                          ║            2 DP-1-2 ★             ║ ││                              │"
-"│ │        1 HDMI-1-0        ║            DELL U2719D            ║ ││                              │"
+"│                            ┌───────────────────────────────────┐ ││ rot   normal                 │"
+"│                            │                                   │ ││ link  below 2 DP-1-2, centre │"
+"│                            │                                   │ ││ +10                          │"
+"│ ┌──────────────────────────┤                                   │ ││ size  344x193 mm · 142 dpi   │"
+"│ │                          │            2 DP-1-2 ★             │ ││                              │"
+"│ │        1 HDMI-1-0        │            DELL U2719D            │ ││                              │"
 "│ │       Philips FTV   ┌ Keep this layout? ───────────────────────────────┐                       │"
 "│ │     1920x1080@59.94 │ It reverts on its own unless you keep it.        │                       │"
 "│ │                     │ 11 s  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━───────────── │                       │"

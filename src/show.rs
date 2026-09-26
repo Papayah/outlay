@@ -205,6 +205,7 @@ pub fn diagram(snap: &Snapshot, options: &DiagramOptions) -> String {
         theme,
         focus: None,
         target: None,
+        double_borders: false,
         ghosts: &[],
         pending: &pending,
     };

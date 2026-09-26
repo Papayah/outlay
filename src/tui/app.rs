@@ -160,6 +160,8 @@ pub struct Options {
     pub keymap: Keymap,
     pub theme: Theme,
     pub nudge_step: i32,
+    /// The old look: double borders on the focused display's parent and the stick target.
+    pub double_borders: bool,
     /// Cell height divided by cell width; `None` detects it from the terminal.
     pub cell_aspect: Option<f64>,
     /// Where the state comes from when it is not the live X server: `demo`, a file name.
@@ -172,6 +174,7 @@ impl Default for Options {
             keymap: Keymap::default(),
             theme: Theme::default(),
             nudge_step: 10,
+            double_borders: false,
             cell_aspect: None,
             source: None,
         }
@@ -194,6 +197,7 @@ pub struct App {
     pub show_details: bool,
     pub keymap: Keymap,
     pub theme: Theme,
+    pub double_borders: bool,
     pub viewport: Viewport,
     pub cell_aspect: f64,
     pub source: Option<String>,
@@ -216,6 +220,7 @@ impl App {
             show_details: true,
             keymap: options.keymap,
             theme: options.theme,
+            double_borders: options.double_borders,
             viewport: Viewport::default(),
             cell_aspect: options.cell_aspect.unwrap_or(2.0),
             source: options.source,
