@@ -83,6 +83,39 @@ pub struct Message {
 /// How long keys are ignored after xrandr returns.
 pub const INPUT_BLOCK: Duration = Duration::from_secs(1);
 
+/// A nudge continues a held key's burst when it comes at most this long after the previous one.
+/// The terminal's autorepeat delay is longer, so a single press always moves one step.
+pub const NUDGE_BURST_GAP: Duration = Duration::from_millis(150);
+
+/// How a held nudge speeds up: the step multiplier until each time since the burst started,
+/// then [`NUDGE_RAMP_TOP`].
+pub const NUDGE_RAMP: [(Duration, i32); 3] = [
+    (Duration::from_millis(400), 1),
+    (Duration::from_millis(800), 2),
+    (Duration::from_millis(1200), 5),
+];
+pub const NUDGE_RAMP_TOP: i32 = 10;
+
+/// Nudges of one display in one direction, each within [`NUDGE_BURST_GAP`] of the last: a held
+/// key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Burst {
+    display: usize,
+    dir: Dir,
+    started: Instant,
+    last: Instant,
+}
+
+impl Burst {
+    fn multiplier(&self, now: Instant) -> i32 {
+        let held = now.saturating_duration_since(self.started);
+        NUDGE_RAMP
+            .iter()
+            .find(|&&(until, _)| held < until)
+            .map_or(NUDGE_RAMP_TOP, |&(_, m)| m)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
     pub text: String,
@@ -203,6 +236,11 @@ pub struct App {
     pub source: Option<String>,
     /// The time of the last tick; the countdown and the input block compare against it.
     pub now: Instant,
+    /// The held nudge key, if any.
+    burst: Option<Burst>,
+    /// The display and direction of the last nudges when nothing else happened since: they
+    /// share one undo step.
+    nudge_run: Option<(usize, Dir)>,
 }
 
 impl App {
@@ -225,6 +263,8 @@ impl App {
             cell_aspect: options.cell_aspect.unwrap_or(2.0),
             source: options.source,
             now: Instant::now(),
+            burst: None,
+            nudge_run: None,
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -313,6 +353,8 @@ impl App {
         self.snap = snap;
         self.layout = layout;
         self.history = History::default();
+        self.burst = None;
+        self.nudge_run = None;
         self.mode = UiMode::Normal;
         self.focus = focused
             .and_then(|name| self.snap.find(&name))
@@ -331,13 +373,21 @@ impl App {
         let Some(key) = normalise(&ev) else {
             return Vec::new();
         };
+        let context = self.context();
+        let action = self.keymap.lookup(context, key);
+        // Any other key ends a held nudge; any other action ends a run of nudges.
+        if !(context == Context::Normal && matches!(action, Some(Action::Nudge(_)))) {
+            self.burst = None;
+            if action.is_some() {
+                self.nudge_run = None;
+            }
+        }
         if let UiMode::Countdown(c) = self.mode
             && self.now < c.blocked_until
         {
             return Vec::new();
         }
-        let context = self.context();
-        match self.keymap.lookup(context, key) {
+        match action {
             Some(action) => self.perform(context, action),
             None => {
                 if let (UiMode::Command(line), ratatui::crossterm::event::KeyCode::Char(c)) =
@@ -401,6 +451,17 @@ impl App {
         f: impl FnOnce(&mut Layout, &Snapshot) -> Result<T, EditError>,
         report: impl Fn(&T) -> &CommitReport,
     ) -> Option<T> {
+        self.edit_step(true, f, report)
+    }
+
+    /// [`App::edit`], adding an undo step only when `record` is set: an edit that continues the
+    /// previous one shares its step.
+    fn edit_step<T>(
+        &mut self,
+        record: bool,
+        f: impl FnOnce(&mut Layout, &Snapshot) -> Result<T, EditError>,
+        report: impl Fn(&T) -> &CommitReport,
+    ) -> Option<T> {
         let before = self.layout.clone();
         match f(&mut self.layout, &self.snap) {
             Ok(done) => {
@@ -412,7 +473,9 @@ impl App {
                         r.pushed.iter().map(|&i| self.layout.label(i)).collect();
                     notes.insert(0, format!("Pushed {} out of the way.", names.join(", ")));
                 }
-                self.history.record(before, &self.layout);
+                if record {
+                    self.history.record(before, &self.layout);
+                }
                 self.revalidate();
                 self.status = None;
                 if !notes.is_empty() {
@@ -518,10 +581,7 @@ impl App {
                     self.say(Severity::Info, text);
                 }
             }
-            Action::Nudge(dir) => {
-                let step = self.step;
-                self.simple_edit(|l, _| l.nudge(f, dir, step));
-            }
+            Action::Nudge(dir) => self.nudge(dir),
             Action::Stick => self.start_stick(),
             Action::Unstick => {
                 if self.simple_edit(|l, _| l.unstick(f)) {
@@ -588,6 +648,49 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Nudges the focused display by the step, times the multiplier of a held key. Nudges of one
+    /// display in one direction with nothing in between are one undo step.
+    fn nudge(&mut self, dir: Dir) {
+        let f = self.focus;
+        let now = self.now;
+        let burst = match self.burst {
+            Some(b)
+                if b.display == f
+                    && b.dir == dir
+                    && now.saturating_duration_since(b.last) <= NUDGE_BURST_GAP =>
+            {
+                Burst { last: now, ..b }
+            }
+            _ => Burst {
+                display: f,
+                dir,
+                started: now,
+                last: now,
+            },
+        };
+        self.burst = Some(burst);
+        let step = self.step * burst.multiplier(now);
+        let continues = self.nudge_run == Some((f, dir));
+        let moved = self
+            .edit_step(!continues, |l, _| l.nudge(f, dir, step), |r| r)
+            .is_some();
+        if moved {
+            self.nudge_run = Some((f, dir));
+        } else if !continues {
+            self.nudge_run = None;
+        }
+    }
+
+    /// The multiplier of a held nudge key, or 1 when no key is held.
+    pub fn nudge_multiplier(&self) -> i32 {
+        match self.burst {
+            Some(b) if self.now.saturating_duration_since(b.last) <= NUDGE_BURST_GAP => {
+                b.multiplier(b.last)
+            }
+            _ => 1,
+        }
     }
 
     /// The apply confirmation for the pending layout. With no changes it re-applies the live

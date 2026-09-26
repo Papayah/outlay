@@ -15,6 +15,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
+use std::time::Duration;
 
 fn demo() -> App {
     App::new(FixtureBackend::demo().query().unwrap(), Options::default())
@@ -250,16 +251,117 @@ fn nudge_undo_redo() {
     let mut app = demo();
     press(&mut app, "3<A-l><A-l>");
     assert_eq!(rect(&app.layout, "eDP-1").x, 2260);
-    assert_eq!(app.history.undo_len(), 2);
+    assert_eq!(app.history.undo_len(), 1, "one run of nudges, one step");
+    press(&mut app, "<A-j>");
+    assert_eq!(
+        app.history.undo_len(),
+        2,
+        "a new direction starts a new run"
+    );
     press(&mut app, "u");
-    assert_eq!(rect(&app.layout, "eDP-1").x, 2250);
+    assert_eq!(
+        rect(&app.layout, "eDP-1"),
+        Rect::new(2260, 1440, 1920, 1080)
+    );
+    press(&mut app, "u");
+    assert_eq!(rect(&app.layout, "eDP-1").x, 2240);
     press(&mut app, "<C-r>");
     assert_eq!(rect(&app.layout, "eDP-1").x, 2260);
-    press(&mut app, "<C-r>");
+    press(&mut app, "<C-r><C-r>");
     assert_eq!(status(&app), "Nothing to redo.");
     press(&mut app, "uuu");
     assert_eq!(status(&app), "Nothing to undo.");
     assert!(app.pending().is_empty());
+}
+
+/// Presses `key` `times` times, `every` apart, starting one gap after the app's clock. Returns
+/// how far eDP-1 moved right with each press.
+fn hold(app: &mut App, key: &str, times: usize, every: Duration) -> Vec<i32> {
+    let mut moves = Vec::new();
+    for _ in 0..times {
+        let before = rect(&app.layout, "eDP-1").x;
+        let now = app.now + every;
+        app.tick(now);
+        press(app, key);
+        moves.push(rect(&app.layout, "eDP-1").x - before);
+    }
+    moves
+}
+
+#[test]
+fn a_held_nudge_speeds_up() {
+    let mut app = demo();
+    press(&mut app, "3");
+    let moves = hold(&mut app, "<A-l>", 40, Duration::from_millis(40));
+    // Held for 0.04 s at the first press: ×1 until 0.4 s, ×2 until 0.8 s, ×5 until 1.2 s, then ×10.
+    let expected: Vec<i32> = (1..=40)
+        .map(|k| match k * 40 {
+            ms if ms - 40 < 400 => 10,
+            ms if ms - 40 < 800 => 20,
+            ms if ms - 40 < 1200 => 50,
+            _ => 100,
+        })
+        .collect();
+    assert_eq!(moves, expected);
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("step 10px ×10"), "{text}");
+    assert_eq!(app.history.undo_len(), 1, "a hold is one undo step");
+
+    // One u undoes the whole run.
+    press(&mut app, "u");
+    assert!(app.pending().is_empty());
+
+    // Once the key is let go, the indicator drops the multiplier.
+    app.tick(app.now + Duration::from_millis(300));
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("step 10px "), "{text}");
+    assert!(!text.contains('×'), "{text}");
+}
+
+#[test]
+fn slow_taps_never_speed_up() {
+    let mut app = demo();
+    press(&mut app, "3");
+    let moves = hold(&mut app, "<A-l>", 10, Duration::from_millis(200));
+    assert_eq!(moves, [10; 10]);
+    assert_eq!(
+        app.history.undo_len(),
+        1,
+        "taps in one direction are one step too"
+    );
+}
+
+#[test]
+fn a_new_direction_starts_again_at_one() {
+    let mut app = demo();
+    press(&mut app, "3");
+    let moves = hold(&mut app, "<A-l>", 30, Duration::from_millis(40));
+    assert_eq!(moves.last(), Some(&50));
+    let back = hold(&mut app, "<A-h>", 3, Duration::from_millis(40));
+    assert_eq!(back, [-10, -10, -10]);
+    assert_eq!(app.history.undo_len(), 2);
+}
+
+#[test]
+fn another_key_ends_the_hold_and_the_run() {
+    let mut app = demo();
+    press(&mut app, "3");
+    let moves = hold(&mut app, "<A-l>", 15, Duration::from_millis(40));
+    assert_eq!(moves.last(), Some(&20));
+    // A focus key in between: the next nudge starts at ×1 and is a new undo step.
+    let after = hold(&mut app, "3<A-l>", 1, Duration::from_millis(40));
+    assert_eq!(after, [10]);
+    assert_eq!(app.history.undo_len(), 2);
+    press(&mut app, "u");
+    assert_eq!(rect(&app.layout, "eDP-1").x, 2240 + 10 * 10 + 20 * 5);
+
+    // An unbound key ends the hold but not the run.
+    let mut app = demo();
+    press(&mut app, "3");
+    hold(&mut app, "<A-l>", 15, Duration::from_millis(40));
+    let after = hold(&mut app, "x<A-l>", 1, Duration::from_millis(40));
+    assert_eq!(after, [10]);
+    assert_eq!(app.history.undo_len(), 1);
 }
 
 #[test]

@@ -204,7 +204,10 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
 /// The last message, coloured by severity, then the most severe validation issue, and the
 /// nudge step on the right.
 pub fn status_line(app: &App, area: Rect, buf: &mut Buffer) {
-    let step = format!("step {}px ", app.step);
+    let step = match app.nudge_multiplier() {
+        1 => format!("step {}px ", app.step),
+        m => format!("step {}px ×{m} ", app.step),
+    };
     let mut spans = vec![Span::raw(" ")];
     let flow_text = match &app.mode {
         UiMode::Stick(flow) => Some(app.stick_summary(flow)),
