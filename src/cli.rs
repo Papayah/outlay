@@ -92,6 +92,7 @@ impl Cli {
             keymap: config.keymap()?,
             theme: Theme::from_env(),
             nudge_step: config.nudge_step,
+            double_borders: config.double_borders,
             cell_aspect: config.cell_aspect,
             source,
         };

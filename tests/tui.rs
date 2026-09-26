@@ -8,10 +8,13 @@ use outlay::model::geometry::Rect;
 use outlay::model::links::{Align, Side};
 use outlay::model::validate::Severity;
 use outlay::tui::app::{App, Effect, Options, StickStep, UiMode};
+use outlay::tui::theme::Theme;
 use outlay::tui::ui;
 use outlay::xrandr::{Backend, FixtureBackend};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::style::Modifier;
 
 fn demo() -> App {
     App::new(FixtureBackend::demo().query().unwrap(), Options::default())
@@ -28,6 +31,29 @@ fn screen(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| ui::draw(frame, app)).unwrap();
     terminal
+}
+
+/// The runs of cells that carry `modifier`, one string per row.
+fn marked(buf: &Buffer, modifier: Modifier) -> Vec<String> {
+    let area = buf.area;
+    (area.top()..area.bottom())
+        .filter_map(|y| {
+            let text: String = (area.left()..area.right())
+                .map(|x| &buf[(x, y)])
+                .filter(|c| c.modifier.contains(modifier))
+                .map(|c| c.symbol())
+                .collect();
+            (!text.is_empty()).then_some(text)
+        })
+        .collect()
+}
+
+/// How many cells hold a double box-drawing line.
+fn double_lines(buf: &Buffer) -> usize {
+    buf.content()
+        .iter()
+        .filter(|c| ["═", "║", "╔", "╗", "╚", "╝"].contains(&c.symbol()))
+        .count()
 }
 
 fn status(app: &App) -> String {
@@ -410,6 +436,117 @@ fn stale_outputs_are_announced() {
     );
     let changes: Vec<String> = app.pending().iter().map(|d| d.to_string()).collect();
     assert_eq!(changes, ["eDP-1  pos 2560,0 → 0,0", "DP-1  on → off"]);
+}
+
+#[test]
+fn the_focused_title_is_a_reversed_chip() {
+    let mut app = demo();
+    let term = screen(&mut app, 100, 30);
+    assert_eq!(
+        marked(term.backend().buffer(), Modifier::REVERSED),
+        [" 2 DP-1-2 ★ "],
+        "only the focused title is reversed"
+    );
+
+    press(&mut app, "3");
+    let term = screen(&mut app, 100, 30);
+    assert_eq!(
+        marked(term.backend().buffer(), Modifier::REVERSED),
+        [" 3 eDP-1 "]
+    );
+
+    // In the stick flow the ghost's label is not a chip.
+    press(&mut app, "s2h");
+    let term = screen(&mut app, 100, 30);
+    assert_eq!(
+        marked(term.backend().buffer(), Modifier::REVERSED),
+        [" 3 eDP-1 "]
+    );
+
+    // Without colour, reverse video alone marks the focus.
+    let options = Options {
+        theme: Theme::plain(),
+        ..Options::default()
+    };
+    let mut app = App::new(FixtureBackend::demo().query().unwrap(), options);
+    let term = screen(&mut app, 100, 30);
+    let buf = term.backend().buffer();
+    assert_eq!(marked(buf, Modifier::REVERSED), [" 2 DP-1-2 ★ "]);
+    assert!(
+        buf.content()
+            .iter()
+            .all(|c| c.fg == ratatui::style::Color::Reset)
+    );
+}
+
+#[test]
+fn a_chip_that_does_not_fit_fills_the_box() {
+    let (snap, _) = common::load(&[
+        common::on("A", 3840, 2160, 0, 0).primary(),
+        common::on("LONG-OUTPUT-NAME", 1280, 1024, 3840, 0),
+    ]);
+    let mut app = App::new(snap, Options::default());
+    press(&mut app, "2");
+    let term = screen(&mut app, 60, 16);
+    let chip = marked(term.backend().buffer(), Modifier::REVERSED);
+    assert_eq!(chip.len(), 1, "{chip:?}");
+    assert!(chip[0].ends_with('…'), "{chip:?}");
+    assert!(!chip[0].starts_with(' '), "{chip:?}");
+    let text = term.backend().to_string();
+    assert!(text.contains(&format!("┃{}┃", chip[0])), "{text}");
+}
+
+#[test]
+fn a_tiny_focused_display_shows_its_number_reversed() {
+    let (snap, _) = common::load(&[
+        common::on("A", 15000, 2000, 0, 0).primary(),
+        common::on("B", 100, 100, 15000, 0),
+    ]);
+    let mut app = App::new(snap, Options::default());
+    press(&mut app, "2");
+    let term = screen(&mut app, 60, 16);
+    assert_eq!(marked(term.backend().buffer(), Modifier::REVERSED), ["2"]);
+}
+
+#[test]
+fn no_double_borders_by_default() {
+    let mut app = demo();
+    press(&mut app, "3");
+    let term = screen(&mut app, 100, 30);
+    assert_eq!(
+        double_lines(term.backend().buffer()),
+        0,
+        "the parent is not marked"
+    );
+
+    // The stick target is thick, with a bold, underlined title.
+    press(&mut app, "s2h");
+    let term = screen(&mut app, 100, 30);
+    let buf = term.backend().buffer();
+    assert_eq!(double_lines(buf), 0, "{}", term.backend());
+    assert_eq!(marked(buf, Modifier::UNDERLINED), ["2 DP-1-2 ★"]);
+    assert!(term.backend().to_string().contains('┓'));
+}
+
+#[test]
+fn double_borders_bring_the_old_look_back() {
+    let options = Options {
+        double_borders: true,
+        ..Options::default()
+    };
+    let mut app = App::new(FixtureBackend::demo().query().unwrap(), options);
+    press(&mut app, "3");
+    let term = screen(&mut app, 100, 30);
+    assert!(
+        double_lines(term.backend().buffer()) > 0,
+        "the parent is double"
+    );
+
+    press(&mut app, "s2h");
+    let term = screen(&mut app, 100, 30);
+    let buf = term.backend().buffer();
+    assert!(double_lines(buf) > 0, "the target is double");
+    assert!(marked(buf, Modifier::UNDERLINED).is_empty());
 }
 
 #[test]

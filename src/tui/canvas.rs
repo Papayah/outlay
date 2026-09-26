@@ -146,10 +146,14 @@ pub struct Scene<'a> {
     pub layout: &'a Layout,
     pub snap: &'a Snapshot,
     pub theme: Theme,
-    /// The focused display: thick border, drawn last; its moving set takes its colour.
+    /// The focused display: thick border and a reversed title chip, drawn last; its moving set
+    /// takes its colour.
     pub focus: Option<usize>,
-    /// The stick target: double border.
+    /// The stick target: thick border and a bold, underlined title, drawn just before the focused
+    /// display. With `double_borders`, a double border instead.
     pub target: Option<usize>,
+    /// The old look: the target gets a double border.
+    pub double_borders: bool,
     /// Where displays would go, as dashed outlines.
     pub ghosts: &'a [(usize, geometry::Rect)],
     /// Outputs with pending changes, indexed like the layout.
@@ -266,6 +270,19 @@ fn centred(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
     buf.set_string(x, y, text, style);
 }
 
+/// The focused display's title: reversed, with a space on each side. When that does not fit, the
+/// reversed title fills the width, cut with `…`.
+fn chip(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
+    let width = usize::from(area.width);
+    let padded = format!(" {text} ");
+    let text = if padded.chars().count() <= width {
+        padded
+    } else {
+        format!("{:^width$}", truncate(text, width))
+    };
+    centred(buf, area, y, &text, style.add_modifier(Modifier::REVERSED));
+}
+
 /// The glyph at a stick seam, pointing from the child to its parent.
 fn link_glyph(side: Side) -> &'static str {
     match side {
@@ -295,6 +312,40 @@ fn seam_cells(view: &Viewport, a: geometry::Rect, b: geometry::Rect) -> Option<V
     Some(cells)
 }
 
+/// Clears what a ghost covers, except the box lines under its border, which it merges with. Their
+/// style is reset, so no title's reverse video or underline leaks into the ghost.
+fn clear_under_ghost(buf: &mut Buffer, rect: Rect) {
+    if rect.width < 3 || rect.height < 3 {
+        Clear.render(rect, buf);
+        return;
+    }
+    Clear.render(
+        Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
+        buf,
+    );
+    for y in rect.top()..rect.bottom() {
+        for x in rect.left()..rect.right() {
+            let ring = y == rect.top()
+                || y == rect.bottom() - 1
+                || x == rect.left()
+                || x == rect.right() - 1;
+            if !ring {
+                continue;
+            }
+            let cell = &mut buf[(x, y)];
+            let line = cell
+                .symbol()
+                .chars()
+                .all(|c| ('\u{2500}'..='\u{257f}').contains(&c));
+            if line {
+                cell.set_style(Style::reset());
+            } else {
+                cell.reset();
+            }
+        }
+    }
+}
+
 fn cell_in(area: Rect, x: i32, y: i32) -> Option<(u16, u16)> {
     let inside = x >= i32::from(area.x)
         && y >= i32::from(area.y)
@@ -315,39 +366,50 @@ pub fn render(scene: &Scene, view: &Viewport, area: Rect, buf: &mut Buffer) {
     let target_root = scene
         .target
         .filter(|&t| layout.is_enabled(t))
-        .map(|t| layout.mirror_root(t));
+        .map(|t| layout.mirror_root(t))
+        .filter(|&t| Some(t) != focus_root && boxes.contains(&t));
 
     let tint = |root: usize| match focus_root {
         Some(f) if moving.contains(&root) => scene.colour(f),
         _ => scene.colour(root),
     };
-    // The box in cells when it is big enough for a border, else its numbers in the middle.
-    let framed = |buf: &mut Buffer, root: usize| -> Option<Rect> {
+    // The box in cells when it is big enough for a border; a smaller one shows only its numbers,
+    // drawn after the seams so no glyph covers them.
+    let framed = |root: usize| -> Option<Rect> {
         let cells = view.cells(layout.rect(root));
         if cells.width() < 3 || cells.height() < 3 {
-            let (x, y) = ((cells.x0 + cells.x1) / 2, (cells.y0 + cells.y1) / 2);
-            if let Some((x, y)) = cell_in(area, x, y) {
-                let group = layout.mirror_group(root);
-                let numbers: Vec<String> = group.iter().map(|&i| scene.number(i)).collect();
-                buf.set_string(
-                    x,
-                    y,
-                    numbers.join("="),
-                    tint(root).add_modifier(Modifier::BOLD),
-                );
-            }
             return None;
         }
         cells.clip(area)
     };
+    let draw_numbers = |buf: &mut Buffer, root: usize| {
+        let cells = view.cells(layout.rect(root));
+        if cells.width() >= 3 && cells.height() >= 3 {
+            return;
+        }
+        let (x, y) = ((cells.x0 + cells.x1) / 2, (cells.y0 + cells.y1) / 2);
+        if let Some((x, y)) = cell_in(area, x, y) {
+            let group = layout.mirror_group(root);
+            let numbers: Vec<String> = group.iter().map(|&i| scene.number(i)).collect();
+            let mut style = tint(root).add_modifier(Modifier::BOLD);
+            if Some(root) == focus_root {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            buf.set_string(x, y, numbers.join("="), style);
+        }
+    };
     let draw_border = |buf: &mut Buffer, root: usize| {
-        let Some(rect) = framed(buf, root) else {
+        let Some(rect) = framed(root) else {
             return;
         };
         let border = if Some(root) == focus_root {
             BorderType::Thick
         } else if Some(root) == target_root {
-            BorderType::Double
+            if scene.double_borders {
+                BorderType::Double
+            } else {
+                BorderType::Thick
+            }
         } else {
             BorderType::Plain
         };
@@ -367,8 +429,11 @@ pub fn render(scene: &Scene, view: &Viewport, area: Rect, buf: &mut Buffer) {
         if inner.width == 0 || inner.height == 0 {
             return;
         }
-        let title_style = if Some(root) == focus_root {
+        let focused = Some(root) == focus_root;
+        let title_style = if focused {
             tint(root).add_modifier(Modifier::BOLD)
+        } else if Some(root) == target_root && !scene.double_borders {
+            tint(root).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             tint(root)
         };
@@ -388,16 +453,21 @@ pub fn render(scene: &Scene, view: &Viewport, area: Rect, buf: &mut Buffer) {
         lines.truncate(usize::from(inner.height));
         let top = inner.y + (inner.height - lines.len() as u16) / 2;
         for (k, (text, style)) in lines.iter().enumerate() {
-            centred(buf, inner, top + k as u16, text, *style);
+            if k == 0 && focused {
+                chip(buf, inner, top, text, *style);
+            } else {
+                centred(buf, inner, top + k as u16, text, *style);
+            }
         }
     };
 
-    // Borders first, the focused one last so its thick lines win the merges; then the overlap
-    // hatch; then the labels on top of both.
+    // Borders first: the others, then the stick target, then the focused one, so the thick lines
+    // win the merges; then the overlap hatch; then the labels on top of both.
     let order: Vec<usize> = boxes
         .iter()
         .copied()
-        .filter(|&b| Some(b) != focus_root)
+        .filter(|&b| Some(b) != focus_root && Some(b) != target_root)
+        .chain(target_root)
         .chain(focus_root)
         .collect();
     for &root in &order {
@@ -464,15 +534,20 @@ pub fn render(scene: &Scene, view: &Viewport, area: Rect, buf: &mut Buffer) {
         }
     }
 
+    for &root in &order {
+        draw_numbers(buf, root);
+    }
+
     // Ghosts: where the displays would go. Each covers what lies under it, so it reads as the
-    // new position; all are cleared first so touching ghosts can merge their borders.
+    // new position. Their borders merge with the lines under them, so a ghost meets a box in a
+    // clean join; everything else under a ghost is cleared first.
     let ghosts: Vec<(usize, Rect)> = scene
         .ghosts
         .iter()
         .filter_map(|&(i, r)| view.cells(r).clip(area).map(|rect| (i, rect)))
         .collect();
     for &(_, rect) in &ghosts {
-        Clear.render(rect, buf);
+        clear_under_ghost(buf, rect);
     }
     for &(i, rect) in &ghosts {
         let style = scene.colour(i).add_modifier(Modifier::BOLD);

@@ -68,6 +68,7 @@ layouts_dir = "~/.screenlayout"
 animations = true
 directions = "hjkl"        # focus letters: left, down, up, right
 # cell_aspect = 2.0        # detected from the terminal when omitted
+double_borders = false     # true: double border on the stick target and the focused display's parent
 post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
 ```
 

@@ -79,9 +79,11 @@ fn draw_canvas(app: &mut App, area: Rect, buf: &mut ratatui::buffer::Buffer) {
     let pending = app.pending_flags();
     let (target, ghosts) = match &app.mode {
         UiMode::Stick(flow) => (Some(flow.target), flow.ghosts.clone()),
+        // Normal mode marks no target: the seam glyph and the details show the link. The old
+        // look marks the focused display's parent.
         _ => (
             app.layout.links[app.focus]
-                .filter(|_| app.layout.is_enabled(app.focus))
+                .filter(|_| app.double_borders && app.layout.is_enabled(app.focus))
                 .map(|l| l.parent),
             Vec::new(),
         ),
@@ -92,6 +94,7 @@ fn draw_canvas(app: &mut App, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         theme: app.theme,
         focus: Some(app.focus),
         target,
+        double_borders: app.double_borders,
         ghosts: &ghosts,
         pending: &pending,
     };
