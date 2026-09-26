@@ -236,7 +236,7 @@ pub const TABLE: &[Binding] = &[
     bind(C::Normal, &[Keys::Letters(SHIFT), Keys::Arrows(SHIFT)], Does::Dir(A::Snap),
         Some("move"), "Snap-move: swap with a neighbour or slide to the next stop"),
     bind(C::Normal, &[Keys::Letters(ALT), Keys::Arrows(ALT)], Does::Dir(A::Nudge),
-        None, "Nudge by the step, ignoring gaps and overlaps"),
+        None, "Nudge freely by the step; holding the key speeds it up"),
     bind(C::Normal, &[ch('s')], act(A::Stick), Some("stick"), "Stick to a side of another display"),
     bind(C::Normal, &[ch('S')], act(A::Unstick), None, "Unstick: stay in place, follow nothing"),
     bind(C::Normal, &[ch('m')], act(A::ModePicker), Some("mode"), "Pick a resolution"),

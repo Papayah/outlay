@@ -1,6 +1,6 @@
 ---
 source: tests/tui.rs
-assertion_line: 445
+assertion_line: 691
 expression: "screen(&mut app, 100, 30).backend()"
 ---
 " outlay · 3 on · 1 off                                                                   no changes "
@@ -8,7 +8,7 @@ expression: "screen(&mut app, 100, 30).backend()"
 "│    │Layout                                                                                  │    │"
 "│    │  h j k l / arrows          Focus the nearest display in that direction                 │    │"
 "│    │  H J K L / Shift-arrows    Snap-move: swap with a neighbour or slide to the next stop  │    │"
-"│    │  Alt-h j k l / Alt-arrows  Nudge by the step, ignoring gaps and overlaps               │    │"
+"│    │  Alt-h j k l / Alt-arrows  Nudge freely by the step; holding the key speeds it up      │    │"
 "│    │  s                         Stick to a side of another display                          │    │"
 "│    │  S                         Unstick: stay in place, follow nothing                      │    │"
 "│ ┌──│  m                         Pick a resolution                                           │i   │"

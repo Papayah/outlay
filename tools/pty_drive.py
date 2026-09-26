@@ -3,12 +3,14 @@
 
 usage: tools/pty_drive.py SCENARIO -- outlay args...     (build with cargo build --release)
 
-Scenarios: keep, timeout (pass --revert-timeout 2), sigterm, sighup, keys. With --demo or -n
-nothing reaches the X server. Without them the apply is real: ask the user first.
+Scenarios: keep, timeout (pass --revert-timeout 2), sigterm, sighup, keys, hold (a held Alt-l;
+PTY_DUMP=1 prints the screen). With --demo or -n nothing reaches the X server. Without them the
+apply is real: ask the user first.
 """
 import fcntl
 import os
 import pty
+import re
 import select
 import signal
 import struct
@@ -169,6 +171,26 @@ def main():
         send(fd, "\x1b", 0.3)
         out = send(fd, "\x1b", 0.3)
         print("Esc does not quit:", wait(pid, 0.3) is None)
+        send(fd, "q", 0.3)
+        print("exit:", wait(pid))
+    elif scenario == "hold":
+        # Alt-l every 40 ms for 1.2 s, as a key held with a 25 Hz autorepeat sends it.
+        send(fd, "3", 0.3)
+        for _ in range(30):
+            os.write(fd, b"\x1bl")
+            read_for(fd, 0.04)
+        read_for(fd, 0.05)
+        held = SCREEN.text()
+        if os.environ.get("PTY_DUMP"):
+            print(held)
+        step = [l.strip() for l in held.splitlines() if "step 10px" in l]
+        print("step indicator:", step[0] if step else None)
+        pos = re.search(r"pos +([0-9,]+ → [0-9,]+)", held)
+        print("moved:", pos.group(1) if pos else None)
+        read_for(fd, 0.5)
+        print("multiplier gone after release:", "×" not in SCREEN.text())
+        send(fd, "u", 0.3)
+        print("one undo restores it:", "no changes" in SCREEN.text())
         send(fd, "q", 0.3)
         print("exit:", wait(pid))
     else:
