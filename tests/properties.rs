@@ -8,6 +8,8 @@ use outlay::model::geometry::Dir;
 use outlay::model::history::History;
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Side};
+use outlay::xrandr::command;
+use outlay::xrandr::script::Profile;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
@@ -246,5 +248,29 @@ proptest! {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_saved_layout_loads_back_the_same(outs in arb_desk(), edits in prop::collection::vec(arb_edit(), 0..20)) {
+        let snap = desk(&outs);
+        let mut layout = Layout::inferred(&snap);
+        for edit in edits.iter().filter(|e| !matches!(e, Edit::Undo | Edit::Redo)) {
+            apply(&mut layout, &snap, edit);
+        }
+        // Scripts do not store links; loading infers them from the positions.
+        layout.infer_links();
+        layout.restore = vec![None; layout.len()];
+        let text = command::script(&layout, &snap);
+        let profile = Profile::parse(&text);
+        prop_assert!(profile.warnings.is_empty(), "{:?}", profile.warnings);
+        let (mut loaded, notes) = profile.layout(&snap, &Vec::new());
+        prop_assert!(notes.is_empty(), "{:?}", notes);
+        // A script says only `--off` for an output that is off, not where it was.
+        for i in 0..layout.len() {
+            if !layout.is_enabled(i) && !loaded.is_enabled(i) {
+                loaded.outputs[i] = layout.outputs[i].clone();
+            }
+        }
+        prop_assert_eq!(loaded, layout, "{}", text);
     }
 }

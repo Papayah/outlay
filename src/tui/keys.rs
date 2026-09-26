@@ -72,15 +72,24 @@ pub enum Context {
     Help,
     /// While xrandr runs: no key does anything.
     Applying,
+    /// Typing the name to save a profile under.
+    SavePrompt,
+    /// The profile picker.
+    Profiles,
+    /// Choosing where a profile's missing outputs go.
+    Remap,
 }
 
 impl Context {
-    pub const ALL: [Context; 11] = [
+    pub const ALL: [Context; 14] = [
         Context::Normal,
         Context::StickTarget,
         Context::StickSide,
         Context::Picker,
         Context::Command,
+        Context::SavePrompt,
+        Context::Profiles,
+        Context::Remap,
         Context::Confirm,
         Context::ConfirmApply,
         Context::Countdown,
@@ -103,6 +112,9 @@ impl Context {
             Context::Message => "Messages",
             Context::Help => "Help",
             Context::Applying => "While applying",
+            Context::SavePrompt => "Saving a profile",
+            Context::Profiles => "Profile picker",
+            Context::Remap => "Remapping a profile's outputs",
         }
     }
 }
@@ -137,6 +149,9 @@ pub enum Action {
     Quit,
     Apply,
     Copy,
+    /// Save the pending layout as a profile, or open one.
+    Save,
+    Open,
     /// After an apply: keep the new layout, revert it, or revert and quit.
     Keep,
     Revert,
@@ -260,6 +275,9 @@ pub const TABLE: &[Binding] = &[
         "Focus the previous display"),
     bind(C::Normal, &[Keys::Digits], Does::Num(A::FocusNumber), None,
         "Focus display N, on or off"),
+    bind(C::Normal, &[ch('w')], act(A::Save), None,
+        "Save the layout as a profile (an arandr-style script)"),
+    bind(C::Normal, &[ch('e')], act(A::Open), None, "Open a profile"),
     bind(C::Normal, &[ch(':')], act(A::Command), None, "Command line"),
     bind(C::Normal, &[ch('R')], act(A::Reload), None, "Reload the live state"),
     bind(C::Normal, &[ch('z')], act(A::Refit), None, "Fit the view to the layout"),
@@ -301,6 +319,22 @@ pub const TABLE: &[Binding] = &[
     bind(C::Command, &[code(KeyCode::Backspace)], act(A::Back), None,
         "Delete a character; on an empty line, cancel"),
     bind(C::Command, &[code(KeyCode::Esc)], act(A::Cancel), Some("cancel"), "Cancel"),
+
+    bind(C::SavePrompt, &[code(KeyCode::Enter)], act(A::Accept), Some("save"), "Save"),
+    bind(C::SavePrompt, &[code(KeyCode::Backspace)], act(A::Back), None,
+        "Delete a character; on an empty line, cancel"),
+    bind(C::SavePrompt, &[code(KeyCode::Esc)], act(A::Cancel), Some("cancel"), "Cancel"),
+
+    bind(C::Profiles, &[Keys::VerticalLetters, Keys::VerticalArrows], Does::Dir(A::Move),
+        Some("select"), "Move the selection"),
+    bind(C::Profiles, &[code(KeyCode::Enter)], act(A::Accept), Some("open"),
+        "Open the profile as pending changes"),
+    bind(C::Profiles, &[code(KeyCode::Esc)], act(A::Cancel), Some("cancel"), "Cancel"),
+
+    bind(C::Remap, &[Keys::Letters(NONE), Keys::Arrows(NONE)], Does::Dir(A::Move),
+        Some("choose"), "Down and up pick a row; left and right change where it goes"),
+    bind(C::Remap, &[code(KeyCode::Enter)], act(A::Accept), Some("open"), "Open the profile"),
+    bind(C::Remap, &[code(KeyCode::Esc)], act(A::Cancel), Some("cancel"), "Cancel"),
 
     bind(C::Confirm, &[code(KeyCode::Enter), ch('y')], act(A::Accept), Some("yes"), "Yes"),
     bind(C::Confirm, &[code(KeyCode::Esc), ch('n')], act(A::Cancel), Some("no"), "No"),

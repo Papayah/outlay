@@ -2,6 +2,7 @@
 //! the effects (reload, quit …) for the event loop to carry out, so tests drive the whole editor
 //! without a terminal.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
@@ -14,6 +15,7 @@ use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
 use crate::model::{Mode, Snapshot};
 use crate::xrandr::command;
+use crate::xrandr::script::{Profile, Remap};
 
 use super::canvas::Viewport;
 use super::cmdline::{self, Cmd};
@@ -34,6 +36,69 @@ pub enum Effect {
     Keep,
     /// Put text on the clipboard with OSC 52.
     Copy(String),
+    /// Read the profiles in the layouts directory and open the picker.
+    ListProfiles,
+    /// Read one profile, by name or path, and open it.
+    OpenProfile(String),
+    /// Save the pending layout under this profile name or path; asks before overwriting.
+    SaveProfile(String),
+    /// Write a profile that the user agreed to overwrite.
+    WriteProfile(SavePlan),
+}
+
+/// A profile read from disk, with what it would do on the current outputs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfileItem {
+    pub name: String,
+    pub path: PathBuf,
+    pub profile: Profile,
+    /// The layout it gives with the default remap, for the preview.
+    pub preview: Layout,
+    /// What did not fit, with the default remap.
+    pub notes: Vec<String>,
+    /// Profile outputs that are not connected.
+    pub unmatched: Vec<String>,
+}
+
+impl ProfileItem {
+    pub fn new(snap: &Snapshot, path: PathBuf, text: &str) -> Self {
+        let profile = Profile::parse(text);
+        let remap = profile.default_remap(snap);
+        let (preview, notes) = profile.layout(snap, &remap);
+        Self {
+            name: crate::xrandr::script::profile_name(&path),
+            unmatched: profile.unmatched(snap),
+            path,
+            profile,
+            preview,
+            notes,
+        }
+    }
+}
+
+/// The profile picker (`e`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfilePicker {
+    pub items: Vec<ProfileItem>,
+    pub selected: usize,
+}
+
+/// Where a profile's missing outputs go: one row per output that is not connected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemapDialog {
+    pub item: ProfileItem,
+    pub rows: Remap,
+    pub selected: usize,
+    /// Connected outputs the profile leaves free.
+    pub free: Vec<usize>,
+}
+
+/// A save that would overwrite a different file: the new text and the diff to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavePlan {
+    pub path: PathBuf,
+    pub text: String,
+    pub diff: Vec<String>,
 }
 
 /// What to apply: the arguments, and the layout they should produce, for verification.
@@ -185,6 +250,12 @@ pub enum UiMode {
     Applying,
     Countdown(Countdown),
     Message(Message),
+    /// Typing a profile name to save under.
+    SavePrompt(String),
+    Profiles(ProfilePicker),
+    Remap(Box<RemapDialog>),
+    /// "Overwrite this profile?" with the diff.
+    Overwrite(SavePlan),
 }
 
 /// Settings the editor starts with.
@@ -241,6 +312,8 @@ pub struct App {
     /// The display and direction of the last nudges when nothing else happened since: they
     /// share one undo step.
     nudge_run: Option<(usize, Dir)>,
+    /// The profile last opened or saved: the save prompt starts with it.
+    pub profile: Option<String>,
 }
 
 impl App {
@@ -265,6 +338,7 @@ impl App {
             now: Instant::now(),
             burst: None,
             nudge_run: None,
+            profile: None,
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -321,6 +395,10 @@ impl App {
             UiMode::Applying => Context::Applying,
             UiMode::Countdown(_) => Context::Countdown,
             UiMode::Message(_) => Context::Message,
+            UiMode::SavePrompt(_) => Context::SavePrompt,
+            UiMode::Profiles(_) => Context::Profiles,
+            UiMode::Remap(_) => Context::Remap,
+            UiMode::Overwrite(_) => Context::Confirm,
         }
     }
 
@@ -390,8 +468,10 @@ impl App {
         match action {
             Some(action) => self.perform(context, action),
             None => {
-                if let (UiMode::Command(line), ratatui::crossterm::event::KeyCode::Char(c)) =
-                    (&mut self.mode, key.code)
+                if let (
+                    UiMode::Command(line) | UiMode::SavePrompt(line),
+                    ratatui::crossterm::event::KeyCode::Char(c),
+                ) = (&mut self.mode, key.code)
                     && (key.mods - KeyModifiers::SHIFT).is_empty()
                 {
                     line.push(c);
@@ -413,6 +493,15 @@ impl App {
                 Vec::new()
             }
             Context::Command => self.command_key(action),
+            Context::SavePrompt => self.save_prompt_key(action),
+            Context::Profiles => {
+                self.profiles_key(action);
+                Vec::new()
+            }
+            Context::Remap => {
+                self.remap_key(action);
+                Vec::new()
+            }
             Context::Confirm | Context::ConfirmApply => self.confirm_key(action),
             Context::Countdown => {
                 self.mode = UiMode::Applying;
@@ -645,6 +734,10 @@ impl App {
                 let args = command::portable_args(&self.layout, &self.snap);
                 return vec![Effect::Copy(command::command_line(&args))];
             }
+            Action::Save => {
+                self.mode = UiMode::SavePrompt(self.profile.clone().unwrap_or_default())
+            }
+            Action::Open => return vec![Effect::ListProfiles],
             _ => {}
         }
         Vec::new()
@@ -804,6 +897,17 @@ impl App {
     }
 
     fn confirm_key(&mut self, action: Action) -> Vec<Effect> {
+        if let UiMode::Overwrite(plan) = &self.mode {
+            let plan = plan.clone();
+            self.mode = UiMode::Normal;
+            return match action {
+                Action::Accept => vec![Effect::WriteProfile(plan)],
+                _ => {
+                    self.say(Severity::Info, "Not saved.");
+                    Vec::new()
+                }
+            };
+        }
         if let UiMode::ConfirmApply(plan) = &self.mode {
             return match action {
                 Action::Accept if !plan.errors.is_empty() => {
@@ -1172,6 +1276,183 @@ impl App {
         }
     }
 
+    // --- Profiles ---------------------------------------------------------------------------
+
+    fn save_prompt_key(&mut self, action: Action) -> Vec<Effect> {
+        let UiMode::SavePrompt(line) = &mut self.mode else {
+            return Vec::new();
+        };
+        match action {
+            Action::Back => {
+                if line.pop().is_none() {
+                    self.mode = UiMode::Normal;
+                }
+                Vec::new()
+            }
+            Action::Accept => {
+                let name = line.trim().to_owned();
+                if name.is_empty() {
+                    self.say(Severity::Info, "Type a name for the profile.");
+                    return Vec::new();
+                }
+                self.mode = UiMode::Normal;
+                vec![Effect::SaveProfile(name)]
+            }
+            _ => {
+                self.mode = UiMode::Normal;
+                Vec::new()
+            }
+        }
+    }
+
+    /// Opens the picker on the profiles the session read.
+    pub fn open_profiles(&mut self, items: Vec<ProfileItem>, dir: &str) {
+        if items.is_empty() {
+            self.say(Severity::Info, format!("There are no profiles in {dir}."));
+            return;
+        }
+        let selected = self
+            .profile
+            .as_ref()
+            .and_then(|p| items.iter().position(|it| it.name == *p))
+            .unwrap_or(0);
+        self.status = None;
+        self.mode = UiMode::Profiles(ProfilePicker { items, selected });
+    }
+
+    /// Opens a profile: first the remap dialog when some of its outputs are not connected.
+    pub fn open_profile(&mut self, item: ProfileItem) {
+        if item.unmatched.is_empty() {
+            self.load_profile(&item, &Vec::new());
+            return;
+        }
+        let rows = item.profile.default_remap(&self.snap);
+        let free = item.profile.free_outputs(&self.snap);
+        self.status = None;
+        self.mode = UiMode::Remap(Box::new(RemapDialog {
+            item,
+            rows,
+            selected: 0,
+            free,
+        }));
+    }
+
+    /// Makes the profile's layout the pending one, as one undo step.
+    pub fn load_profile(&mut self, item: &ProfileItem, remap: &Remap) {
+        self.mode = UiMode::Normal;
+        let (layout, notes) = item.profile.layout(&self.snap, remap);
+        self.profile = Some(item.name.clone());
+        if layout == self.layout {
+            let text = format!("{} is the layout you have already.", item.name);
+            self.say(Severity::Info, text);
+            return;
+        }
+        let before = std::mem::replace(&mut self.layout, layout);
+        self.history.record(before, &self.layout);
+        self.viewport.refit();
+        self.revalidate();
+        let pending = self.pending().len();
+        let mut text = format!(
+            "Opened {}: {pending} pending change{}. ",
+            item.name,
+            if pending == 1 { "" } else { "s" }
+        );
+        let apply = self
+            .keymap
+            .key_for(Context::Normal, Action::Apply)
+            .unwrap_or_default();
+        text.push_str(&format!("{apply} applies them."));
+        if notes.is_empty() {
+            self.say(Severity::Info, text);
+        } else {
+            self.say(Severity::Warning, format!("{text} {}", notes.join(" ")));
+        }
+    }
+
+    /// A save would change an existing file: ask first, showing the diff.
+    pub fn confirm_overwrite(&mut self, plan: SavePlan) {
+        self.mode = UiMode::Overwrite(plan);
+    }
+
+    /// The profile was written.
+    pub fn saved(&mut self, name: String, shown: &str) {
+        self.profile = Some(name);
+        self.say(Severity::Info, format!("Saved {shown}."));
+    }
+
+    fn profiles_key(&mut self, action: Action) {
+        let UiMode::Profiles(picker) = &mut self.mode else {
+            return;
+        };
+        match action {
+            Action::Move(Dir::Down) => {
+                picker.selected = (picker.selected + 1).min(picker.items.len().saturating_sub(1));
+            }
+            Action::Move(Dir::Up) => picker.selected = picker.selected.saturating_sub(1),
+            Action::Accept => {
+                let item = picker.items[picker.selected].clone();
+                self.mode = UiMode::Normal;
+                self.open_profile(item);
+            }
+            Action::Cancel => self.mode = UiMode::Normal,
+            _ => {}
+        }
+    }
+
+    /// The outputs row `k` of the remap dialog may go to: nowhere, or a free output no other
+    /// row took.
+    pub fn remap_choices(dialog: &RemapDialog, k: usize) -> Vec<Option<usize>> {
+        let taken: Vec<usize> = dialog
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != k)
+            .filter_map(|(_, (_, to))| *to)
+            .collect();
+        std::iter::once(None)
+            .chain(
+                dialog
+                    .free
+                    .iter()
+                    .filter(|i| !taken.contains(i))
+                    .map(|&i| Some(i)),
+            )
+            .collect()
+    }
+
+    fn remap_key(&mut self, action: Action) {
+        let UiMode::Remap(dialog) = &mut self.mode else {
+            return;
+        };
+        match action {
+            Action::Move(Dir::Down) => {
+                dialog.selected = (dialog.selected + 1).min(dialog.rows.len().saturating_sub(1));
+            }
+            Action::Move(Dir::Up) => dialog.selected = dialog.selected.saturating_sub(1),
+            Action::Move(dir @ (Dir::Left | Dir::Right)) => {
+                let k = dialog.selected;
+                let choices = Self::remap_choices(dialog, k);
+                let at = choices
+                    .iter()
+                    .position(|c| *c == dialog.rows[k].1)
+                    .unwrap_or(0);
+                let n = choices.len();
+                let next = if dir == Dir::Right {
+                    (at + 1) % n
+                } else {
+                    (at + n - 1) % n
+                };
+                dialog.rows[k].1 = choices[next];
+            }
+            Action::Accept => {
+                let (item, rows) = (dialog.item.clone(), dialog.rows.clone());
+                self.load_profile(&item, &rows);
+            }
+            Action::Cancel => self.mode = UiMode::Normal,
+            _ => {}
+        }
+    }
+
     // --- Command line -----------------------------------------------------------------------
 
     fn command_key(&mut self, action: Action) -> Vec<Effect> {
@@ -1287,6 +1568,14 @@ impl App {
             Cmd::On(t) => self.switch(t, true),
             Cmd::Off(t) => self.switch(t, false),
             Cmd::Quit { force } => return self.quit(force),
+            Cmd::Save(Some(name)) => return vec![Effect::SaveProfile(name)],
+            Cmd::Save(None) => match self.profile.clone() {
+                Some(name) => return vec![Effect::SaveProfile(name)],
+                None => self.mode = UiMode::SavePrompt(String::new()),
+            },
+            Cmd::Open(Some(name)) => return vec![Effect::OpenProfile(name)],
+            Cmd::Open(None) => return vec![Effect::ListProfiles],
+            Cmd::Apply => self.open_apply(),
         }
         Vec::new()
     }

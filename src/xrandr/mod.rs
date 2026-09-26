@@ -3,6 +3,7 @@
 pub mod command;
 pub mod edid;
 pub mod parse;
+pub mod script;
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -491,7 +492,7 @@ fn simulate(snapshot: &mut Snapshot, argv: &[String]) -> ApplyOutcome {
 }
 
 /// `none`, or nine comma-separated numbers.
-fn parse_transform_arg(value: &str) -> Option<Transform> {
+pub(crate) fn parse_transform_arg(value: &str) -> Option<Transform> {
     if value == "none" {
         return Some(Transform::identity());
     }

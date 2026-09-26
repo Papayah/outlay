@@ -8,7 +8,7 @@ use std::fmt;
 use thiserror::Error;
 
 use super::geometry::{Dir, Point, Rect, Size, bbox, effective_size};
-use super::links::{Link, Restore, Side};
+use super::links::{Align, Link, Restore, Side};
 use super::{Mode, Output, Reflection, Rotation, Snapshot, Transform};
 
 /// The pending configuration of one output.
@@ -135,6 +135,38 @@ impl Layout {
                 }
             }
         }
+        (layout, notes)
+    }
+
+    /// The layout a loaded profile describes: these output states on `snap` (panning outputs
+    /// keep their live state), links inferred from the positions, then each
+    /// `(child, parent, side)` stick on top, normalised the way xrandr normalises. Returns notes
+    /// about sticks that could not be made.
+    pub fn from_states(
+        snap: &Snapshot,
+        states: Vec<OutputState>,
+        sticks: &[(usize, usize, Side)],
+    ) -> (Self, Vec<String>) {
+        let mut layout = Self::inferred(snap);
+        for (i, st) in states.into_iter().enumerate() {
+            if !layout.locked[i] {
+                layout.outputs[i] = st;
+            }
+        }
+        layout.restore = vec![None; layout.len()];
+        layout.infer_links();
+        let mut notes = Vec::new();
+        for &(child, parent, side) in sticks {
+            let linked = layout.links[child].is_some_and(|l| l.parent == parent && l.side == side);
+            // A mirror is inferred from identical rectangles; sticking one would change modes.
+            if linked || side == Side::Same {
+                continue;
+            }
+            if let Err(err) = layout.stick(snap, child, parent, side, Align::Start) {
+                notes.push(err.to_string());
+            }
+        }
+        layout.normalise();
         (layout, notes)
     }
 

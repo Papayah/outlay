@@ -37,12 +37,18 @@ pub enum Cmd {
     Quit {
         force: bool,
     },
+    /// `:w [name]`
+    Save(Option<String>),
+    /// `:e [name]`
+    Open(Option<String>),
+    /// `:apply`
+    Apply,
 }
 
 /// The command words, for error messages.
 pub const WORDS: &[&str] = &[
     "pos", "move", "mode", "rate", "rotate", "reflect", "scale", "stick", "unstick", "primary",
-    "on", "off", "q", "q!",
+    "on", "off", "w", "e", "apply", "q", "q!",
 ];
 
 /// Every command with what it does, for help.
@@ -64,6 +70,12 @@ pub const USAGE: &[(&str, &str)] = &[
     (":unstick [OUT]", "Unstick"),
     (":primary [OUT]", "Make primary"),
     (":on [OUT]  :off [OUT]", "Turn on or off"),
+    (
+        ":w [NAME]",
+        "Save as a profile (the one last opened, without NAME)",
+    ),
+    (":e [NAME]", "Open a profile; without NAME, the picker"),
+    (":apply", "Apply, like a"),
     (":q  :q!", "Quit; :q! drops pending changes"),
 ];
 
@@ -173,6 +185,9 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
         "primary" => optional_output("primary [OUTPUT]").map(Cmd::Primary),
         "on" => optional_output("on [OUTPUT]").map(Cmd::On),
         "off" => optional_output("off [OUTPUT]").map(Cmd::Off),
+        "w" => optional_output("w [NAME]").map(Cmd::Save),
+        "e" => optional_output("e [NAME]").map(Cmd::Open),
+        "apply" if args.is_empty() => Ok(Cmd::Apply),
         "q" | "q!" if args.is_empty() => Ok(Cmd::Quit {
             force: verb == "q!",
         }),
@@ -260,6 +275,14 @@ mod tests {
         );
         assert_eq!(parse("q"), Ok(Cmd::Quit { force: false }));
         assert_eq!(parse("q!"), Ok(Cmd::Quit { force: true }));
+        assert_eq!(parse("w"), Ok(Cmd::Save(None)));
+        assert_eq!(parse("w home"), Ok(Cmd::Save(Some("home".to_owned()))));
+        assert_eq!(
+            parse("e tv-home"),
+            Ok(Cmd::Open(Some("tv-home".to_owned())))
+        );
+        assert_eq!(parse("e"), Ok(Cmd::Open(None)));
+        assert_eq!(parse("apply"), Ok(Cmd::Apply));
     }
 
     #[test]

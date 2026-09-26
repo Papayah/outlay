@@ -7,7 +7,7 @@ use clap::Parser;
 use outlay::cli::{Cli, Command};
 use outlay::config::Config;
 use outlay::show;
-use outlay::tui;
+use outlay::{profile, tui};
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
@@ -23,17 +23,22 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<()> {
     let config = Config::load()?;
     let backend = cli.backend()?;
-    let Some(command) = cli.command else {
+    let Some(command) = cli.command.clone() else {
         let (options, settings) = cli.tui_options(&config)?;
         return tui::run(backend.as_ref(), options, settings);
     };
-    let snapshot = backend.query()?;
-    let text = match command {
+    let text = match &command {
+        Command::Apply { profile } => {
+            return profile::apply(&cli, &config, backend.as_ref(), profile);
+        }
+        Command::Save { profile, force } => {
+            return profile::save(&cli, &config, backend.as_ref(), profile, *force);
+        }
         Command::Show => show::show(
-            &snapshot,
+            &backend.query()?,
             &show::DiagramOptions::for_stdout(config.cell_aspect),
         ),
-        Command::List => show::list(&snapshot),
+        Command::List => show::list(&backend.query()?),
     };
     print_stdout(&text)
 }
