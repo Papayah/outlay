@@ -229,3 +229,57 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** none yet. To look at it, start outlay under gdb from the driver, or add a debug log to
   the event loop. When you exec `pty_drive.py` from another script, set `BIN` again afterwards:
   it comes from `__file__`, and a wrong path makes the child exit 1 at once.
+
+## Does `xrandr --current` see a hotplug without a probe? Yes, here
+
+- **Symptom:** none; this was an open question before the hotplug watch was built. The watch
+  polls `xrandr --verbose --current` (about 5 ms) instead of a full probe (70–77 ms, which can
+  wake the NVIDIA GPU).
+- **Cause:** checked live on 2026-09-26 with a read-only loop of
+  `xrandr --current | grep -E ' (dis)?connected'` every 0.5 s. `--current` saw HDMI-1-0
+  (NVIDIA-G0) unplugged and plugged back twice, and DP-1-2 (NVIDIA-G0, USB-C) plugged and
+  unplugged; every change showed up in the loop's log. The MST dock (`DP-2.x`) was not tried.
+- **Fix:** nothing to fix. If a machine turns up where only a full `xrandr` sees the plug, the
+  choice is a slower full probe or the manual `R`; ask the user.
+
+## A layout rebuilt from the snapshot gets the wrong display numbers
+
+- **Symptom:** after a hotplug, a profile preview, a loaded profile or a kept layout labels a
+  display differently from the canvas, or `load_profile` says "is the layout you have already"
+  when it is not.
+- **Cause:** numbers stay fixed for the session, and a display connected later gets the lowest
+  free number. `Layout::inferred` (and so `from_snapshot`, `from_states` and `Profile::layout`)
+  numbers by xrandr order with `snap.number_of`, which differs once a refresh has renumbered.
+- **Fix:** every layout the editor builds from the snapshot copies `self.layout.numbers`
+  (`kept`, `load_profile`, `open_profiles` do). A new place that builds one must do the same.
+
+## `Layout::inferred` normalises; `state_from_output` does not
+
+- **Symptom:** a property comparing an output that came back after `remapped` with
+  `Layout::inferred(&snap).outputs[k]` fails with a different `pos`.
+- **Cause:** a random desk can have negative positions; `inferred` shifts the whole layout to
+  0,0, but an output new to the list starts from its raw live state.
+- **Fix:** compare with the live `ActiveConfig` (enabled, `pos`, mode XID) instead.
+
+## A test clock taken from one `App` does not fit another
+
+- **Symptom:** `app.tick(start + WATCH_INTERVAL)` returns no refresh for a second `App` in the
+  same test.
+- **Cause:** each `App` starts its watch at its own `now`, taken when it is created, a little
+  later than the first one's `start`.
+- **Fix:** take `let start = app.now;` again for every new `App`.
+
+## The live editor in a pty is refused in auto mode
+
+- **Symptom:** `tools/pty_drive.py SCENARIO --` (no `--demo`, the live X server) is denied by the
+  auto-mode classifier, although a scenario that only presses `q` is read-only.
+- **Cause:** the classifier judges it without explaining why.
+- **Fix:** do not work around it. Test the event loop with `--demo`, and ask the user to run
+  `cargo run --release` in their own terminal for the live check.
+
+## A closure cannot return a reference into its parameter
+
+- **Symptom:** `let find = |snap: &Snapshot, name: &str| snap.find(name).map(|i| &snap.outputs[i]);`
+  fails with "lifetime may not live long enough".
+- **Cause:** closure signatures do not get lifetime elision the way `fn` signatures do.
+- **Fix:** use a nested `fn find<'a>(snap: &'a Snapshot, name: &str) -> Option<&'a Output>`.
