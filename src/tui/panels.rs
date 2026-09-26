@@ -33,9 +33,15 @@ pub fn title_bar(app: &App, area: Rect, buf: &mut Buffer) {
     let right = if pending == 0 {
         Line::from(Span::styled("no changes ", app.theme.dim()))
     } else {
+        let apply = app
+            .keymap
+            .key_for(Context::Normal, Action::Apply)
+            .unwrap_or_default();
         Line::from(vec![
             Span::styled("● ", app.theme.pending()),
-            Span::raw(format!("{pending} pending ")),
+            Span::raw(format!("{pending} pending · ")),
+            Span::styled(apply, app.theme.key()),
+            Span::raw(" apply "),
         ])
     };
     let width = right.width() as u16;
@@ -45,7 +51,8 @@ pub fn title_bar(app: &App, area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// `2560x1440@143.91`, or `2560x1440 @ 59.95 → 143.91` and `1920x1080@60.00 → …` for a change.
+/// `2560x1440@143.91`; for a change, `2560x1440` and `rate 59.95 → 143.91`, or the old and the
+/// new mode on two lines.
 fn mode_lines(app: &App, i: usize) -> Vec<String> {
     let st = &app.layout.outputs[i];
     let Some(mode) = &st.mode else {
@@ -55,10 +62,10 @@ fn mode_lines(app: &App, i: usize) -> Vec<String> {
         .current_mode()
         .filter(|_| app.snap.outputs[i].active.is_some());
     match live {
-        Some(old) if old.xid != mode.xid && old.size() == mode.size() => vec![format!(
-            "mode  {}x{} @ {:.2} → {:.2}",
-            mode.width, mode.height, old.refresh, mode.refresh
-        )],
+        Some(old) if old.xid != mode.xid && old.size() == mode.size() => vec![
+            format!("mode  {}x{}", mode.width, mode.height),
+            format!("rate  {:.2} → {:.2}", old.refresh, mode.refresh),
+        ],
         Some(old) if old.xid != mode.xid => vec![
             format!("mode  {}", old.summary()),
             format!("   →  {}", mode.summary()),
@@ -230,28 +237,38 @@ pub fn status_line(app: &App, area: Rect, buf: &mut Buffer) {
     buf.set_string(x, area.y, step, app.theme.dim());
 }
 
-/// Key hints for the current mode, generated from the keymap; entries that do not fit are left
-/// out.
+/// Key hints for the current mode, generated from the keymap. When they do not all fit, entries
+/// before the last one are left out, so the last (help, cancel, close) always shows.
 pub fn hint_line(app: &App, area: Rect, buf: &mut Buffer) {
     let context = app.context();
     let hints = app.keymap.hints(context, |b| match b.does {
         super::keys::Does::Act(Action::Undo) => app.history.can_undo(),
         _ => true,
     });
-    let mut spans = vec![Span::raw(" ")];
-    let mut width = 1;
-    for (k, (keys, label)) in hints.iter().enumerate() {
-        let sep = if k == 0 { 0 } else { 3 };
-        let add = sep + keys.chars().count() + 1 + label.chars().count();
-        if width + add > usize::from(area.width) {
-            break;
+    let cost = |(keys, label): &(String, &str)| keys.chars().count() + 1 + label.chars().count();
+    let room = usize::from(area.width).saturating_sub(1);
+    let total: usize = hints.iter().map(cost).sum::<usize>() + 3 * hints.len().saturating_sub(1);
+    let mut shown: Vec<&(String, &str)> = Vec::new();
+    if total <= room {
+        shown.extend(&hints);
+    } else if let Some((last, rest)) = hints.split_last() {
+        let mut width = cost(last);
+        for hint in rest {
+            if width + cost(hint) + 3 > room {
+                break;
+            }
+            width += cost(hint) + 3;
+            shown.push(hint);
         }
+        shown.push(last);
+    }
+    let mut spans = vec![Span::raw(" ")];
+    for (k, (keys, label)) in shown.into_iter().enumerate() {
         if k > 0 {
             spans.push(Span::styled(" · ", app.theme.dim()));
         }
         spans.push(Span::styled(keys.clone(), app.theme.key()));
         spans.push(Span::raw(format!(" {label}")));
-        width += add;
     }
     Line::from(spans).render(area, buf);
 }

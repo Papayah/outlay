@@ -2,6 +2,8 @@
 //! the effects (reload, quit …) for the event loop to carry out, so tests drive the whole editor
 //! without a terminal.
 
+use std::time::{Duration, Instant};
+
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
 use crate::model::geometry::{Dir, Point, Rect};
@@ -11,6 +13,7 @@ use crate::model::links::{Align, Side, best_align};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
 use crate::model::{Mode, Snapshot};
+use crate::xrandr::command;
 
 use super::canvas::Viewport;
 use super::cmdline::{self, Cmd};
@@ -23,7 +26,62 @@ pub enum Effect {
     /// Re-read the live state and start over from it.
     Query,
     Quit,
+    /// Run xrandr, verify the result, and start the countdown.
+    Apply(ApplyRequest),
+    /// Restore the layout that was live before the apply.
+    Revert(RevertReason),
+    /// Keep the applied layout and run the `post_apply` hooks.
+    Keep,
+    /// Put text on the clipboard with OSC 52.
+    Copy(String),
 }
+
+/// What to apply: the arguments, and the layout they should produce, for verification.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApplyRequest {
+    pub argv: Vec<String>,
+    pub layout: Layout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevertReason {
+    /// Nobody answered before the countdown ran out.
+    Timeout,
+    /// `n`, `Esc` or Ctrl-C.
+    Declined,
+    /// SIGHUP or SIGTERM.
+    Signal,
+}
+
+/// The apply confirmation: the per-output diff, what blocks the apply, what to watch for, and
+/// the exact command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApplyPlan {
+    pub changes: Vec<String>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub command: String,
+    pub argv: Vec<String>,
+}
+
+/// The "keep this layout?" countdown after an apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Countdown {
+    pub started: Instant,
+    pub deadline: Instant,
+    /// Keys are ignored until then, so one pressed while the screens were dark cannot answer.
+    pub blocked_until: Instant,
+}
+
+/// A popup with a report, such as why an apply failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+/// How long keys are ignored after xrandr returns.
+pub const INPUT_BLOCK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
@@ -86,7 +144,14 @@ pub enum UiMode {
     Picker(Picker),
     Command(String),
     Confirm(Question),
-    Help { scroll: u16 },
+    Help {
+        scroll: u16,
+    },
+    ConfirmApply(ApplyPlan),
+    /// xrandr is running.
+    Applying,
+    Countdown(Countdown),
+    Message(Message),
 }
 
 /// Settings the editor starts with.
@@ -132,6 +197,8 @@ pub struct App {
     pub viewport: Viewport,
     pub cell_aspect: f64,
     pub source: Option<String>,
+    /// The time of the last tick; the countdown and the input block compare against it.
+    pub now: Instant,
 }
 
 impl App {
@@ -152,6 +219,7 @@ impl App {
             viewport: Viewport::default(),
             cell_aspect: options.cell_aspect.unwrap_or(2.0),
             source: options.source,
+            now: Instant::now(),
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -203,8 +271,29 @@ impl App {
             UiMode::Picker(_) => Context::Picker,
             UiMode::Command(_) => Context::Command,
             UiMode::Confirm(_) => Context::Confirm,
+            UiMode::ConfirmApply(_) => Context::ConfirmApply,
             UiMode::Help { .. } => Context::Help,
+            UiMode::Applying => Context::Applying,
+            UiMode::Countdown(_) => Context::Countdown,
+            UiMode::Message(_) => Context::Message,
         }
+    }
+
+    /// Advances the clock; returns a revert when the countdown has run out.
+    pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
+        self.now = now;
+        match self.mode {
+            UiMode::Countdown(c) if now >= c.deadline => {
+                self.mode = UiMode::Applying;
+                vec![Effect::Revert(RevertReason::Timeout)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether the countdown is running.
+    pub fn counting_down(&self) -> bool {
+        matches!(self.mode, UiMode::Countdown(_))
     }
 
     pub fn set_cell_aspect(&mut self, aspect: f64) {
@@ -237,6 +326,11 @@ impl App {
         let Some(key) = normalise(&ev) else {
             return Vec::new();
         };
+        if let UiMode::Countdown(c) = self.mode
+            && self.now < c.blocked_until
+        {
+            return Vec::new();
+        }
         let context = self.context();
         match self.keymap.lookup(context, key) {
             Some(action) => self.perform(context, action),
@@ -264,7 +358,23 @@ impl App {
                 Vec::new()
             }
             Context::Command => self.command_key(action),
-            Context::Confirm => self.confirm_key(action),
+            Context::Confirm | Context::ConfirmApply => self.confirm_key(action),
+            Context::Countdown => {
+                self.mode = UiMode::Applying;
+                match action {
+                    Action::Keep => vec![Effect::Keep],
+                    Action::Revert => vec![Effect::Revert(RevertReason::Declined)],
+                    Action::RevertQuit => {
+                        vec![Effect::Revert(RevertReason::Declined), Effect::Quit]
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            Context::Message => {
+                self.mode = UiMode::Normal;
+                Vec::new()
+            }
+            Context::Applying => Vec::new(),
             Context::Help => {
                 if let UiMode::Help { scroll } = &mut self.mode {
                     match action {
@@ -465,9 +575,112 @@ impl App {
             Action::Details => self.show_details = !self.show_details,
             Action::Help => self.mode = UiMode::Help { scroll: 0 },
             Action::Quit => return self.quit(false),
+            Action::Apply => self.open_apply(),
+            Action::Copy => {
+                let args = command::portable_args(&self.layout, &self.snap);
+                return vec![Effect::Copy(command::command_line(&args))];
+            }
             _ => {}
         }
         Vec::new()
+    }
+
+    /// The apply confirmation for the pending layout. With no changes it re-applies the live
+    /// layout, which is a safe way to try the apply flow.
+    fn open_apply(&mut self) {
+        let mut changes: Vec<String> = self.pending().iter().map(ToString::to_string).collect();
+        if changes.is_empty() {
+            changes.push("No changes: this re-applies the current layout.".to_owned());
+        }
+        let text = |i: &Issue| i.message.clone();
+        let errors = self
+            .issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .map(text)
+            .collect();
+        let warnings = self
+            .issues
+            .iter()
+            .filter(|i| i.severity != Severity::Error)
+            .map(text)
+            .collect();
+        let argv = command::apply_args(&self.layout, &self.snap);
+        self.mode = UiMode::ConfirmApply(ApplyPlan {
+            changes,
+            errors,
+            warnings,
+            command: command::command_line(&argv),
+            argv,
+        });
+    }
+
+    /// The countdown starts: the apply went through and came out as asked.
+    pub fn countdown(&mut self, now: Instant, seconds: u64) {
+        self.now = now;
+        self.mode = UiMode::Countdown(Countdown {
+            started: now,
+            deadline: now + Duration::from_secs(seconds),
+            blocked_until: now + INPUT_BLOCK,
+        });
+        self.status = None;
+    }
+
+    /// Shows a report and leaves the pending edits alone.
+    pub fn report(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.mode = UiMode::Message(Message {
+            title: title.into(),
+            lines,
+        });
+    }
+
+    /// Takes a fresh reading of the live state without touching the pending layout, as long as
+    /// the outputs are still the same ones; otherwise starts over from it.
+    pub fn adopt(&mut self, snap: Snapshot) {
+        let same = snap.outputs.len() == self.snap.outputs.len()
+            && snap
+                .outputs
+                .iter()
+                .zip(&self.snap.outputs)
+                .all(|(a, b)| a.name == b.name);
+        if same {
+            self.snap = snap;
+            self.revalidate();
+        } else {
+            self.reloaded(snap);
+        }
+    }
+
+    /// The user kept the applied layout, now read back as `snap`. The in-memory links survive
+    /// when the geometry matches; otherwise they are inferred again.
+    pub fn kept(&mut self, snap: Snapshot) {
+        let before = self.layout.clone();
+        let matches = self.layout.mismatches(&snap).is_empty();
+        self.adopt(snap);
+        if !matches {
+            self.layout = Layout::from_snapshot(&self.snap).0;
+            self.follow(&before);
+            self.revalidate();
+        }
+        self.mode = UiMode::Normal;
+        self.say(Severity::Info, "Kept the new layout.");
+    }
+
+    /// The previous layout is back, read as `snap` if the read worked. The edits stay pending.
+    pub fn reverted(&mut self, snap: Option<Snapshot>, reason: RevertReason, seconds: u64) {
+        if let Some(snap) = snap {
+            self.adopt(snap);
+        }
+        self.mode = UiMode::Normal;
+        let text = match reason {
+            RevertReason::Timeout => format!(
+                "No answer in {seconds} s: reverted to the previous layout. Your edits are still pending."
+            ),
+            RevertReason::Declined | RevertReason::Signal => {
+                "Reverted to the previous layout. Your edits are still pending.".to_owned()
+            }
+        };
+        self.say(Severity::Warning, text);
     }
 
     fn quit(&mut self, force: bool) -> Vec<Effect> {
@@ -483,6 +696,26 @@ impl App {
     }
 
     fn confirm_key(&mut self, action: Action) -> Vec<Effect> {
+        if let UiMode::ConfirmApply(plan) = &self.mode {
+            return match action {
+                Action::Accept if !plan.errors.is_empty() => {
+                    self.say(Severity::Error, "Fix the errors before applying.");
+                    Vec::new()
+                }
+                Action::Accept => {
+                    let argv = plan.argv.clone();
+                    self.mode = UiMode::Applying;
+                    vec![Effect::Apply(ApplyRequest {
+                        argv,
+                        layout: self.layout.clone(),
+                    })]
+                }
+                _ => {
+                    self.mode = UiMode::Normal;
+                    Vec::new()
+                }
+            };
+        }
         let UiMode::Confirm(question) = self.mode else {
             return Vec::new();
         };

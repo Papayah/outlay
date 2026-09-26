@@ -172,6 +172,16 @@ pub fn script(layout: &Layout, snap: &Snapshot) -> String {
     text
 }
 
+/// The `revert.sh` written before an apply: running it restores the layout that was live.
+pub fn revert_script(args: &[String]) -> String {
+    format!(
+        "#!/bin/sh\n# Written by outlay {} just before it applied a layout.\n\
+         # Running it restores the layout that was live before that apply.\n{}\n",
+        env!("CARGO_PKG_VERSION"),
+        command_line(args)
+    )
+}
+
 /// `xrandr` followed by the arguments, quoted for a POSIX shell.
 pub fn command_line(args: &[String]) -> String {
     format!("xrandr {}", join(args))

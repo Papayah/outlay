@@ -4,9 +4,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Clear, LineGauge, Padding, Paragraph, Widget, Wrap};
 
-use super::app::{App, Picker, Question};
+use crate::model::validate::Severity;
+
+use super::app::{App, ApplyPlan, Countdown, Message, Picker, Question};
 use super::canvas::truncate;
 use super::cmdline::USAGE;
 use super::keys::Context;
@@ -114,6 +116,7 @@ pub fn help(app: &App, scroll: u16, area: Rect, buf: &mut Buffer) -> u16 {
     let sections: Vec<(&str, Vec<(String, &str)>)> = Context::ALL
         .iter()
         .map(|&ctx| (ctx.title(), app.keymap.help(ctx)))
+        .filter(|(_, rows)| !rows.is_empty())
         .chain(std::iter::once((
             "Commands (after :)",
             USAGE.iter().map(|&(c, h)| (c.to_owned(), h)).collect(),
@@ -156,4 +159,147 @@ pub fn help(app: &App, scroll: u16, area: Rect, buf: &mut Buffer) -> u16 {
     let hint_row = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
     hints(app, Context::Help).render(hint_row, buf);
     scroll as u16
+}
+
+/// The number of rows `lines` take when wrapped at `width` columns.
+fn wrapped_rows(lines: &[Line], width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(width) as u16)
+        .sum()
+}
+
+/// A popup of wrapped lines with the hints of `context` at the bottom.
+fn text_popup(
+    app: &App,
+    title: String,
+    mut lines: Vec<Line<'static>>,
+    context: Context,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let width = area.width.saturating_sub(4).min(96);
+    lines.push(Line::default());
+    lines.push(hints(app, context));
+    let rows = wrapped_rows(&lines, width.saturating_sub(4)) + 2;
+    let rect = centred(area, width, rows);
+    let inner = frame(title, rect, buf);
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::new().padding(Padding::horizontal(1)))
+        .render(inner, buf);
+}
+
+fn heading(text: &str) -> Line<'static> {
+    Line::styled(text.to_owned(), Style::new().add_modifier(Modifier::BOLD))
+}
+
+/// The apply confirmation: what changes, what blocks the apply, what to watch for, and the
+/// exact command.
+pub fn confirm_apply(app: &App, plan: &ApplyPlan, area: Rect, buf: &mut Buffer) {
+    let mut lines = vec![heading("Changes")];
+    lines.extend(plan.changes.iter().map(|c| Line::from(format!("  {c}"))));
+    if !plan.errors.is_empty() {
+        lines.push(Line::default());
+        lines.push(heading("Errors (these block the apply)"));
+        let style = app.theme.severity(Severity::Error);
+        lines.extend(
+            plan.errors
+                .iter()
+                .map(|e| Line::styled(format!("  {e}"), style)),
+        );
+    }
+    if !plan.warnings.is_empty() {
+        lines.push(Line::default());
+        lines.push(heading("Warnings"));
+        let style = app.theme.severity(Severity::Warning);
+        lines.extend(
+            plan.warnings
+                .iter()
+                .map(|w| Line::styled(format!("  {w}"), style)),
+        );
+    }
+    lines.push(Line::default());
+    lines.push(heading("Command"));
+    lines.push(Line::styled(plan.command.clone(), app.theme.dim()));
+    text_popup(
+        app,
+        "Apply".to_owned(),
+        lines,
+        Context::ConfirmApply,
+        area,
+        buf,
+    );
+}
+
+/// While xrandr runs.
+pub fn applying(area: Rect, buf: &mut Buffer) {
+    let text = "Applying… the screens may go dark for a moment.";
+    let rect = centred(area, text.chars().count() as u16 + 4, 3);
+    let inner = frame("xrandr".to_owned(), rect, buf);
+    Paragraph::new(text).render(inner, buf);
+}
+
+/// "Keep this layout?" with a shrinking gauge.
+pub fn countdown(app: &App, c: &Countdown, area: Rect, buf: &mut Buffer) {
+    let total = c
+        .deadline
+        .saturating_duration_since(c.started)
+        .as_secs_f64();
+    let left = c.deadline.saturating_duration_since(app.now).as_secs_f64();
+    let ratio = if total > 0.0 {
+        (left / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let hint = hints(app, Context::Countdown);
+    let width = (hint.width() as u16 + 12).max(52);
+    let rect = centred(area, width, 6);
+    let inner = frame("Keep this layout?".to_owned(), rect, buf);
+    if inner.height < 4 {
+        return;
+    }
+    let row = |k: u16| Rect::new(inner.x + 1, inner.y + k, inner.width.saturating_sub(2), 1);
+    let blocked = app.now < c.blocked_until;
+    let first = if blocked {
+        Line::styled(
+            "One moment: keys pressed just now are ignored.",
+            app.theme.dim(),
+        )
+    } else {
+        Line::from("It reverts on its own unless you keep it.")
+    };
+    first.render(row(0), buf);
+    LineGauge::default()
+        .ratio(ratio)
+        .label(format!("{:>2.0} s ", left.ceil()))
+        .filled_symbol("━")
+        .unfilled_symbol("─")
+        .filled_style(app.theme.severity(Severity::Warning))
+        .unfilled_style(app.theme.dim())
+        .render(row(1), buf);
+    let hint = if blocked {
+        hint.style(app.theme.dim())
+    } else {
+        hint
+    };
+    hint.render(row(3), buf);
+}
+
+/// A report, such as why an apply failed.
+pub fn message(app: &App, message: &Message, area: Rect, buf: &mut Buffer) {
+    let lines = message
+        .lines
+        .iter()
+        .map(|l| Line::from(l.clone()))
+        .collect();
+    text_popup(
+        app,
+        message.title.clone(),
+        lines,
+        Context::Message,
+        area,
+        buf,
+    );
 }

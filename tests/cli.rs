@@ -3,8 +3,10 @@
 use std::process::Command;
 
 fn outlay(args: &[&str]) -> (bool, String, String) {
+    // Keep the developer's own config file out of the tests.
     let out = Command::new(env!("CARGO_BIN_EXE_outlay"))
         .args(args)
+        .env("XDG_CONFIG_HOME", "/nonexistent/outlay-test-config")
         .output()
         .expect("run outlay");
     (

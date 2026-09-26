@@ -524,6 +524,65 @@ impl Layout {
     }
 }
 
+/// `1920x1080+0+360`
+fn rect_text(r: Rect) -> String {
+    format!("{}x{}+{}+{}", r.w, r.h, r.x, r.y)
+}
+
+impl Layout {
+    /// How `snap`, the state re-read after applying this layout, differs from it: the enabled
+    /// set, mode XIDs, rectangles and the primary. Empty when the apply came out as asked.
+    /// xrandr exits 0 even when it ignores an output, so the exit code alone proves nothing.
+    pub fn mismatches(&self, snap: &Snapshot) -> Vec<String> {
+        let same_outputs = snap.outputs.len() == self.len()
+            && snap
+                .outputs
+                .iter()
+                .zip(&self.names)
+                .all(|(o, n)| &o.name == n);
+        if !same_outputs {
+            return vec!["The outputs changed while applying.".to_owned()];
+        }
+        let mut found = Vec::new();
+        for (i, (st, out)) in self.outputs.iter().zip(&snap.outputs).enumerate() {
+            if self.locked[i] {
+                continue;
+            }
+            let name = &self.names[i];
+            match (&out.active, st.enabled) {
+                (None, false) => {}
+                (None, true) => found.push(format!("{name} is off; it should be on.")),
+                (Some(_), false) => found.push(format!("{name} is still on.")),
+                (Some(live), true) => {
+                    if let Some(mode) = &st.mode
+                        && live.xid != mode.xid
+                    {
+                        found.push(format!(
+                            "{name} runs mode 0x{:x} instead of 0x{:x} ({}).",
+                            live.xid,
+                            mode.xid,
+                            mode.summary()
+                        ));
+                    }
+                    let want = self.rect(i);
+                    if live.rect() != want {
+                        found.push(format!(
+                            "{name} is at {} instead of {}.",
+                            rect_text(live.rect()),
+                            rect_text(want)
+                        ));
+                    }
+                    if st.primary != out.primary {
+                        let not = if st.primary { "not " } else { "" };
+                        found.push(format!("{name} is {not}primary."));
+                    }
+                }
+            }
+        }
+        found
+    }
+}
+
 fn scale_text(t: &Transform) -> String {
     match t.scale_factors() {
         Some((sx, sy)) if (sx - sy).abs() < 1e-6 => format!("×{sx}"),

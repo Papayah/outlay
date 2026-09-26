@@ -1,6 +1,6 @@
 ---
 source: tests/tui.rs
-assertion_line: 432
+assertion_line: 445
 expression: "screen(&mut app, 100, 30).backend()"
 ---
 " outlay · 3 on · 1 off                                                                   no changes "
@@ -23,13 +23,13 @@ expression: "screen(&mut app, 100, 30).backend()"
 "│    │  Space                     Turn the display on or off                                  │    │"
 "│    │  u                         Undo                                                        │    │"
 "│    │  Ctrl-r                    Redo                                                        │    │"
+"│    │  a                         Apply, with an automatic revert unless you keep it          │    │"
+"│    │  y                         Copy the pending xrandr command to the clipboard (OSC 52)   │    │"
 "│    │  Tab                       Focus the next display                                      │    │"
 "│    │  Shift-Tab                 Focus the previous display                                  │    │"
 "│    │  1-9                       Focus display N, on or off                                  │    │"
-"│    │  :                         Command line                                                │    │"
+"│    │  :                         Command line                                                │────┤"
 "│    │  R                         Reload the live state                                       │    │"
-"│    │  z                         Fit the view to the layout                                  │────┤"
-"│    │  i                         Show or hide the details panel                              │    │"
 "└────│jk scroll · Esc close                                                                   │────┘"
 "     └────────────────────────────────────────────────────────────────────────────────────────┘10px "
 " jk scroll · Esc close                                                                              "
