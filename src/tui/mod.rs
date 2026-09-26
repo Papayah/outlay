@@ -109,12 +109,20 @@ impl Input for TerminalInput {
     }
 }
 
-/// Opens the editor on `backend`'s state and runs it until the user quits.
-pub fn run(backend: &dyn Backend, options: Options, mut settings: Settings) -> Result<()> {
+/// Settings made safe for `backend`. A simulated backend (`--demo`, `--from-file`, `-n`) must
+/// never reach the real desktop: no `revert.sh` that would change the real screens, and no
+/// `post_apply` hook that would redraw the real wallpaper.
+pub fn confine(backend: &dyn Backend, mut settings: Settings) -> Settings {
     if !backend.touches_x() {
-        // A simulated apply must never leave a script that changes the real screens.
         settings.revert_file = None;
+        settings.hooks.clear();
     }
+    settings
+}
+
+/// Opens the editor on `backend`'s state and runs it until the user quits.
+pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Result<()> {
+    let settings = confine(backend, settings);
     let fixed_aspect = options.cell_aspect;
     let app = App::new(backend.query()?, options);
     // The loop polls with a timeout, so it notices these flags; the default action (die on the
@@ -213,5 +221,40 @@ fn event_loop(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xrandr::FixtureBackend;
+
+    #[test]
+    fn a_simulated_backend_gets_no_revert_file_and_no_hooks() {
+        let settings = Settings {
+            revert_file: Some(PathBuf::from("/state/outlay/revert.sh")),
+            hooks: vec!["feh --bg-fill ~/wall/*".to_owned()],
+            revert_seconds: 7,
+            ..Settings::default()
+        };
+        let backend = FixtureBackend::demo();
+        assert!(!backend.touches_x());
+        let confined = confine(&backend, settings);
+        assert_eq!(confined.revert_file, None);
+        assert!(confined.hooks.is_empty());
+        assert_eq!(confined.revert_seconds, 7, "the rest stays");
+
+        // The live backend keeps both; nothing here runs xrandr.
+        let live = crate::xrandr::XrandrCli::new();
+        let kept = confine(&live, confined.clone());
+        assert_eq!(kept.hooks, confined.hooks);
+        let settings = Settings {
+            revert_file: Some(PathBuf::from("/state/outlay/revert.sh")),
+            hooks: vec!["true".to_owned()],
+            ..Settings::default()
+        };
+        let kept = confine(&live, settings);
+        assert!(kept.revert_file.is_some());
+        assert_eq!(kept.hooks, ["true"]);
     }
 }

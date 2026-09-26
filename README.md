@@ -156,11 +156,39 @@ animations = true
 directions = "hjkl"        # focus letters: left, down, up, right
 # cell_aspect = 2.0        # detected from the terminal when omitted
 double_borders = false     # true: double border on the stick target and the focused display's parent
-post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
+post_apply = []            # e.g. ["feh --bg-fill ~/Pictures/wallpapers/*"]; see below
+post_apply_timeout = 10    # seconds each post_apply command may run
 ```
 
-`post_apply` commands run with `sh -c` after a layout is kept, with a 10 second limit. `NO_COLOR`
-turns colours off; the focused display is still marked in reverse video.
+`NO_COLOR` turns colours off; the focused display is still marked in reverse video.
+
+### Redraw the wallpaper
+
+A layout change leaves most wallpaper setters' image stretched, cut off or missing on the moved
+displays. `post_apply` lists commands that put it back. They run after every change outlay makes
+to the screens: once an apply checks out (before the countdown, so you judge the layout as it
+will look), and again after every revert, whether it came from the timeout, `n`, a signal or a
+failed apply. They do not run on keep, since nothing changes then.
+
+Each command runs with `sh -c`, with no terminal: stdin and stdout go nowhere, and when a command
+fails, the status line shows the first line of its stderr. A command that takes longer than
+`post_apply_timeout` seconds is stopped. `sh` does not know your shell's aliases, so write the
+command itself or the path of a script. Common ones:
+
+- feh: `feh --bg-fill ~/wall/*`, or `sh ~/.fehbg` (feh writes that restore file itself)
+- nitrogen: `nitrogen --restore`
+- xwallpaper: `xwallpaper --zoom ~/wall.jpg`
+- hsetroot: `hsetroot -fill ~/wall.jpg`
+- your own script: `~/bin/my-wallpaper.sh`
+
+```toml
+post_apply = ["sh ~/.fehbg"]
+post_apply_timeout = 10
+```
+
+outlay does not wait for a program a command leaves running in the background (`… &`); send
+that program's output elsewhere (`>/dev/null 2>&1 &`) so it outlives outlay without trouble.
+The hooks never run with `--demo`, `--from-file` or `-n`, which do not touch the screens.
 
 ## License
 

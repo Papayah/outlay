@@ -330,7 +330,13 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
 6. **Afterwards.**
    - After a revert, the user's edits stay pending.
    - After keep, keep the in-memory links if the re-queried geometry matches; otherwise re-infer.
-   - Then run each `post_apply` hook with `sh -c`, with a 10 s timeout. Report errors in the status line.
+   - **Hooks.** Run each `post_apply` hook with `sh -c` after every change outlay makes to the screens:
+     - once an apply passes verification, **before** the countdown; the input drain, the 1 s block and the countdown start when the hooks are done;
+     - after **every** revert: timeout, `n`/`Esc`, Ctrl-C, a signal, the revert on exit, and the automatic revert after a failed apply (even when the revert itself fails);
+     - **not** on keep (nothing changes), and **not** after a failed apply that changed nothing.
+   - Each hook runs with no terminal, stdin and stdout discarded, and a `post_apply_timeout` limit (10 s by default). Do not wait for background programs a hook leaves holding stderr: after the hook exits, give its stderr 200 ms, then move on.
+   - Report failures (the first stderr line) after the status line's text, or as extra lines in an "Apply failed"/"Revert failed" report.
+   - A simulated backend (`--demo`, `--from-file`, `-n`) runs no hooks and writes no `revert.sh`: `tui::confine` clears both.
 7. **Event loop.**
    - Always poll with a timeout: at most 250 ms when idle and 16 ms while animating. The loop must never block, because `signal_hook::flag::register` replaces the default SIGTERM action.
    - Tests inject the signal `AtomicBool` instead of sending real signals.
@@ -386,7 +392,8 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   directions = "hjkl"        # focus letters: left, down, up, right
   # cell_aspect = 2.0        # auto-detected when omitted
   double_borders = false     # true: double border on the stick target and the focused display's parent
-  post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
+  post_apply = []            # e.g. ["feh --bg-fill ~/Pictures/wallpapers/*"]
+  post_apply_timeout = 10    # seconds each post_apply command may run
   ```
 - **Release profile:** `lto = true`, `codegen-units = 1`, `strip = true`. The README documents a static musl build (`rustup target add x86_64-unknown-linux-musl`).
 

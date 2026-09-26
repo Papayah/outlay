@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -35,8 +36,10 @@ pub struct Settings {
     pub revert_seconds: u64,
     /// Where to write `revert.sh` before applying. Only set for a backend that touches X.
     pub revert_file: Option<PathBuf>,
-    /// Shell commands run after a layout is kept.
+    /// Shell commands run after every change outlay makes to the screens: once an apply checks
+    /// out (before the countdown), and after every revert. Never set for a simulated backend.
     pub hooks: Vec<String>,
+    /// How long each hook may run before it is stopped.
     pub hook_timeout: Duration,
     /// Where profiles live. Unset, `w` and `e` only report that.
     pub layouts_dir: Option<PathBuf>,
@@ -321,7 +324,6 @@ impl<'a> Session<'a> {
         let outcome = self.backend.apply(&request.argv);
         // Keys pressed while the screens were dark must not answer the countdown.
         input.drain();
-        let now = Instant::now();
         let after = self.backend.requery();
 
         let mut problems = Vec::new();
@@ -348,7 +350,7 @@ impl<'a> Session<'a> {
                     before: before.clone(),
                     after: before,
                 });
-                self.revert(RevertReason::Declined);
+                self.revert_after_failure(&mut problems);
                 self.app.report("Apply failed", problems);
                 return;
             }
@@ -364,15 +366,7 @@ impl<'a> Session<'a> {
                     before,
                     after: after.clone(),
                 });
-                problems.push(match self.revert_quietly() {
-                    Ok(snap) => {
-                        if let Some(snap) = snap {
-                            self.app.adopt(snap);
-                        }
-                        "Reverted to the previous layout.".to_owned()
-                    }
-                    Err(err) => err,
-                });
+                self.revert_after_failure(&mut problems);
             } else {
                 super::arm_panic_revert(None);
                 problems.push("Nothing changed.".to_owned());
@@ -382,6 +376,11 @@ impl<'a> Session<'a> {
         }
 
         self.applied = Some(Applied { before, after });
+        // Redraw the wallpaper first, so the layout is judged as it will look.
+        let failures = self.redraw();
+        // The countdown and its input block start once the hooks are done.
+        input.drain();
+        let now = Instant::now();
         if self.settings.revert_seconds == 0 {
             self.keep();
         } else {
@@ -393,6 +392,41 @@ impl<'a> Session<'a> {
                 );
             }
         }
+        self.warn(&failures);
+    }
+
+    /// The automatic revert after a failed apply that changed the screens; what happened goes
+    /// into the report.
+    fn revert_after_failure(&mut self, problems: &mut Vec<String>) {
+        let reverted = self.revert_quietly();
+        let failures = self.redraw();
+        problems.push(match reverted {
+            Ok(snap) => {
+                if let Some(snap) = snap {
+                    self.app.adopt(snap);
+                }
+                "Reverted to the previous layout.".to_owned()
+            }
+            Err(err) => err,
+        });
+        problems.extend(failures);
+    }
+
+    /// Runs the `post_apply` hooks after the screens changed. Returns one message per failure.
+    fn redraw(&mut self) -> Vec<String> {
+        run_hooks(&self.settings.hooks, self.settings.hook_timeout)
+    }
+
+    /// Adds hook failures to the status line, after what it already says.
+    fn warn(&mut self, failures: &[String]) {
+        if failures.is_empty() {
+            return;
+        }
+        let mut text = failures.join(" ");
+        if let Some(status) = self.app.status.take() {
+            text = format!("{} {text}", status.text);
+        }
+        self.app.say(Severity::Warning, text);
     }
 
     /// Runs the revert command and reads the state back. On failure the message says how to
@@ -426,11 +460,20 @@ impl<'a> Session<'a> {
             return;
         }
         self.kept = false;
-        match self.revert_quietly() {
-            Ok(snap) => self
-                .app
-                .reverted(snap, reason, self.settings.revert_seconds),
-            Err(err) => self.app.report("Revert failed", vec![err]),
+        let reverted = self.revert_quietly();
+        // Even a failed revert may have changed the screens.
+        let failures = self.redraw();
+        match reverted {
+            Ok(snap) => {
+                self.app
+                    .reverted(snap, reason, self.settings.revert_seconds);
+                self.warn(&failures);
+            }
+            Err(err) => {
+                let mut lines = vec![err];
+                lines.extend(failures);
+                self.app.report("Revert failed", lines);
+            }
         }
     }
 
@@ -440,11 +483,8 @@ impl<'a> Session<'a> {
         };
         super::arm_panic_revert(None);
         self.kept = true;
+        // Nothing changes on the screens, so the hooks do not run again.
         self.app.kept(applied.after);
-        let failures = run_hooks(&self.settings.hooks, self.settings.hook_timeout);
-        if !failures.is_empty() {
-            self.app.say(Severity::Warning, failures.join(" "));
-        }
     }
 }
 
@@ -452,6 +492,10 @@ impl<'a> Session<'a> {
 pub fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", STANDARD.encode(text))
 }
+
+/// How long to wait for a finished hook's stderr to close. A hook that starts a background
+/// program (`nitrogen --restore &`) exits at once, but the program may keep the pipe open.
+const STDERR_GRACE: Duration = Duration::from_millis(200);
 
 /// Runs each hook with `sh -c`, with no terminal attached and a time limit. Returns one message
 /// per hook that failed.
@@ -474,10 +518,14 @@ pub fn run_hooks(hooks: &[String], timeout: Duration) -> Vec<String> {
         };
         // Read stderr on the side, so a chatty hook cannot fill the pipe and stall.
         let mut stderr = child.stderr.take().expect("stderr is piped");
-        let reader = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text);
-            text
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut chunk = [0; 4096];
+            // Read to the end even when nobody listens any more, so a background program that
+            // still writes does not get SIGPIPE while outlay runs.
+            while let Ok(n @ 1..) = stderr.read(&mut chunk) {
+                let _ = tx.send(chunk[..n].to_vec());
+            }
         });
         let deadline = Instant::now() + timeout;
         let status = loop {
@@ -493,7 +541,7 @@ pub fn run_hooks(hooks: &[String], timeout: Duration) -> Vec<String> {
                 }
             }
         };
-        let text = reader.join().unwrap_or_default();
+        let text = collect_stderr(&rx);
         match status {
             Some(s) if s.success() => {}
             Some(s) => {
@@ -512,6 +560,17 @@ pub fn run_hooks(hooks: &[String], timeout: Duration) -> Vec<String> {
         }
     }
     failures
+}
+
+/// What a finished hook wrote to stderr: everything up to the end of the pipe, or what arrived
+/// within [`STDERR_GRACE`] when a background program still holds it. The reader is left behind.
+fn collect_stderr(rx: &mpsc::Receiver<Vec<u8>>) -> String {
+    let deadline = Instant::now() + STDERR_GRACE;
+    let mut bytes = Vec::new();
+    while let Ok(chunk) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        bytes.extend(chunk);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(test)]
@@ -537,6 +596,39 @@ mod tests {
                 "post_apply `echo broken >&2; exit 3` failed: broken.",
                 "post_apply `sleep 5` took longer than 0 s and was stopped.",
             ]
+        );
+    }
+
+    #[test]
+    fn hooks_do_not_wait_for_what_they_leave_running() {
+        let started = Instant::now();
+        let failures = run_hooks(&["sleep 5 >&2 &".to_owned()], Duration::from_secs(10));
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // What a failing hook wrote before it exited still makes the report.
+        let started = Instant::now();
+        let hook = "sleep 5 >&2 & echo broken >&2; exit 1".to_owned();
+        let failures = run_hooks(std::slice::from_ref(&hook), Duration::from_secs(10));
+        assert_eq!(failures, [format!("post_apply `{hook}` failed: broken.")]);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // A hook stopped on timeout does not wait for its children either.
+        let started = Instant::now();
+        let failures = run_hooks(&["sleep 5; true".to_owned()], Duration::from_millis(300));
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
         );
     }
 }

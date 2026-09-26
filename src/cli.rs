@@ -79,9 +79,6 @@ pub enum Command {
     Completions { shell: clap_complete::Shell },
 }
 
-/// How long a `post_apply` hook may run.
-const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
-
 impl Cli {
     /// The backend the global flags select: a fixture for `--demo` and `--from-file`, else the
     /// real `xrandr` (simulated with `--dry-run`). Refuses live X where xrandr cannot work.
@@ -127,7 +124,7 @@ impl Cli {
             revert_seconds: self.revert_timeout.unwrap_or(config.revert_seconds),
             revert_file: default_revert_file(),
             hooks: config.post_apply.clone(),
-            hook_timeout: HOOK_TIMEOUT,
+            hook_timeout: Duration::from_secs(config.post_apply_timeout),
             layouts_dir: Some(self.layouts_dir(config)),
         };
         Ok((options, settings))
@@ -172,11 +169,13 @@ mod tests {
         let config = Config {
             revert_seconds: 30,
             post_apply: vec!["true".to_owned()],
+            post_apply_timeout: 3,
             ..Config::default()
         };
         let (_, settings) = cli.tui_options(&config).unwrap();
         assert_eq!(settings.revert_seconds, 30);
         assert_eq!(settings.hooks, ["true"]);
+        assert_eq!(settings.hook_timeout, Duration::from_secs(3));
     }
 
     #[test]

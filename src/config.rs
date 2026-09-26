@@ -23,8 +23,11 @@ pub struct Config {
     pub cell_aspect: Option<f64>,
     /// The old look: double borders on the focused display's parent and the stick target.
     pub double_borders: bool,
-    /// Shell commands run after a layout is kept, e.g. to redraw the wallpaper.
+    /// Shell commands run after every change outlay makes to the screens (an apply that checks
+    /// out, and every revert), e.g. to redraw the wallpaper.
     pub post_apply: Vec<String>,
+    /// Seconds each `post_apply` command may run before it is stopped.
+    pub post_apply_timeout: u64,
 }
 
 impl Default for Config {
@@ -38,6 +41,7 @@ impl Default for Config {
             cell_aspect: None,
             double_borders: false,
             post_apply: Vec::new(),
+            post_apply_timeout: 10,
         }
     }
 }
@@ -125,8 +129,26 @@ mod tests {
         assert_eq!(config.cell_aspect, Some(2.1));
         assert!(config.double_borders);
         assert_eq!(config.post_apply.len(), 1);
+        assert_eq!(config.post_apply_timeout, 10, "the default");
         assert!(config.layouts_dir().ends_with("layouts"));
         assert!(!config.layouts_dir().starts_with("~"));
+    }
+
+    #[test]
+    fn reads_the_hook_timeout() {
+        let config = Config::parse(
+            r#"
+            post_apply = ["nitrogen --restore", "~/bin/my-wallpaper.sh"]
+            post_apply_timeout = 30
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.post_apply.len(), 2);
+        assert_eq!(config.post_apply_timeout, 30);
+        let err = Config::parse("post_apply_timeout = -1")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("post_apply_timeout"), "{err}");
     }
 
     #[test]

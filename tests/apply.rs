@@ -4,6 +4,7 @@
 mod common;
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -419,23 +420,163 @@ fn a_zero_timeout_keeps_at_once() {
     assert_eq!(edp_x(&backend), 2250);
 }
 
+/// A scratch directory for a hook that counts its runs; removed on drop.
+struct Counter {
+    dir: PathBuf,
+}
+
+const BROKEN_HOOK: &str = "echo no wallpaper >&2; exit 4";
+const BROKEN_TEXT: &str = "post_apply `echo no wallpaper >&2; exit 4` failed: no wallpaper.";
+
+impl Counter {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("outlay-hooks-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Counter { dir }
+    }
+
+    /// A counting hook and one that always fails.
+    fn settings(&self) -> Settings {
+        Settings {
+            hooks: vec![
+                format!("echo x >> '{}/count'", self.dir.display()),
+                BROKEN_HOOK.to_owned(),
+            ],
+            ..Settings::default()
+        }
+    }
+
+    fn runs(&self) -> usize {
+        std::fs::read_to_string(self.dir.join("count")).map_or(0, |t| t.lines().count())
+    }
+}
+
+impl Drop for Counter {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[test]
-fn post_apply_hooks_run_after_keeping() {
+fn hooks_run_once_the_apply_checks_out_and_not_again_on_keep() {
+    let counter = Counter::new("keep");
+    let backend = Fake::demo();
+    let mut rig = Rig::new(&backend, counter.settings());
+    rig.press("3<A-l>a<Enter>");
+    rig.countdown();
+    assert_eq!(counter.runs(), 1, "before the countdown");
+    // The fake is simulated, which the status says first.
+    assert_eq!(
+        rig.status(),
+        format!("Simulated: nothing was sent to the X server. {BROKEN_TEXT}"),
+        "shown during the countdown"
+    );
+
+    rig.press_at("y", rig.countdown().blocked_until);
+    assert_eq!(rig.status(), "Kept the new layout.");
+    assert_eq!(counter.runs(), 1, "keeping changes nothing");
+}
+
+#[test]
+fn hooks_run_again_after_every_revert() {
+    let revert = |rig: &mut Rig, how: &str| match how {
+        "timeout" => {
+            let c = rig.countdown();
+            rig.session.tick(c.deadline);
+            rig.session.perform(&mut rig.input);
+        }
+        "signal" => {
+            rig.signal.store(true, Ordering::SeqCst);
+            rig.session.perform(&mut rig.input);
+        }
+        "exit" => rig.session.revert_if_waiting(),
+        keys => rig.press_at(keys, rig.countdown().blocked_until),
+    };
+    for how in ["timeout", "n", "<Esc>", "<C-c>", "signal", "exit"] {
+        let counter = Counter::new(&how.replace(['<', '>'], ""));
+        let backend = Fake::demo();
+        let mut rig = Rig::new(&backend, counter.settings());
+        rig.press("3<A-l>a<Enter>");
+        revert(&mut rig, how);
+        assert_eq!(backend.calls().len(), 2, "{how} reverts");
+        assert_eq!(
+            counter.runs(),
+            2,
+            "{how}: after the apply and after the revert"
+        );
+        if how != "exit" {
+            let status = rig.status();
+            assert!(
+                status.contains("Your edits are still pending."),
+                "{how}: {status}"
+            );
+            assert!(status.ends_with(BROKEN_TEXT), "{how}: {status}");
+        }
+    }
+}
+
+#[test]
+fn a_zero_timeout_runs_the_hooks_once() {
+    let counter = Counter::new("zero");
     let backend = Fake::demo();
     let settings = Settings {
-        hooks: vec![
-            "true".to_owned(),
-            "echo no wallpaper >&2; exit 4".to_owned(),
-        ],
-        ..Settings::default()
+        revert_seconds: 0,
+        ..counter.settings()
     };
     let mut rig = Rig::new(&backend, settings);
     rig.press("3<A-l>a<Enter>");
-    rig.press_at("y", rig.countdown().blocked_until);
-    assert_eq!(
-        rig.status(),
-        "post_apply `echo no wallpaper >&2; exit 4` failed: no wallpaper."
+    assert_eq!(rig.app().mode, UiMode::Normal);
+    assert_eq!(counter.runs(), 1);
+    assert_eq!(rig.status(), format!("Kept the new layout. {BROKEN_TEXT}"));
+}
+
+#[test]
+fn hooks_run_after_the_revert_of_a_failed_apply_only() {
+    let counter = Counter::new("fails");
+    let backend = Fake::demo().then(Next::Fails {
+        stderr: "xrandr: Configure crtc 2 failed\n",
+        changes: true,
+    });
+    let mut rig = Rig::new(&backend, counter.settings());
+    rig.press("3<A-l>a<Enter>");
+    // Not after the apply, which did not check out, but after the revert that follows it.
+    assert_eq!(counter.runs(), 1, "after the revert");
+    let message = rig.message();
+    assert!(
+        message.contains("Reverted to the previous layout. | post_apply"),
+        "{message}"
     );
+    assert!(message.ends_with(BROKEN_TEXT), "{message}");
+
+    let counter = Counter::new("fails-unchanged");
+    let backend = Fake::demo().then(Next::Fails {
+        stderr: "xrandr: cannot find mode\n",
+        changes: false,
+    });
+    let mut rig = Rig::new(&backend, counter.settings());
+    rig.press("3<A-l>a<Enter>");
+    assert!(rig.message().contains("Nothing changed."));
+    assert_eq!(counter.runs(), 0, "nothing changed, nothing to redraw");
+}
+
+#[test]
+fn the_countdown_starts_once_the_hooks_are_done() {
+    let backend = Fake::demo();
+    let settings = Settings {
+        hooks: vec!["sleep 0.3".to_owned()],
+        ..Settings::default()
+    };
+    let mut rig = Rig::new(&backend, settings);
+    let before = Instant::now();
+    rig.press("3<A-l>a<Enter>");
+    let c = rig.countdown();
+    assert!(
+        c.started >= before + Duration::from_millis(300),
+        "{:?}",
+        c.started - before
+    );
+    assert_eq!(rig.status(), "Simulated: nothing was sent to the X server.");
 }
 
 #[test]
