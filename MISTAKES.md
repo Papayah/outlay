@@ -199,3 +199,33 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   hold lasts longer than 1.2 s.
 - **Fix:** assert the exact ramp in `tests/tui.rs` with `tick`; in the pty, check only that the
   indicator shows a multiplier and that one `u` undoes the hold.
+
+## A flag in a zsh variable reaches outlay as one argument
+
+- **Symptom:** in a shell loop, `extra="--revert-timeout 2"; tools/pty_drive.py timeout -- --demo $extra`
+  prints `started: False` and `exit: 2`.
+- **Cause:** the tool shell is zsh, which does not split an unquoted `$extra` into words, so clap
+  gets the single argument `--revert-timeout 2` and exits with a usage error.
+- **Fix:** write the flags out, use an array (`extra=(--revert-timeout 2)` … `$extra`), or run the
+  loop with `bash -c`.
+
+## The fake backend in `tests/apply.rs` is simulated
+
+- **Symptom:** a status assertion fails with an extra
+  `Simulated: nothing was sent to the X server.` in front of the expected text.
+- **Cause:** `Fake` keeps the default `touches_x() == false`, so a countdown on it always says so
+  first. `Session` still runs hooks on it: only `tui::confine`, which the tests do not call,
+  clears them for a simulated backend.
+- **Fix:** expect the prefix (or use `ends_with`), and count hook runs with a hook that appends to
+  a file in a unique `std::env::temp_dir()` directory (the `Counter` helper).
+
+## `pty_drive.py sighup` prints `exit: None`
+
+- **Symptom:** `tools/pty_drive.py sighup -- --demo` ends with `exit: None`, on `main` as well
+  (seen 2026-09-26 at f7a81b7). The process is still there 10 s after the pty master closes, in
+  state `R`, using the CPU, instead of reverting and exiting.
+- **Cause:** not found. There is no `strace` or `perf` here, and `kernel.yama.ptrace_scope = 1`
+  stops `gdb -p` from attaching to a process that is not its child.
+- **Fix:** none yet. To look at it, start outlay under gdb from the driver, or add a debug log to
+  the event loop. When you exec `pty_drive.py` from another script, set `BIN` again afterwards:
+  it comes from `__file__`, and a wrong path makes the child exit 1 at once.
