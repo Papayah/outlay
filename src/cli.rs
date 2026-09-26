@@ -47,6 +47,10 @@ pub struct Cli {
     /// Where profiles live [default: ~/.screenlayout, or layouts_dir from the config]
     #[arg(long, global = true, value_name = "DIR")]
     pub layouts_dir: Option<PathBuf>,
+
+    /// Move displays at once instead of letting them glide into place
+    #[arg(long, global = true)]
+    pub no_anim: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
@@ -69,6 +73,10 @@ pub enum Command {
         #[arg(short, long)]
         force: bool,
     },
+    /// Print the keymap and the commands
+    Keys,
+    /// Print a shell completion script
+    Completions { shell: clap_complete::Shell },
 }
 
 /// How long a `post_apply` hook may run.
@@ -111,6 +119,7 @@ impl Cli {
             theme: Theme::from_env(),
             nudge_step: config.nudge_step,
             double_borders: config.double_borders,
+            animations: config.animations && !self.no_anim,
             cell_aspect: config.cell_aspect,
             source,
         };
@@ -198,5 +207,18 @@ mod tests {
         assert_eq!(cli.layouts_dir(&config), PathBuf::from("/from/config"));
         let (_, settings) = cli.tui_options(&config).unwrap();
         assert_eq!(settings.layouts_dir, Some(PathBuf::from("/from/config")));
+    }
+
+    #[test]
+    fn animations_follow_the_config_and_no_anim() {
+        let cli = Cli::try_parse_from(["outlay"]).unwrap();
+        assert!(cli.tui_options(&Config::default()).unwrap().0.animations);
+        let off = Config {
+            animations: false,
+            ..Config::default()
+        };
+        assert!(!cli.tui_options(&off).unwrap().0.animations);
+        let cli = Cli::try_parse_from(["outlay", "--no-anim"]).unwrap();
+        assert!(!cli.tui_options(&Config::default()).unwrap().0.animations);
     }
 }

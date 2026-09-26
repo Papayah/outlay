@@ -3,33 +3,67 @@
 A keyboard-driven xrandr layout editor for the terminal. outlay draws your monitors to scale,
 lets you arrange them with `h j k l`, sticks a display to a chosen side of another so it follows
 when that one changes, and applies the result with an automatic revert if you do not confirm it.
+It reads and writes the same `~/.screenlayout` scripts as arandr.
 
-> **Status: work in progress.** The editor works end to end: arrange, stick, change modes, and
-> apply with an automatic revert (`outlay --demo` tries it on a built-in fixture, `outlay -n` on
-> your live state without touching it). Profile support and polish follow. See
-> [docs/PLAN.md](docs/PLAN.md).
+![The editor: three displays drawn to scale, the focused one with a reversed title](docs/screenshots/overview.png)
 
 ## Why
 
-arandr needs a mouse. The existing xrandr TUIs are list- and menu-driven. outlay is built around a
-spatial canvas instead:
+arandr needs a mouse. The existing xrandr TUIs (vrandr, tuirandr, trandr) are list- and
+menu-driven. outlay is built around a spatial canvas instead:
 
-- a to-scale drawing of the layout, so you can check it before applying;
-- persistent stick links that re-flow when a mode, rotation or position changes;
-- snap and swap movement, seam visualisation, and an auto-revert safety net.
+- **To scale.** The layout is drawn in proportion, with the shared edges (where the mouse
+  crosses from one screen to the next) in green and overlaps hatched in red, so you can check it
+  before applying.
+- **Stick links.** A display stuck to the right of another stays there when that one changes
+  mode, rotates or moves. Links are inferred from touching edges, so an existing layout already
+  has them.
+- **Snap and swap.** `Shift` + a direction swaps a display with its neighbour or slides it to
+  the next edge that lines up; `Alt` + a direction nudges it freely, faster the longer you hold.
+- **A safety net.** An apply is checked against what xrandr actually did, and reverts after
+  15 seconds unless you keep it, so a layout that leaves you with a black screen fixes itself.
 
-## Requirements
+| | arandr | outlay |
+|---|---|---|
+| Arrange displays | drag with the mouse | `h j k l`, snap, swap, nudge |
+| Keeps a display attached to another | no | stick links that re-flow |
+| Changes modes and rates | menus | pickers, `[` `]` `{` `}` in place |
+| Confirms a new layout | no | verifies, then reverts unless kept |
+| Profiles | `~/.screenlayout/*.sh` | the same files, with a remap for renamed outputs |
 
-- Linux with an X11 session (Wayland compositors need their own tools, such as wlr-randr or kanshi)
-- the `xrandr` program at run time
-- Rust 1.91 or newer to build
+## Install
 
-## Build
+outlay needs Linux with an X11 session and the `xrandr` program at run time (`xorg-xrandr` on
+Arch, `x11-xserver-utils` on Debian and Ubuntu, `xrandr` on Fedora, openSUSE, Void and Alpine).
+Wayland compositors need their own tools, such as wlr-randr, kanshi or `hyprctl`.
+
+Build it with Rust 1.91 or newer:
 
 ```sh
+git clone https://github.com/Papayah/outlay && cd outlay
 cargo build --release
-./target/release/outlay --help
+install -Dm755 target/release/outlay ~/.local/bin/outlay
 ```
+
+For one static binary that runs on any distribution:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+Shell completions: `outlay completions bash > ~/.local/share/bash-completion/completions/outlay`,
+or `zsh`, `fish`, `elvish`, `powershell`.
+
+## Try it without touching your screens
+
+```sh
+outlay --demo                 # a built-in desk with four outputs
+outlay --from-file capture    # a saved `xrandr --verbose` output
+outlay -n                     # your live state; applies are only simulated
+```
+
+The whole apply flow, countdown and revert included, works in all three.
 
 ## Usage
 
@@ -40,22 +74,58 @@ outlay list                 list outputs, then resolutions with their rates
 outlay apply <profile>      apply ~/.screenlayout/<profile>.sh or a path (-n prints the command only)
 outlay save <profile>       save the live layout as an arandr-compatible script
 outlay keys                 print the keymap
+outlay completions <shell>  print a completion script
 ```
 
-`--demo` uses a built-in four-output fixture and `--from-file <capture>` reads an
-`xrandr --verbose` capture; neither touches your displays. `-n` reads the live state but only
-simulates applies.
+Global flags: `--demo`, `--from-file <capture>`, `-n`, `--layouts-dir <dir>`,
+`--revert-timeout <s>` (`0` turns the countdown off), `--no-anim`.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `h j k l`, arrows | focus the nearest display in that direction; `Tab`, `1`–`9` also focus |
+| `H J K L`, Shift-arrows | snap-move: swap with the neighbour, or slide to the next aligned edge |
+| `Alt-h j k l`, Alt-arrows | nudge by the step; holding the key speeds it up to ×10 |
+| `+` `-` | nudge step: 1, 5, 10, 50 or 100 px |
+| `s` / `S` | stick to a side of another display / unstick |
+| `m` / `[` `]` | resolution picker / next smaller or larger resolution |
+| `r` / `{` `}` | rate picker / next lower or higher rate |
+| `o` / `O` | rotate clockwise / counter-clockwise |
+| `p`, `Space` | make primary, turn on or off |
+| `u` / `Ctrl-r` | undo / redo |
+| `a` | apply, with the automatic revert |
+| `y` | copy the pending xrandr command (OSC 52) |
+| `w` / `e` | save a profile / open one |
+| `:` | command line (`:pos 1920 0`, `:stick 3 below 2 center`, `:e home`; `Tab` completes) |
+| `R`, `z`, `i`, `?`, `q` | reload, re-fit the view, details panel, help, quit |
+
+`Esc` closes popups and cancels; it never quits. `?` and `outlay keys` list every binding and
+command, generated from the same table the editor dispatches from.
+
+### Sticking
+
+`s` starts the stick flow: pick the target (a digit, `h j k l` or `Tab`, then `Enter`), then the
+side (`h j k l`, or `=` to mirror) and the alignment along the shared edge (`Tab`). A dashed
+outline shows where everything would go. `s 2 h Enter` sticks the focused display to the left of
+display 2.
+
+![The stick flow: dashed ghosts show where the displays would go](docs/screenshots/stick.png)
 
 ## Applying safely
 
 `a` shows the per-output changes, any errors that block the apply, and the exact xrandr command.
+
+![The apply confirmation](docs/screenshots/apply-confirm.png)
+
 After xrandr returns, outlay reads the state back and checks it against the request (xrandr
-exits 0 even when it ignores an output). Then it asks "Keep this layout?" for 15 seconds
-(`--revert-timeout`, `0` turns it off): only `y` keeps it. A timeout, `n`, `Esc`, Ctrl-C,
-SIGHUP or SIGTERM revert to the previous layout. Keys pressed in the first second after xrandr
-returns are ignored, so one pressed while the screens were dark cannot answer. Before each
-apply, outlay writes the revert command to `$XDG_STATE_HOME/outlay/revert.sh`, so you can run it
-by hand if anything goes wrong.
+exits 0 even when it ignores an output). Then it asks "Keep this layout?" for 15 seconds: only
+`y` keeps it. A timeout, `n`, `Esc`, Ctrl-C, SIGHUP or SIGTERM revert to the previous layout.
+Keys pressed in the first second after xrandr returns are ignored, so one pressed while the
+screens were dark cannot answer. Before each apply, outlay writes the revert command to
+`$XDG_STATE_HOME/outlay/revert.sh`, so you can run it by hand if anything goes wrong.
+
+![The countdown after an apply](docs/screenshots/countdown.png)
 
 ## Profiles
 
@@ -66,6 +136,8 @@ undoes it), and `a` applies it as usual. `w` saves the pending layout: an existi
 every line that is not an xrandr call, and outlay shows a diff and asks before overwriting it.
 When a profile names an output that is not connected (`eDP-2` on a laptop that now calls its
 panel `eDP-1`), a dialog asks where it goes, starting from a free output of the same kind.
+
+![The profile picker with a preview of the selected profile](docs/screenshots/profiles.png)
 
 From the shell, `outlay apply home` applies `~/.screenlayout/home.sh` with the same verification
 and countdown (type `y` and Enter to keep it; `--revert-timeout 0` keeps it without asking, for
@@ -86,6 +158,9 @@ directions = "hjkl"        # focus letters: left, down, up, right
 double_borders = false     # true: double border on the stick target and the focused display's parent
 post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
 ```
+
+`post_apply` commands run with `sh -c` after a layout is kept, with a 10 second limit. `NO_COLOR`
+turns colours off; the focused display is still marked in reverse video.
 
 ## License
 

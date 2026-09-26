@@ -5,6 +5,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::model::geometry::Dir;
 
+use super::cmdline::USAGE;
+
 /// A key after [`normalise`]: letters carry their case instead of SHIFT, and Shift-Tab is always
 /// `BackTab`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -152,6 +154,11 @@ pub enum Action {
     /// Save the pending layout as a profile, or open one.
     Save,
     Open,
+    /// The next larger or smaller nudge step.
+    StepUp,
+    StepDown,
+    /// Command line: complete the word before the cursor.
+    Complete,
     /// After an apply: keep the new layout, revert it, or revert and quit.
     Keep,
     Revert,
@@ -252,6 +259,8 @@ pub const TABLE: &[Binding] = &[
         Some("move"), "Snap-move: swap with a neighbour or slide to the next stop"),
     bind(C::Normal, &[Keys::Letters(ALT), Keys::Arrows(ALT)], Does::Dir(A::Nudge),
         None, "Nudge freely by the step; holding the key speeds it up"),
+    bind(C::Normal, &[ch('+')], act(A::StepUp), None, "Larger nudge step (1, 5, 10, 50, 100 px)"),
+    bind(C::Normal, &[ch('-')], act(A::StepDown), None, "Smaller nudge step"),
     bind(C::Normal, &[ch('s')], act(A::Stick), Some("stick"), "Stick to a side of another display"),
     bind(C::Normal, &[ch('S')], act(A::Unstick), None, "Unstick: stay in place, follow nothing"),
     bind(C::Normal, &[ch('m')], act(A::ModePicker), Some("mode"), "Pick a resolution"),
@@ -315,6 +324,8 @@ pub const TABLE: &[Binding] = &[
     bind(C::Picker, &[code(KeyCode::Enter)], act(A::Accept), Some("choose"), "Choose"),
     bind(C::Picker, &[code(KeyCode::Esc)], act(A::Cancel), Some("cancel"), "Cancel"),
 
+    bind(C::Command, &[code(KeyCode::Tab)], act(A::Complete), Some("complete"),
+        "Complete a command, an output name or a keyword"),
     bind(C::Command, &[code(KeyCode::Enter)], act(A::Accept), Some("run"), "Run the command"),
     bind(C::Command, &[code(KeyCode::Backspace)], act(A::Back), None,
         "Delete a character; on an empty line, cancel"),
@@ -528,6 +539,42 @@ impl Keymap {
                 (keys.join(" / "), b.help)
             })
             .collect()
+    }
+
+    /// Every section of the key reference: each mode's bindings, then the commands. `?` help and
+    /// `outlay keys` both show this.
+    pub fn reference(&self) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+        Context::ALL
+            .iter()
+            .map(|&ctx| (ctx.title(), self.help(ctx)))
+            .filter(|(_, rows)| !rows.is_empty())
+            .chain(std::iter::once((
+                "Commands (after :)",
+                USAGE.iter().map(|&(c, h)| (c.to_owned(), h)).collect(),
+            )))
+            .collect()
+    }
+
+    /// The key reference as plain text, for `outlay keys`.
+    pub fn reference_text(&self) -> String {
+        let mut out = String::new();
+        for (title, rows) in self.reference() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(title);
+            out.push('\n');
+            let width = rows
+                .iter()
+                .map(|(k, _)| k.chars().count())
+                .max()
+                .unwrap_or(0);
+            for (keys, text) in rows {
+                let pad = width - keys.chars().count();
+                out.push_str(&format!("  {keys}{}  {text}\n", " ".repeat(pad)));
+            }
+        }
+        out
     }
 
     /// The short label of the key bound to `action` in `context`, for messages such as
@@ -751,6 +798,20 @@ mod tests {
         );
         let clash = Keymap::new("hjkq").unwrap_err();
         assert!(clash.contains("q is already bound"), "{clash}");
+    }
+
+    #[test]
+    fn the_reference_lists_every_binding_and_command() {
+        let text = Keymap::default().reference_text();
+        assert!(text.starts_with("Layout\n  h j k l / arrows  "), "{text}");
+        let bindings: usize = TABLE.len();
+        let rows = text.lines().filter(|l| l.starts_with("  ")).count();
+        assert_eq!(rows, bindings + USAGE.len());
+        assert!(text.contains("\nCommands (after :)\n  :pos X Y "), "{text}");
+        assert!(
+            text.ends_with("Quit; :q! drops pending changes\n"),
+            "{text}"
+        );
     }
 
     #[test]

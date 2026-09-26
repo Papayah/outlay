@@ -276,3 +276,28 @@ fn save_writes_a_script_and_will_not_overwrite_a_different_one_unasked() {
     assert!(text.contains("--output DP-2.2 --primary"), "{text}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn keys_prints_the_keymap_without_touching_x() {
+    let (ok, stdout, stderr) = outlay(&["keys"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("Layout\n  h j k l / arrows  "),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\n  Alt-h j k l / Alt-arrows  Nudge freely by the step"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\nCommands (after :)\n"), "{stdout}");
+}
+
+#[test]
+fn completions_for_each_shell() {
+    for shell in ["bash", "zsh", "fish"] {
+        let (ok, stdout, stderr) = outlay(&["completions", shell]);
+        assert!(ok, "{shell}: {stderr}");
+        assert!(stdout.contains("outlay"), "{shell}");
+        assert!(stdout.contains("layouts-dir"), "{shell}: the global flags");
+    }
+}

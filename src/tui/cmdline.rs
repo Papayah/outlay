@@ -198,6 +198,69 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
     }
 }
 
+/// Completes the last word of a command line: a command word, then output names, sides,
+/// alignments or rotations, as the command takes them. Returns the new line and, when more than
+/// one word fits, the candidates. A single fit is completed with a space after it.
+pub fn complete(line: &str, layout: &Layout) -> (String, Vec<String>) {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let fresh = line.is_empty() || line.ends_with(char::is_whitespace);
+    let (done, partial) = match words.split_last() {
+        Some((last, rest)) if !fresh => (rest, *last),
+        _ => (&words[..], ""),
+    };
+    let outputs = || -> Vec<String> {
+        (0..layout.len())
+            .filter(|&i| layout.numbers[i].is_some())
+            .map(|i| layout.names[i].clone())
+            .collect()
+    };
+    let owned = |list: &[&str]| list.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+    let candidates: Vec<String> = match done {
+        [] => owned(WORDS),
+        [verb, rest @ ..] => match (*verb, rest.len()) {
+            ("stick", 0 | 2) | ("unstick" | "primary" | "on" | "off", 0) => outputs(),
+            ("stick", 1) => owned(&["left-of", "right-of", "above", "below", "same-as"]),
+            ("stick", 3) => owned(&["start", "center", "end"]),
+            ("rotate", 0) => Rotation::ALL
+                .iter()
+                .map(|r| r.as_str().to_owned())
+                .collect(),
+            ("reflect", 0) => Reflection::ALL
+                .iter()
+                .map(|r| r.as_str().to_owned())
+                .collect(),
+            _ => Vec::new(),
+        },
+    };
+    let lower = partial.to_lowercase();
+    let fits: Vec<String> = candidates
+        .into_iter()
+        .filter(|c| c.to_lowercase().starts_with(&lower))
+        .collect();
+    let head = &line[..line.len() - partial.len()];
+    match fits.as_slice() {
+        [] => (line.to_owned(), Vec::new()),
+        [one] => (format!("{head}{one} "), Vec::new()),
+        many => {
+            let first = &many[0];
+            let common = many.iter().skip(1).fold(first.len(), |n, w| {
+                first
+                    .char_indices()
+                    .zip(w.chars())
+                    .take_while(|((_, a), b)| a.eq_ignore_ascii_case(b))
+                    .last()
+                    .map_or(0, |((k, a), _)| (k + a.len_utf8()).min(n))
+            });
+            let prefix = if common >= partial.len() {
+                &first[..common]
+            } else {
+                partial
+            };
+            (format!("{head}{prefix}"), many.to_vec())
+        }
+    }
+}
+
 /// Finds an output by display number, exact name, or a unique name prefix (any case).
 pub fn resolve_output(layout: &Layout, token: &str) -> Result<usize, String> {
     let numbered: Vec<usize> = (0..layout.len())
@@ -283,6 +346,42 @@ mod tests {
         );
         assert_eq!(parse("e"), Ok(Cmd::Open(None)));
         assert_eq!(parse("apply"), Ok(Cmd::Apply));
+    }
+
+    #[test]
+    fn completes_words_outputs_and_keywords() {
+        use crate::model::layout::Layout;
+        let snap = crate::xrandr::parse_verbose(crate::xrandr::DEMO).unwrap();
+        let layout = Layout::inferred(&snap);
+        let c = |line: &str| complete(line, &layout);
+        assert_eq!(c("sti"), ("stick ".to_owned(), vec![]));
+        assert_eq!(c("r").1, ["rate", "rotate", "reflect"]);
+        assert_eq!(c("r").0, "r");
+        assert_eq!(c("re"), ("reflect ".to_owned(), vec![]));
+        assert_eq!(c("stick h"), ("stick HDMI-1-0 ".to_owned(), vec![]));
+        assert_eq!(
+            c("stick 3 below dp"),
+            (
+                "stick 3 below DP-1-".to_owned(),
+                vec!["DP-1-2".to_owned(), "DP-1-3".to_owned()]
+            )
+        );
+        assert_eq!(
+            c("stick eDP-1 ri"),
+            ("stick eDP-1 right-of ".to_owned(), vec![])
+        );
+        assert_eq!(
+            c("stick 3 below 2 c"),
+            ("stick 3 below 2 center ".to_owned(), vec![])
+        );
+        assert_eq!(c("rotate l"), ("rotate left ".to_owned(), vec![]));
+        assert_eq!(c("off ").1.len(), 4, "every numbered output");
+        assert_eq!(
+            c("pos 1"),
+            ("pos 1".to_owned(), vec![]),
+            "nothing to complete"
+        );
+        assert_eq!(c("").1.len(), WORDS.len());
     }
 
     #[test]
