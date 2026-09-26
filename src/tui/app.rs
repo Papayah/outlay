@@ -2,6 +2,7 @@
 //! the effects (reload, quit …) for the event loop to carry out, so tests drive the whole editor
 //! without a terminal.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -161,6 +162,26 @@ pub const NUDGE_RAMP: [(Duration, i32); 3] = [
 ];
 pub const NUDGE_RAMP_TOP: i32 = 10;
 
+/// The nudge steps `+` and `-` go through, in pixels.
+pub const NUDGE_STEPS: [i32; 5] = [1, 5, 10, 50, 100];
+
+/// How long displays take to glide to a new position after a discrete action.
+pub const ANIMATION: Duration = Duration::from_millis(120);
+
+/// Displays gliding from where they were drawn to where the edit put them.
+#[derive(Clone, Debug, PartialEq)]
+struct Animation {
+    /// Per output: the position to start from, in the new coordinates; `None` for outputs that
+    /// do not glide (turned on or off).
+    from: Vec<Option<Point>>,
+    started: Instant,
+}
+
+/// Ease-out: fast first, then settling. `t` runs from 0 to 1.
+fn ease_out(t: f64) -> f64 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
 /// Nudges of one display in one direction, each within [`NUDGE_BURST_GAP`] of the last: a held
 /// key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +287,9 @@ pub struct Options {
     pub nudge_step: i32,
     /// The old look: double borders on the focused display's parent and the stick target.
     pub double_borders: bool,
+    /// Displays glide to new positions. Off by default here, so tests draw final positions; the
+    /// command line turns it on from the config.
+    pub animations: bool,
     /// Cell height divided by cell width; `None` detects it from the terminal.
     pub cell_aspect: Option<f64>,
     /// Where the state comes from when it is not the live X server: `demo`, a file name.
@@ -279,6 +303,7 @@ impl Default for Options {
             theme: Theme::default(),
             nudge_step: 10,
             double_borders: false,
+            animations: false,
             cell_aspect: None,
             source: None,
         }
@@ -314,6 +339,8 @@ pub struct App {
     nudge_run: Option<(usize, Dir)>,
     /// The profile last opened or saved: the save prompt starts with it.
     pub profile: Option<String>,
+    pub animations: bool,
+    animation: Option<Animation>,
 }
 
 impl App {
@@ -339,6 +366,8 @@ impl App {
             burst: None,
             nudge_run: None,
             profile: None,
+            animations: options.animations,
+            animation: None,
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -405,6 +434,9 @@ impl App {
     /// Advances the clock; returns a revert when the countdown has run out.
     pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
         self.now = now;
+        if !self.animating() {
+            self.animation = None;
+        }
         match self.mode {
             UiMode::Countdown(c) if now >= c.deadline => {
                 self.mode = UiMode::Applying;
@@ -412,6 +444,59 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Whether displays are still gliding; the event loop then redraws often.
+    pub fn animating(&self) -> bool {
+        self.animation
+            .as_ref()
+            .is_some_and(|a| self.now < a.started + ANIMATION)
+    }
+
+    /// Where each output is drawn now: on its way to its position while gliding.
+    fn drawn_positions(&self) -> Vec<Point> {
+        self.drawn_layout().outputs.iter().map(|o| o.pos).collect()
+    }
+
+    /// The layout as it is drawn at this moment: the pending one, with gliding displays part of
+    /// the way there.
+    pub fn drawn_layout(&self) -> Cow<'_, Layout> {
+        let Some(a) = self.animation.as_ref().filter(|_| self.animating()) else {
+            return Cow::Borrowed(&self.layout);
+        };
+        let t =
+            self.now.saturating_duration_since(a.started).as_secs_f64() / ANIMATION.as_secs_f64();
+        let e = ease_out(t);
+        let mut layout = self.layout.clone();
+        for (st, from) in layout.outputs.iter_mut().zip(&a.from) {
+            if let Some(p) = from {
+                let lerp = |a: i32, b: i32| a + (f64::from(b - a) * e).round() as i32;
+                st.pos = Point::new(lerp(p.x, st.pos.x), lerp(p.y, st.pos.y));
+            }
+        }
+        Cow::Owned(layout)
+    }
+
+    /// Starts a glide from `drawn` (where outputs were drawn before the edit, in the old
+    /// coordinates) to the pending layout, which is `shift` away.
+    fn glide(&mut self, before: &Layout, drawn: &[Point], shift: Point) {
+        if !self.animations {
+            return;
+        }
+        let from: Vec<Option<Point>> = (0..self.layout.len())
+            .map(|i| {
+                (before.is_enabled(i) && self.layout.is_enabled(i))
+                    .then(|| Point::new(drawn[i].x + shift.x, drawn[i].y + shift.y))
+            })
+            .collect();
+        let moves = from
+            .iter()
+            .zip(&self.layout.outputs)
+            .any(|(f, st)| f.is_some_and(|p| p != st.pos));
+        self.animation = moves.then_some(Animation {
+            from,
+            started: self.now,
+        });
     }
 
     /// Whether the countdown is running.
@@ -540,22 +625,29 @@ impl App {
         f: impl FnOnce(&mut Layout, &Snapshot) -> Result<T, EditError>,
         report: impl Fn(&T) -> &CommitReport,
     ) -> Option<T> {
-        self.edit_step(true, f, report)
+        self.edit_step(true, true, f, report)
     }
 
-    /// [`App::edit`], adding an undo step only when `record` is set: an edit that continues the
-    /// previous one shares its step.
+    /// [`App::edit`], adding an undo step only when `record` is set (an edit that continues the
+    /// previous one shares its step), and gliding into place only when `animate` is set.
     fn edit_step<T>(
         &mut self,
         record: bool,
+        animate: bool,
         f: impl FnOnce(&mut Layout, &Snapshot) -> Result<T, EditError>,
         report: impl Fn(&T) -> &CommitReport,
     ) -> Option<T> {
         let before = self.layout.clone();
+        let drawn = self.drawn_positions();
         match f(&mut self.layout, &self.snap) {
             Ok(done) => {
                 let r = report(&done);
                 self.viewport.shift(r.shift);
+                if animate {
+                    self.glide(&before, &drawn, r.shift);
+                } else {
+                    self.animation = None;
+                }
                 let mut notes = r.notes.clone();
                 if !r.pushed.is_empty() {
                     let names: Vec<String> =
@@ -607,7 +699,7 @@ impl App {
 
     /// Undo and redo restore whole layouts; the viewport follows the shift most displays made,
     /// so the ones that stay put do not jump.
-    fn follow(&mut self, before: &Layout) {
+    fn follow(&mut self, before: &Layout) -> Point {
         let mut deltas: Vec<Point> = (0..self.layout.len())
             .filter(|&i| before.is_enabled(i) && self.layout.is_enabled(i))
             .filter(|&i| before.size(i) == self.layout.size(i))
@@ -621,9 +713,9 @@ impl App {
             .chunk_by(|a, b| a == b)
             .max_by_key(|run| run.len())
             .map(|run| run[0]);
-        if let Some(shift) = common {
-            self.viewport.shift(shift);
-        }
+        let shift = common.unwrap_or_default();
+        self.viewport.shift(shift);
+        shift
     }
 
     fn normal(&mut self, action: Action) -> Vec<Effect> {
@@ -700,6 +792,7 @@ impl App {
             }
             Action::Undo | Action::Redo => {
                 let before = self.layout.clone();
+                let drawn = self.drawn_positions();
                 let done = if action == Action::Undo {
                     self.history.undo(&mut self.layout)
                 } else {
@@ -711,7 +804,8 @@ impl App {
                     "redo"
                 };
                 if done {
-                    self.follow(&before);
+                    let shift = self.follow(&before);
+                    self.glide(&before, &drawn, shift);
                     self.revalidate();
                     self.status = None;
                 } else {
@@ -738,6 +832,25 @@ impl App {
                 self.mode = UiMode::SavePrompt(self.profile.clone().unwrap_or_default())
             }
             Action::Open => return vec![Effect::ListProfiles],
+            Action::StepUp | Action::StepDown => {
+                let up = action == Action::StepUp;
+                let next = if up {
+                    NUDGE_STEPS.iter().find(|&&s| s > self.step)
+                } else {
+                    NUDGE_STEPS.iter().rev().find(|&&s| s < self.step)
+                };
+                match next {
+                    Some(&step) => {
+                        self.step = step;
+                        self.say(Severity::Info, format!("Nudge step {step} px."));
+                    }
+                    None => {
+                        let end = if up { "largest" } else { "smallest" };
+                        let text = format!("{} px is the {end} nudge step.", self.step);
+                        self.say(Severity::Info, text);
+                    }
+                }
+            }
             _ => {}
         }
         Vec::new()
@@ -766,8 +879,9 @@ impl App {
         self.burst = Some(burst);
         let step = self.step * burst.multiplier(now);
         let continues = self.nudge_run == Some((f, dir));
+        // Nudges never glide, so a held key does not lag behind.
         let moved = self
-            .edit_step(!continues, |l, _| l.nudge(f, dir, step), |r| r)
+            .edit_step(!continues, false, |l, _| l.nudge(f, dir, step), |r| r)
             .is_some();
         if moved {
             self.nudge_run = Some((f, dir));
@@ -860,7 +974,7 @@ impl App {
         self.adopt(snap);
         if !matches {
             self.layout = Layout::from_snapshot(&self.snap).0;
-            self.follow(&before);
+            let _ = self.follow(&before);
             self.revalidate();
         }
         self.mode = UiMode::Normal;
@@ -1473,6 +1587,16 @@ impl App {
                     return Vec::new();
                 }
                 self.run_command(&line)
+            }
+            Action::Complete => {
+                let (completed, candidates) = cmdline::complete(line, &self.layout);
+                *line = completed;
+                match candidates.len() {
+                    0 => self.status = None,
+                    1 => {}
+                    _ => self.say(Severity::Info, candidates.join("  ")),
+                }
+                Vec::new()
             }
             Action::Cancel => {
                 self.mode = UiMode::Normal;

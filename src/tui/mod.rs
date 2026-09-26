@@ -39,6 +39,8 @@ use session::{Input, Session, Settings};
 /// The loop never blocks longer than this, so it notices signals and redraws the countdown.
 const IDLE_POLL: Duration = Duration::from_millis(250);
 const COUNTDOWN_POLL: Duration = Duration::from_millis(100);
+/// About 60 frames a second while displays glide.
+const ANIMATION_POLL: Duration = Duration::from_millis(16);
 
 /// The `revert.sh` the panic hook runs while an applied layout waits for its answer.
 static PANIC_REVERT: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -186,7 +188,9 @@ fn event_loop(
             }
             continue;
         }
-        let timeout = if session.app.counting_down() {
+        let timeout = if session.app.animating() {
+            ANIMATION_POLL
+        } else if session.app.counting_down() {
             COUNTDOWN_POLL
         } else {
             IDLE_POLL

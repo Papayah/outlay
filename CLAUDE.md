@@ -44,7 +44,9 @@ cargo test
 ## Layout
 
 - `src/xrandr/`: the `Backend` trait (`XrandrCli`, `FixtureBackend`), the `xrandr --verbose`
-  parser, EDID decoding, and command generation.
+  parser, EDID decoding, command generation, and `script.rs`: screenlayout profiles (lenient
+  parser, profile → layout with remap, save that keeps other lines, line diff, atomic write).
+- `src/profile.rs`: `outlay apply` and `outlay save`; the apply reuses the editor's `Session`.
 - `src/model/`: snapshot types, geometry, the layout and its stick links, movement, validation,
   undo history. Everything here is pure and tested without a terminal or an X server.
 - `src/tui/`: the editor. `app.rs` holds the state and `handle_key` (pure: it returns effects),
@@ -56,4 +58,6 @@ cargo test
   `tests/scenarios.rs` holds golden desk layouts, `tests/properties.rs` the proptest invariants,
   `tests/commands.rs` the golden apply/revert/script commands, `tests/tui.rs` key sequences
   and insta screen snapshots (`tests/snapshots/`; review `.snap.new` files before renaming them),
-  `tests/apply.rs` the apply flow with a fake backend, clock and signal flag.
+  `tests/apply.rs` the apply flow with a fake backend, clock and signal flag,
+  `tests/profiles.rs` the user's scripts (copied into `tests/fixtures/screenlayout/`) on the
+  fixtures, the remap, the round trip, and `w`/`e` through the session with temporary dirs.

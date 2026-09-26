@@ -95,8 +95,22 @@ fn draw_canvas(app: &mut App, area: Rect, buf: &mut ratatui::buffer::Buffer) {
             Vec::new(),
         ),
     };
-    let scene = Scene {
+    // The view fits where the displays end up, so it holds still while they glide there.
+    let bounds = Scene {
         layout: &app.layout,
+        snap: &app.snap,
+        theme: app.theme,
+        focus: None,
+        target: None,
+        double_borders: false,
+        ghosts: &ghosts,
+        pending: &pending,
+    }
+    .bounds();
+    app.viewport.update(area, bounds, app.cell_aspect);
+    let drawn = app.drawn_layout();
+    let scene = Scene {
+        layout: &drawn,
         snap: &app.snap,
         theme: app.theme,
         focus: Some(app.focus),
@@ -105,6 +119,5 @@ fn draw_canvas(app: &mut App, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         ghosts: &ghosts,
         pending: &pending,
     };
-    app.viewport.update(area, scene.bounds(), app.cell_aspect);
     canvas::render(&scene, &app.viewport, area, buf);
 }

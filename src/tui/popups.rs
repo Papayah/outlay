@@ -12,7 +12,6 @@ use super::app::{
     App, ApplyPlan, Countdown, Message, Picker, ProfilePicker, Question, RemapDialog, SavePlan,
 };
 use super::canvas::{self, Scene, Viewport, truncate};
-use super::cmdline::USAGE;
 use super::keys::Context;
 
 /// A `width` x `height` rectangle centred in `area`, shrunk to fit.
@@ -115,15 +114,7 @@ pub fn help(app: &App, scroll: u16, area: Rect, buf: &mut Buffer) -> u16 {
     if inner.height < 2 {
         return 0;
     }
-    let sections: Vec<(&str, Vec<(String, &str)>)> = Context::ALL
-        .iter()
-        .map(|&ctx| (ctx.title(), app.keymap.help(ctx)))
-        .filter(|(_, rows)| !rows.is_empty())
-        .chain(std::iter::once((
-            "Commands (after :)",
-            USAGE.iter().map(|&(c, h)| (c.to_owned(), h)).collect(),
-        )))
-        .collect();
+    let sections = app.keymap.reference();
     let mut lines: Vec<Line> = Vec::new();
     for (title, rows) in sections {
         if !lines.is_empty() {

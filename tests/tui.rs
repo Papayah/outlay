@@ -770,3 +770,95 @@ fn snapshot_overwrite() {
     });
     insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
 }
+
+fn animated() -> App {
+    let options = Options {
+        animations: true,
+        ..Options::default()
+    };
+    App::new(FixtureBackend::demo().query().unwrap(), options)
+}
+
+#[test]
+fn a_swap_glides_into_place_with_an_ease_out() {
+    let mut app = animated();
+    let start = app.now;
+    press(&mut app, "1L");
+    assert_eq!(
+        rect(&app.layout, "HDMI-1-0").x,
+        2560,
+        "the edit is done at once"
+    );
+    let drawn_x = |app: &App| rect(&app.drawn_layout(), "HDMI-1-0").x;
+    assert!(app.animating());
+    assert_eq!(drawn_x(&app), 0, "drawn where it was");
+
+    app.tick(start + Duration::from_millis(40));
+    let early = drawn_x(&app);
+    app.tick(start + Duration::from_millis(80));
+    let late = drawn_x(&app);
+    assert!(0 < early && early < late && late < 2560, "{early} {late}");
+    assert!(
+        early > 2560 / 3,
+        "ease-out: most of the way comes first: {early}"
+    );
+
+    app.tick(start + Duration::from_millis(120));
+    assert!(!app.animating());
+    assert_eq!(drawn_x(&app), 2560);
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("1 HDMI-1-0"), "{text}");
+}
+
+#[test]
+fn nudges_never_glide_and_cut_a_glide_short() {
+    let mut app = animated();
+    press(&mut app, "3<A-l>");
+    assert!(!app.animating());
+    press(&mut app, "L");
+    assert!(app.animating(), "a snap-move glides");
+    press(&mut app, "<A-h>");
+    assert!(!app.animating(), "a nudge ends the glide at once");
+    assert_eq!(*app.drawn_layout(), app.layout);
+
+    // Undo glides back; with animations off nothing glides.
+    press(&mut app, "u");
+    assert!(app.animating());
+    let mut still = demo();
+    press(&mut still, "1L");
+    assert!(!still.animating());
+}
+
+#[test]
+fn plus_and_minus_change_the_step() {
+    let mut app = demo();
+    press(&mut app, "+");
+    assert_eq!(
+        (app.step, status(&app)),
+        (50, "Nudge step 50 px.".to_owned())
+    );
+    press(&mut app, "++");
+    assert_eq!(app.step, 100);
+    assert_eq!(status(&app), "100 px is the largest nudge step.");
+    press(&mut app, "----");
+    assert_eq!(app.step, 1);
+    press(&mut app, "-");
+    assert_eq!(status(&app), "1 px is the smallest nudge step.");
+    press(&mut app, "3<A-l>");
+    assert_eq!(rect(&app.layout, "eDP-1").x, 2241);
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("step 1px "), "{text}");
+}
+
+#[test]
+fn tab_completes_on_the_command_line() {
+    let mut app = demo();
+    press(&mut app, ":sti<Tab>3 be<Tab>dp<Tab>");
+    assert_eq!(app.mode, UiMode::Command("stick 3 below DP-1-".to_owned()));
+    assert_eq!(status(&app), "DP-1-2  DP-1-3");
+    press(&mut app, "2<Enter>");
+    assert_eq!(
+        link(&app.layout, "eDP-1"),
+        stuck("DP-1-2", Side::Below, Align::Center, 0)
+    );
+}

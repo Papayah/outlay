@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use outlay::cli::{Cli, Command};
 use outlay::config::Config;
@@ -21,7 +21,15 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if let Some(Command::Completions { shell }) = &cli.command {
+        let mut out = Vec::new();
+        clap_complete::generate(*shell, &mut Cli::command(), "outlay", &mut out);
+        return print_stdout(&String::from_utf8_lossy(&out));
+    }
     let config = Config::load()?;
+    if let Some(Command::Keys) = &cli.command {
+        return print_stdout(&config.keymap()?.reference_text());
+    }
     let backend = cli.backend()?;
     let Some(command) = cli.command.clone() else {
         let (options, settings) = cli.tui_options(&config)?;
@@ -39,6 +47,7 @@ fn run(cli: Cli) -> Result<()> {
             &show::DiagramOptions::for_stdout(config.cell_aspect),
         ),
         Command::List => show::list(&backend.query()?),
+        Command::Keys | Command::Completions { .. } => unreachable!("handled above"),
     };
     print_stdout(&text)
 }
