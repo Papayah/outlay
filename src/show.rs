@@ -1,6 +1,8 @@
 //! `outlay show` and `outlay list`: plain-text views of a snapshot.
 
-use crate::model::{Output, Snapshot};
+use crate::model::layout::{Layout, OutputState};
+use crate::model::validate::validate;
+use crate::model::{Output, Reflection, Snapshot};
 
 /// Pads each column to its widest cell, two spaces apart, without trailing spaces.
 fn columns(rows: &[Vec<String>], indent: &str) -> String {
@@ -112,13 +114,29 @@ pub fn list(snap: &Snapshot) -> String {
     text
 }
 
-/// `show`: a summary line, then one row per numbered output.
+/// `rotation`, plus a reflection and a scale badge when set: `left, reflect x ×1.5`.
+fn orientation(st: &OutputState) -> String {
+    let mut text = st.rotation.to_string();
+    if st.reflection != Reflection::Normal {
+        text.push_str(&format!(", reflect {}", st.reflection));
+    }
+    match st.transform.scale_factors() {
+        Some((sx, sy)) if (sx - sy).abs() < 1e-6 && (sx - 1.0).abs() > 1e-6 => {
+            text.push_str(&format!(" ×{sx}"))
+        }
+        Some((sx, sy)) if (sx - sy).abs() >= 1e-6 => text.push_str(&format!(" ×{sx}x{sy}")),
+        Some(_) => {}
+        None => text.push_str(" transformed"),
+    }
+    text
+}
+
+/// `show`: a summary line, one row per numbered output with its inferred link, then the
+/// validation issues of the live layout.
 pub fn table(snap: &Snapshot) -> String {
+    let layout = Layout::inferred(snap);
     let numbered = snap.numbered();
-    let on = numbered
-        .iter()
-        .filter(|&&i| snap.outputs[i].active.is_some())
-        .count();
+    let on = numbered.iter().filter(|&&i| layout.is_enabled(i)).count();
     let s = snap.screen;
     let mut text = format!(
         "outlay · {on} on · {} off · screen {}x{} of max {}x{}\n\n",
@@ -129,50 +147,54 @@ pub fn table(snap: &Snapshot) -> String {
         s.max.h
     );
     let mut rows = vec![
-        ["#", "output", "mode", "position", "rotation", "display"]
-            .map(str::to_owned)
-            .to_vec(),
+        [
+            "#", "output", "mode", "position", "rotation", "link", "display",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
     ];
     for (n, &i) in numbered.iter().enumerate() {
         let out = &snap.outputs[i];
-        let name = if out.primary {
+        let st = &layout.outputs[i];
+        let name = if st.primary {
             format!("{} ★", out.name)
         } else {
             out.name.clone()
         };
-        let (mode, pos, rotation) = match &out.active {
-            None => ("off".to_owned(), String::new(), String::new()),
-            Some(a) => {
-                let mode = match out.current_mode() {
-                    Some(m) => format!("{}x{} @ {:.2}", m.width, m.height, m.refresh),
-                    None => format!("{}x{}", a.size.w, a.size.h),
-                };
-                let mut rotation = a.rotation.to_string();
-                if a.reflection != Default::default() {
-                    rotation.push_str(&format!(", reflect {}", a.reflection));
-                }
-                if let Some((sx, sy)) = a.transform.scale_factors() {
-                    if (sx - sy).abs() < 1e-6 && (sx - 1.0).abs() > 1e-6 {
-                        rotation.push_str(&format!(" ×{sx}"));
-                    } else if (sx - sy).abs() >= 1e-6 {
-                        rotation.push_str(&format!(" ×{sx}x{sy}"));
-                    }
+        let row = match (&st.mode, st.enabled) {
+            (Some(mode), true) => {
+                let mode = if out.mode(mode.xid).is_some() {
+                    format!("{}x{} @ {:.2}", mode.width, mode.height, mode.refresh)
                 } else {
-                    rotation.push_str(" transformed");
-                }
-                (mode, format!("{},{}", a.pos.x, a.pos.y), rotation)
+                    format!("{}x{}", mode.width, mode.height)
+                };
+                [
+                    mode,
+                    format!("{},{}", st.pos.x, st.pos.y),
+                    orientation(st),
+                    layout.link_text(i),
+                ]
             }
+            _ => [
+                "off".to_owned(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
         };
-        rows.push(vec![
-            (n + 1).to_string(),
-            name,
-            mode,
-            pos,
-            rotation,
-            display_details(out),
-        ]);
+        let mut cells = vec![(n + 1).to_string(), name];
+        cells.extend(row);
+        cells.push(display_details(out));
+        rows.push(cells);
     }
     text.push_str(&columns(&rows, ""));
+    let issues = validate(&layout, snap);
+    if !issues.is_empty() {
+        text.push('\n');
+        for issue in issues {
+            text.push_str(&format!("{issue}\n"));
+        }
+    }
     text
 }
 

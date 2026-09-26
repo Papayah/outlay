@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8d94763c0b5e5482a8b297c473640496a257552fe9cbe4bf8b106a297fb8eeba # shrinks to outs = [Out { name: "O0", size: (3840, 2160), pos: Some((0, 0)), primary: false }, Out { name: "O1", size: (1920, 1080), pos: Some((-1919, 2160)), primary: false }, Out { name: "O2", size: (2560, 1440), pos: Some((3840, -1439)), primary: false }, Out { name: "O3", size: (3840, 2160), pos: Some((-3388, 0)), primary: false }], edits = [Stick(6, 1, RightOf, Center), Resolution(2, true), Snap(0, Down), Nudge(0, Left, 1), Nudge(0, Left, 1), Nudge(0, Left, 1)]
+cc b518709fb405caf23a0295f8b17fd253e91d0827682ce5406fd1c26cbbb70bca # shrinks to outs = [Out { name: "O0", size: (1280, 1024), pos: Some((0, 0)), primary: false }, Out { name: "O1", size: (1080, 1920), pos: Some((1280, -1919)), primary: false }, Out { name: "O2", size: (1920, 1080), pos: Some((1280, -1079)), primary: false }, Out { name: "O3", size: (3840, 2160), pos: Some((-2560, -3630)), primary: false }, Out { name: "X0", size: (2560, 1440), pos: None, primary: false }], edits = [Stick(2, 6, LeftOf, Start)]
