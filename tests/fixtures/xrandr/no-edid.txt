@@ -1,0 +1,114 @@
+Screen 0: minimum 320 x 200, current 3200 x 1080, maximum 8192 x 8192
+Virtual-1 connected primary 1920x1080+0+0 (0x1c0) normal (normal left inverted right x axis y axis) 0mm x 0mm
+	Identifier: 0x3e
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Gamma:      1.0:1.0:1.0
+	Brightness: 1.0
+	Clones:    
+	CRTC:       0
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 162 
+		supported: 162
+	non-desktop: 0 
+		range: (0, 1)
+  1920x1080 (0x1c0) 139.526MHz -HSync +VSync *current +preferred
+        h: width  1920 start 1968 end 2000 total 2080 skew    0 clock  67.08KHz
+        v: height 1080 start 1083 end 1088 total 1118           clock  60.00Hz
+  2560x1600 (0x1c1) 270.214MHz +HSync -VSync
+        h: width  2560 start 2608 end 2640 total 2720 skew    0 clock  99.34KHz
+        v: height 1600 start 1603 end 1608 total 1656           clock  59.99Hz
+  1920x1200 (0x1c2) 154.692MHz +HSync -VSync
+        h: width  1920 start 1968 end 2000 total 2080 skew    0 clock  74.37KHz
+        v: height 1200 start 1203 end 1208 total 1242           clock  59.88Hz
+  1280x1024 (0x1c3) 91.615MHz +HSync -VSync
+        h: width  1280 start 1328 end 1360 total 1440 skew    0 clock  63.62KHz
+        v: height 1024 start 1027 end 1032 total 1060           clock  60.02Hz
+  1024x768 (0x1c4) 56.477MHz +HSync -VSync
+        h: width  1024 start 1072 end 1104 total 1184 skew    0 clock  47.70KHz
+        v: height  768 start  771 end  776 total  795           clock  60.00Hz
+  800x600 (0x1c5) 36.076MHz +HSync -VSync
+        h: width   800 start  848 end  880 total  960 skew    0 clock  37.58KHz
+        v: height  600 start  603 end  608 total  623           clock  60.32Hz
+Virtual-2 connected 1280x1024+1920+0 (0x1c3) normal (normal left inverted right x axis y axis) 0mm x 0mm
+	Identifier: 0x3f
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Gamma:      1.0:1.0:1.0
+	Brightness: 1.0
+	Clones:    
+	CRTC:       1
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 163 
+		supported: 163
+	non-desktop: 0 
+		range: (0, 1)
+  1280x1024 (0x1c3) 91.615MHz +HSync -VSync *current +preferred
+        h: width  1280 start 1328 end 1360 total 1440 skew    0 clock  63.62KHz
+        v: height 1024 start 1027 end 1032 total 1060           clock  60.02Hz
+  1024x768 (0x1c4) 56.477MHz +HSync -VSync
+        h: width  1024 start 1072 end 1104 total 1184 skew    0 clock  47.70KHz
+        v: height  768 start  771 end  776 total  795           clock  60.00Hz
+  800x600 (0x1c5) 36.076MHz +HSync -VSync
+        h: width   800 start  848 end  880 total  960 skew    0 clock  37.58KHz
+        v: height  600 start  603 end  608 total  623           clock  60.32Hz
+Virtual-3 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x40
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 164 
+		supported: 164
+	non-desktop: 0 
+		range: (0, 1)
+Virtual-4 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x41
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 165 
+		supported: 165
+	non-desktop: 0 
+		range: (0, 1)
