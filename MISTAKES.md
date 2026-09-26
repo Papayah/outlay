@@ -64,3 +64,71 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   `tests/fixtures/xrandr`.
 - **Cause:** the working directory persists between tool shell calls, so an earlier `cd` sticks.
 - **Fix:** use absolute paths, or `cd /home/mc2/workspace/this/outlay && …` in the same command.
+
+## A display turns off in the screenshot window without any key sent
+
+- **Symptom:** in a kitty window opened for screenshots, `--demo` shows DP-1-2 turned off and
+  "3 pending" although the script sent no keys.
+- **Cause:** the developer was typing on another i3 workspace; the new window took focus and got
+  their keystrokes (a Space toggles the focused display).
+- **Fix:** ask before opening any window on the developer's display, and close it right after
+  the captures. Check rendering headlessly first: insta snapshots in `tests/tui.rs`, or
+  `tools/pty_drive.py`. When a live window shows input you did not send, suspect typing first.
+
+## kitty ignores `--listen-on` in the scratchpad
+
+- **Symptom:** kitty shows "Invalid listen_on=unix:/tmp/claude-1000/…/outlay.sock, ignoring" and
+  `kitten @` fails with `connect: invalid argument`.
+- **Cause:** a unix socket path is limited to 108 bytes and the scratchpad path is longer.
+- **Fix:** put the socket in `$XDG_RUNTIME_DIR` (`tools/shot.sh` uses
+  `$XDG_RUNTIME_DIR/outlay-shot.sock`).
+
+## `pkill -f` kills the tool call that runs it
+
+- **Symptom:** a shell command exits with code 144 and nothing after `pkill` runs.
+- **Cause:** `pkill -f "class outlay-shot"` matched the shell running the command, whose command
+  line contains the same pattern.
+- **Fix:** anchor the pattern to the program (`pkill -f '^kitty -o allow_remote_control=…'`) or
+  close the window with `kitten @ close-window`, as `tools/shot.sh stop` does.
+
+## `import -window "$WID"` says "missing an image filename"
+
+- **Symptom:** `WID=$(xdotool search --class outlay-shot | tail -1); import -window "$WID" x.png`
+  fails, although `xdotool getwindowgeometry $WID` works in the same command.
+- **Cause:** not found. The same `import` works with the literal window id, and with the id in a
+  variable of a `sh` script.
+- **Fix:** use `tools/shot.sh capture FILE`.
+
+## outlay in a bare pty is slow to start and misreads early keys
+
+- **Symptom:** driven through Python's `pty`, the first frame takes about 2 s, and keys sent before
+  it act strangely.
+- **Cause:** `supports_keyboard_enhancement()` waits for a reply that only a real terminal gives
+  (kitty answers at once; a bare pty never does), up to crossterm's 2 s timeout.
+- **Fix:** wait at least 2.6 s before the first key (`tools/pty_drive.py` does). Remember that the
+  countdown's 1 s input block starts when xrandr returns, not when the popup is first read back.
+
+## Text that is on screen is missing from the pty output
+
+- **Symptom:** `"Kept the new layout." in output` is false although the status line shows it.
+- **Cause:** ratatui sends only the cells that changed, so a string arrives in pieces between
+  cursor moves.
+- **Fix:** feed the output to the `Screen` model in `tools/pty_drive.py` and search
+  `SCREEN.text()`.
+
+## SIGHUP made outlay abort instead of reverting and exiting
+
+- **Symptom:** closing the terminal during a countdown ends outlay with SIGABRT (exit -6).
+- **Cause:** ratatui's `init()` panic hook and `Terminal::drop` both call `eprintln!`, which panics
+  when the terminal is gone (EIO); a panic inside the panic hook aborts.
+- **Fix (in place):** `tui::run` sets up raw mode and the alternate screen by hand, its panic hook
+  never prints, and the `Terminal` is `mem::forget`-ed when `show_cursor` fails. Never switch back
+  to `ratatui::init`/`restore`, and never `eprintln!` on the exit path (`main` uses `writeln!` and
+  ignores the error).
+
+## There is no `cargo insta`
+
+- **Symptom:** `cargo insta review` is not a command.
+- **Cause:** cargo-insta is not installed; only the insta crate is.
+- **Fix:** run `cargo test`, read each `tests/snapshots/*.snap.new`, and when it is right, accept it
+  with `for f in tests/snapshots/*.snap.new; do mv "$f" "${f%.new}"; done`.

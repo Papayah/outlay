@@ -20,6 +20,10 @@ cargo test
 - `cargo run -- --from-file tests/fixtures/xrandr/<name>.txt <cmd>`: reads an
   `xrandr --verbose` capture. Never touches X.
 - `cargo run -- list`, `cargo run -- show`: query the live X server read-only.
+- `tools/pty_drive.py SCENARIO -- --demo`: runs the release build in a pseudo-terminal (no window)
+  and checks the rendered screen; the way to test the event loop, signals and the apply flow.
+- `tools/shot.sh`: the screenshot loop for `docs/screenshots/`. It opens a kitty window on the
+  developer's display: ask first, every time.
 
 ## Rules
 
