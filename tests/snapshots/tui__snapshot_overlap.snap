@@ -1,9 +1,9 @@
 ---
 source: tests/tui.rs
-assertion_line: 425
+assertion_line: 438
 expression: "screen(&mut app, 100, 30).backend()"
 ---
-" outlay · 3 on · 1 off                                                                  ● 1 pending "
+" outlay · 3 on · 1 off                                                        ● 1 pending · a apply "
 "┌ layout ──────────────────────────────────────────────────────────┐┌ 3 eDP-1 ─────────────────────┐"
 "│                                                                  ││ AUO B156HAN12.H              │"
 "│                                                                  ││ mode  1920x1080@165.01       │"

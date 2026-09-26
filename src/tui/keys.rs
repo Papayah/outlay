@@ -66,18 +66,27 @@ pub enum Context {
     Picker,
     Command,
     Confirm,
+    ConfirmApply,
+    Countdown,
+    Message,
     Help,
+    /// While xrandr runs: no key does anything.
+    Applying,
 }
 
 impl Context {
-    pub const ALL: [Context; 7] = [
+    pub const ALL: [Context; 11] = [
         Context::Normal,
         Context::StickTarget,
         Context::StickSide,
         Context::Picker,
         Context::Command,
         Context::Confirm,
+        Context::ConfirmApply,
+        Context::Countdown,
+        Context::Message,
         Context::Help,
+        Context::Applying,
     ];
 
     /// The section title in `?` help and `outlay keys`.
@@ -89,7 +98,11 @@ impl Context {
             Context::Picker => "Mode and rate pickers",
             Context::Command => "Command line",
             Context::Confirm => "Questions",
+            Context::ConfirmApply => "Apply confirmation",
+            Context::Countdown => "After an apply",
+            Context::Message => "Messages",
             Context::Help => "Help",
+            Context::Applying => "While applying",
         }
     }
 }
@@ -122,6 +135,12 @@ pub enum Action {
     Details,
     Help,
     Quit,
+    Apply,
+    Copy,
+    /// After an apply: keep the new layout, revert it, or revert and quit.
+    Keep,
+    Revert,
+    RevertQuit,
     /// Stick flow: move the target selection spatially, cycle it, or pick it by number.
     Target(Dir),
     TargetNext,
@@ -232,6 +251,10 @@ pub const TABLE: &[Binding] = &[
     bind(C::Normal, &[ch(' ')], act(A::Toggle), Some("on/off"), "Turn the display on or off"),
     bind(C::Normal, &[ch('u')], act(A::Undo), Some("undo"), "Undo"),
     bind(C::Normal, &[Keys::One(KeyCode::Char('r'), CTRL)], act(A::Redo), None, "Redo"),
+    bind(C::Normal, &[ch('a')], act(A::Apply), Some("apply"),
+        "Apply, with an automatic revert unless you keep it"),
+    bind(C::Normal, &[ch('y')], act(A::Copy), None,
+        "Copy the pending xrandr command to the clipboard (OSC 52)"),
     bind(C::Normal, &[code(KeyCode::Tab)], act(A::FocusNext), None, "Focus the next display"),
     bind(C::Normal, &[code(KeyCode::BackTab)], act(A::FocusPrev), None,
         "Focus the previous display"),
@@ -281,6 +304,18 @@ pub const TABLE: &[Binding] = &[
 
     bind(C::Confirm, &[code(KeyCode::Enter), ch('y')], act(A::Accept), Some("yes"), "Yes"),
     bind(C::Confirm, &[code(KeyCode::Esc), ch('n')], act(A::Cancel), Some("no"), "No"),
+
+    bind(C::ConfirmApply, &[code(KeyCode::Enter)], act(A::Accept), Some("apply"), "Apply"),
+    bind(C::ConfirmApply, &[code(KeyCode::Esc)], act(A::Cancel), Some("cancel"), "Cancel"),
+
+    bind(C::Countdown, &[ch('y')], act(A::Keep), Some("keep"), "Keep the new layout"),
+    bind(C::Countdown, &[ch('n'), code(KeyCode::Esc)], act(A::Revert), Some("revert"),
+        "Revert to the previous layout now"),
+    bind(C::Countdown, &[Keys::One(KeyCode::Char('c'), CTRL)], act(A::RevertQuit), None,
+        "Revert, then quit"),
+
+    bind(C::Message, &[code(KeyCode::Enter), code(KeyCode::Esc)], act(A::Cancel), Some("close"),
+        "Close"),
 
     bind(C::Help, &[Keys::VerticalLetters, Keys::VerticalArrows], Does::Dir(A::Move),
         Some("scroll"), "Scroll"),
@@ -691,7 +726,7 @@ mod tests {
         let line: Vec<String> = hints.iter().map(|(k, h)| format!("{k} {h}")).collect();
         assert_eq!(
             line.join(" · "),
-            "hjkl focus · HJKL move · s stick · m mode · r rate · o rotate · ␣ on/off · u undo · ? help"
+            "hjkl focus · HJKL move · s stick · m mode · r rate · o rotate · ␣ on/off · u undo · a apply · ? help"
         );
         let help = map.help(C::Normal);
         assert_eq!(

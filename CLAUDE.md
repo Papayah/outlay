@@ -43,10 +43,13 @@ cargo test
   parser, EDID decoding, and command generation.
 - `src/model/`: snapshot types, geometry, the layout and its stick links, movement, validation,
   undo history. Everything here is pure and tested without a terminal or an X server.
-- `src/tui/`: the editor. `app.rs` holds the state and `handle_key` (pure: it returns effects
-  for the loop in `mod.rs`), `keys.rs` the keymap table, `canvas.rs` the to-scale drawing and
-  sticky viewport (also used by `outlay show`), `ui.rs` the screen composition.
+- `src/tui/`: the editor. `app.rs` holds the state and `handle_key` (pure: it returns effects),
+  `session.rs` carries the effects out (apply → verify → countdown → keep/revert, hooks, OSC 52)
+  behind the `Backend` and `Input` traits, `mod.rs` owns the terminal, signals and panic hook,
+  `keys.rs` the keymap table, `canvas.rs` the to-scale drawing and sticky viewport (also used by
+  `outlay show`), `ui.rs` the screen composition.
 - Tests: `tests/common/mod.rs` builds snapshots from a few lines (`on("A", 1920, 1080, 0, 0)`);
   `tests/scenarios.rs` holds golden desk layouts, `tests/properties.rs` the proptest invariants,
   `tests/commands.rs` the golden apply/revert/script commands, `tests/tui.rs` key sequences
-  and insta screen snapshots (`tests/snapshots/`; review `.snap.new` files before renaming them).
+  and insta screen snapshots (`tests/snapshots/`; review `.snap.new` files before renaming them),
+  `tests/apply.rs` the apply flow with a fake backend, clock and signal flag.

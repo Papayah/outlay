@@ -37,6 +37,12 @@ pub trait Backend {
 
     /// Runs `xrandr` with `argv`, the arguments after the program name.
     fn apply(&self, argv: &[String]) -> Result<ApplyOutcome>;
+
+    /// Whether an apply changes the real screens. Only then does outlay write `revert.sh`, which
+    /// the panic hook may run.
+    fn touches_x(&self) -> bool {
+        false
+    }
 }
 
 /// The real `xrandr` program.
@@ -58,11 +64,22 @@ impl XrandrCli {
     }
 
     fn run(&self, args: &[&str]) -> Result<ApplyOutcome> {
-        let out = Command::new(&self.program)
+        let program = self.program.to_string_lossy();
+        let out = match Command::new(&self.program)
             .args(args)
             .stdin(Stdio::null())
             .output()
-            .with_context(|| format!("could not run `{}`", self.program.to_string_lossy()))?;
+        {
+            Ok(out) => out,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let os_release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+                bail!(
+                    "`{program}` is not installed. {}",
+                    install_hint(&os_release)
+                );
+            }
+            Err(err) => return Err(err).with_context(|| format!("could not run `{program}`")),
+        };
         Ok(ApplyOutcome {
             success: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -92,6 +109,89 @@ impl Backend for XrandrCli {
         let args: Vec<&str> = argv.iter().map(String::as_str).collect();
         self.run(&args)
     }
+
+    fn touches_x(&self) -> bool {
+        true
+    }
+}
+
+/// `-n`: the live state, read once, with applies simulated in memory. Nothing reaches X; the
+/// editor shows the commands it would have run.
+pub struct DryRun {
+    inner: FixtureBackend,
+}
+
+impl DryRun {
+    pub fn new(live: &dyn Backend) -> Result<Self> {
+        Ok(Self {
+            inner: FixtureBackend::new(live.query()?),
+        })
+    }
+
+    /// Every argv an apply would have run.
+    pub fn applied(&self) -> Vec<Vec<String>> {
+        self.inner.applied()
+    }
+}
+
+impl Backend for DryRun {
+    fn query(&self) -> Result<Snapshot> {
+        self.inner.query()
+    }
+
+    fn apply(&self, argv: &[String]) -> Result<ApplyOutcome> {
+        self.inner.apply(argv)
+    }
+}
+
+/// Refuses to drive the live X server where xrandr cannot work: under Wayland it would only
+/// reconfigure XWayland, and without `DISPLAY` there is no server to talk to. `env` looks up an
+/// environment variable.
+pub fn check_session(env: impl Fn(&str) -> Option<String>) -> Result<(), String> {
+    let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
+    if set("WAYLAND_DISPLAY") || env("XDG_SESSION_TYPE").as_deref() == Some("wayland") {
+        return Err(
+            "this is a Wayland session, where xrandr would only reconfigure XWayland. \
+                    Use wlr-randr, kanshi, hyprctl or the desktop's display settings instead. \
+                    (--demo and --from-file still work.)"
+                .to_owned(),
+        );
+    }
+    if !set("DISPLAY") {
+        return Err("DISPLAY is not set, so there is no X server to talk to. \
+             (--demo and --from-file still work.)"
+            .to_owned());
+    }
+    Ok(())
+}
+
+/// How to install xrandr on the distribution `/etc/os-release` describes.
+pub fn install_hint(os_release: &str) -> String {
+    let field = |key: &str| {
+        os_release
+            .lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .map(|v| v.trim_matches('"').to_lowercase())
+            .unwrap_or_default()
+    };
+    let ids = format!("{} {}", field("ID"), field("ID_LIKE"));
+    let has = |id: &str| ids.split_whitespace().any(|w| w == id);
+    let command = if has("arch") {
+        "sudo pacman -S xorg-xrandr"
+    } else if has("debian") || has("ubuntu") {
+        "sudo apt install x11-xserver-utils"
+    } else if has("fedora") || has("rhel") {
+        "sudo dnf install xrandr"
+    } else if has("opensuse") || has("suse") {
+        "sudo zypper install xrandr"
+    } else if has("void") {
+        "sudo xbps-install xrandr"
+    } else if has("alpine") {
+        "sudo apk add xrandr"
+    } else {
+        return "Install your distribution's xrandr package.".to_owned();
+    };
+    format!("Install it with: {command}")
 }
 
 /// A snapshot held in memory, for `--demo`, `--from-file` and tests. An apply never touches X:
@@ -418,6 +518,56 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn live_x_needs_an_x_session() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                vars.iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert!(check_session(env(&[("DISPLAY", ":0"), ("XDG_SESSION_TYPE", "x11")])).is_ok());
+        let wayland = check_session(env(&[("DISPLAY", ":0"), ("WAYLAND_DISPLAY", "wayland-0")]));
+        assert!(wayland.unwrap_err().contains("wlr-randr"));
+        let wayland = check_session(env(&[("DISPLAY", ":0"), ("XDG_SESSION_TYPE", "wayland")]));
+        assert!(wayland.is_err());
+        assert!(
+            check_session(env(&[]))
+                .unwrap_err()
+                .starts_with("DISPLAY is not set")
+        );
+    }
+
+    #[test]
+    fn install_hints_follow_os_release() {
+        let hint = |text: &str| install_hint(text);
+        assert!(
+            hint("NAME=\"EndeavourOS\"\nID=\"endeavouros\"\nID_LIKE=\"arch\"\n")
+                .ends_with("pacman -S xorg-xrandr")
+        );
+        assert!(hint("ID=ubuntu\nID_LIKE=debian\n").ends_with("apt install x11-xserver-utils"));
+        assert!(hint("ID=fedora\n").ends_with("dnf install xrandr"));
+        assert!(
+            hint("ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n")
+                .ends_with("zypper install xrandr")
+        );
+        assert!(hint("ID=void\n").ends_with("xbps-install xrandr"));
+        assert!(hint("ID=alpine\n").ends_with("apk add xrandr"));
+        assert_eq!(hint(""), "Install your distribution's xrandr package.");
+    }
+
+    #[test]
+    fn dry_run_simulates_without_touching_x() {
+        let dry = DryRun::new(&FixtureBackend::demo()).unwrap();
+        assert!(!dry.touches_x());
+        assert!(XrandrCli::new().touches_x());
+        let outcome = dry.apply(&args("--output HDMI-1-0 --off")).unwrap();
+        assert!(outcome.success);
+        assert!(dry.query().unwrap().outputs[0].active.is_none());
+        assert_eq!(dry.applied().len(), 1);
     }
 
     #[test]

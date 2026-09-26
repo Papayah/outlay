@@ -163,15 +163,18 @@ impl DiagramOptions {
     }
 
     /// The terminal's width and cell shape, with colour, when stdout is a terminal; plain text
-    /// otherwise.
-    pub fn for_stdout() -> Self {
+    /// otherwise. `aspect` overrides the detected cell shape.
+    pub fn for_stdout(aspect: Option<f64>) -> Self {
         if !std::io::stdout().is_terminal() {
-            return Self::plain();
+            return Self {
+                aspect: aspect.unwrap_or(2.0),
+                ..Self::plain()
+            };
         }
         let width = ratatui::crossterm::terminal::size().map_or(80, |(w, _)| w);
         Self {
             width: width.clamp(40, 120),
-            aspect: tui::detect_cell_aspect().unwrap_or(2.0),
+            aspect: aspect.or_else(tui::detect_cell_aspect).unwrap_or(2.0),
             colour: Theme::from_env().colour,
         }
     }

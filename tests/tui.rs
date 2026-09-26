@@ -270,6 +270,9 @@ fn mode_and_rate_pickers() {
 
     press(&mut app, "}");
     assert_eq!(status(&app), "DP-1-2 is at its highest rate.");
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("│ mode  2560x1440@143.91       │"), "{text}");
+    assert!(text.contains("│    →  1920x1080@119.88       │"), "{text}");
     press(&mut app, "{");
     let mode = app.layout.outputs[dp].mode.clone().unwrap();
     assert!(mode.refresh < 119.0, "{mode:?}");
@@ -280,6 +283,10 @@ fn mode_and_rate_pickers() {
         (2560, 1440),
         "the next larger resolution"
     );
+    // Back at 2560x1440, now at 59.95: only the rate differs from the live mode.
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("│ mode  2560x1440              │"), "{text}");
+    assert!(text.contains("│ rate  143.91 → 59.95         │"), "{text}");
 }
 
 #[test]
@@ -449,4 +456,36 @@ fn snapshot_help() {
 fn snapshot_too_small() {
     let mut app = demo();
     insta::assert_snapshot!(screen(&mut app, 50, 12).backend());
+}
+
+#[test]
+fn snapshot_apply_confirmation() {
+    let mut app = demo();
+    press(&mut app, "3<A-l>4 a");
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
+}
+
+#[test]
+fn snapshot_countdown() {
+    let mut app = demo();
+    press(&mut app, "3<A-l>");
+    let start = app.now;
+    app.countdown(start, 15);
+    app.tick(start + std::time::Duration::from_millis(4500));
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
+}
+
+#[test]
+fn snapshot_apply_failed() {
+    let mut app = demo();
+    app.report(
+        "Apply failed",
+        vec![
+            "xrandr: warning: output DP-1-3 not found; ignoring".to_owned(),
+            "The layout did not come out as asked:".to_owned(),
+            "  DP-1-3 is off; it should be on.".to_owned(),
+            "Reverted to the previous layout.".to_owned(),
+        ],
+    );
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
 }

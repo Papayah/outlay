@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use outlay::cli::{Cli, Command};
+use outlay::config::Config;
 use outlay::show;
 use outlay::tui;
 
@@ -12,20 +13,26 @@ fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("outlay: {err:#}");
+            // After a SIGHUP there is no terminal left to report to; eprintln! would panic.
+            let _ = writeln!(io::stderr(), "outlay: {err:#}");
             ExitCode::FAILURE
         }
     }
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let config = Config::load()?;
     let backend = cli.backend()?;
     let Some(command) = cli.command else {
-        return tui::run(backend.as_ref(), cli.tui_options());
+        let (options, settings) = cli.tui_options(&config)?;
+        return tui::run(backend.as_ref(), options, settings);
     };
     let snapshot = backend.query()?;
     let text = match command {
-        Command::Show => show::show(&snapshot, &show::DiagramOptions::for_stdout()),
+        Command::Show => show::show(
+            &snapshot,
+            &show::DiagramOptions::for_stdout(config.cell_aspect),
+        ),
         Command::List => show::list(&snapshot),
     };
     print_stdout(&text)

@@ -1,4 +1,5 @@
-//! The interactive editor: terminal setup and teardown, and the event loop.
+//! The interactive editor: terminal setup and teardown, signals, the panic hook and the event
+//! loop. The state lives in [`app`], the side effects in [`session`].
 
 pub mod app;
 pub mod canvas;
@@ -6,27 +7,80 @@ pub mod cmdline;
 pub mod keys;
 pub mod panels;
 pub mod popups;
+pub mod session;
 pub mod theme;
 pub mod ui;
 
-use std::io::stdout;
-use std::time::Duration;
+use std::io::{Write, stdout};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::DefaultTerminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{supports_keyboard_enhancement, window_size};
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement, window_size,
+};
+use ratatui::{DefaultTerminal, Terminal};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::model::validate::Severity;
 use crate::xrandr::Backend;
-use app::{App, Effect, Options};
+use app::{App, Options};
+use session::{Input, Session, Settings};
 
-/// How long the loop waits for input before redrawing anyway.
+/// The loop never blocks longer than this, so it notices signals and redraws the countdown.
 const IDLE_POLL: Duration = Duration::from_millis(250);
+const COUNTDOWN_POLL: Duration = Duration::from_millis(100);
+
+/// The `revert.sh` the panic hook runs while an applied layout waits for its answer.
+static PANIC_REVERT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Arms (`Some`) or disarms the panic hook's revert.
+pub fn arm_panic_revert(script: Option<PathBuf>) {
+    *PANIC_REVERT.lock().unwrap_or_else(|e| e.into_inner()) = script;
+}
+
+/// Puts the terminal back: keyboard flags popped, raw mode off, main screen. Every step ignores
+/// errors, since after a SIGHUP each write fails with EIO.
+fn restore_terminal(pop_keyboard_flags: bool) {
+    if pop_keyboard_flags {
+        let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout(), LeaveAlternateScreen);
+}
+
+/// Wraps the current panic hook so a panic first pops the keyboard flags, runs `revert.sh`
+/// during a countdown, and restores the terminal, then reports as usual. It never prints on its
+/// own: ratatui's hook does, and `eprintln!` panics when the terminal is gone, which turns the
+/// panic into an abort.
+pub fn install_panic_hook(pop_keyboard_flags: bool) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let armed = PANIC_REVERT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(script) = armed {
+            let _ = Command::new("sh")
+                .arg(script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        restore_terminal(pop_keyboard_flags);
+        previous(info);
+    }));
+}
 
 /// Cell height over cell width from the terminal's pixel size, or `None` when the terminal does
 /// not report pixels (tmux reports 0).
@@ -40,12 +94,45 @@ pub fn detect_cell_aspect() -> Option<f64> {
     Some(cell_h / cell_w)
 }
 
+/// Keys queued in the terminal.
+struct TerminalInput;
+
+impl Input for TerminalInput {
+    fn drain(&mut self) {
+        while matches!(event::poll(Duration::ZERO), Ok(true)) {
+            if event::read().is_err() {
+                break;
+            }
+        }
+    }
+}
+
 /// Opens the editor on `backend`'s state and runs it until the user quits.
-pub fn run(backend: &dyn Backend, options: Options) -> Result<()> {
+pub fn run(backend: &dyn Backend, options: Options, mut settings: Settings) -> Result<()> {
+    if !backend.touches_x() {
+        // A simulated apply must never leave a script that changes the real screens.
+        settings.revert_file = None;
+    }
     let fixed_aspect = options.cell_aspect;
-    let snap = backend.query()?;
-    let mut app = App::new(snap, options);
-    let mut terminal = ratatui::try_init()?;
+    let app = App::new(backend.query()?, options);
+    // The loop polls with a timeout, so it notices these flags; the default action (die on the
+    // spot, leaving an unconfirmed layout) is replaced.
+    let signal = Arc::new(AtomicBool::new(false));
+    for sig in [SIGHUP, SIGTERM, SIGINT] {
+        signal_hook::flag::register(sig, Arc::clone(&signal))?;
+    }
+    let mut session = Session::new(app, backend, settings, signal);
+
+    // Set up by hand rather than with ratatui::init, whose panic hook prints (see above).
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    let mut terminal = match Terminal::new(CrosstermBackend::new(stdout())) {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            restore_terminal(false);
+            return Err(err.into());
+        }
+    };
     // The alternate screen is on; only now push the keyboard flags, and only where supported.
     let enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
     if enhanced {
@@ -55,67 +142,71 @@ pub fn run(backend: &dyn Backend, options: Options) -> Result<()> {
         )?;
     }
     install_panic_hook(enhanced);
-    app.set_cell_aspect(fixed_aspect.or_else(detect_cell_aspect).unwrap_or(2.0));
-    let result = event_loop(&mut terminal, &mut app, backend, fixed_aspect);
-    restore(enhanced);
-    result
-}
+    session
+        .app
+        .set_cell_aspect(fixed_aspect.or_else(detect_cell_aspect).unwrap_or(2.0));
 
-fn restore(enhanced: bool) {
-    if enhanced {
-        let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    let result = event_loop(&mut terminal, &mut session, fixed_aspect);
+    // Whatever stopped the loop, an unconfirmed layout does not outlive the editor.
+    session.revert_if_waiting();
+    if terminal.show_cursor().is_err() {
+        // The terminal is gone. Dropping it would retry and eprintln!, which panics on EIO.
+        std::mem::forget(terminal);
     }
-    let _ = ratatui::try_restore();
-}
-
-/// Wraps ratatui's panic hook (which restores the terminal) so the keyboard flags are popped
-/// first.
-fn install_panic_hook(enhanced: bool) {
-    let restore_terminal = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        if enhanced {
-            let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
-        }
-        restore_terminal(info);
-    }));
+    restore_terminal(enhanced);
+    if session.signalled() {
+        return Ok(());
+    }
+    result
 }
 
 fn event_loop(
     terminal: &mut DefaultTerminal,
-    app: &mut App,
-    backend: &dyn Backend,
+    session: &mut Session,
     fixed_aspect: Option<f64>,
 ) -> Result<()> {
+    let mut input = TerminalInput;
     loop {
-        terminal.draw(|frame| ui::draw(frame, app))?;
-        if !event::poll(IDLE_POLL)? {
+        if session.signalled() {
+            session.perform(&mut input);
+            return Ok(());
+        }
+        terminal.draw(|frame| ui::draw(frame, &mut session.app))?;
+        if !session.outbox.is_empty() {
+            // Written between two draws, so the escape sequence never splits a frame.
+            let mut out = stdout();
+            out.write_all(&session.outbox)?;
+            out.flush()?;
+            session.outbox.clear();
+        }
+        if session.has_work() {
+            session.perform(&mut input);
+            if session.quit {
+                return Ok(());
+            }
             continue;
         }
-        let mut effects = Vec::new();
-        // Handle everything that is queued before drawing again.
-        loop {
-            match event::read()? {
-                Event::Key(key) => effects.extend(app.handle_key(key)),
-                Event::Resize(..) => {
-                    if fixed_aspect.is_none()
-                        && let Some(aspect) = detect_cell_aspect()
-                    {
-                        app.set_cell_aspect(aspect);
-                    }
-                }
-                _ => {}
-            }
-            if !event::poll(Duration::ZERO)? {
-                break;
-            }
+        let timeout = if session.app.counting_down() {
+            COUNTDOWN_POLL
+        } else {
+            IDLE_POLL
+        };
+        if !event::poll(timeout)? {
+            session.tick(Instant::now());
+            continue;
         }
-        for effect in effects {
-            match effect {
-                Effect::Quit => return Ok(()),
-                Effect::Query => match backend.query() {
-                    Ok(snap) => app.reloaded(snap),
-                    Err(err) => app.say(Severity::Error, format!("Reload failed: {err:#}")),
-                },
+        loop {
+            let event = event::read()?;
+            if matches!(event, Event::Resize(..))
+                && fixed_aspect.is_none()
+                && let Some(aspect) = detect_cell_aspect()
+            {
+                session.app.set_cell_aspect(aspect);
+            }
+            session.handle_event(&event, Instant::now());
+            // Stop at the first effect so it is drawn ("applying…") before it runs.
+            if session.has_work() || !event::poll(Duration::ZERO)? {
+                break;
             }
         }
     }

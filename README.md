@@ -4,9 +4,9 @@ A keyboard-driven xrandr layout editor for the terminal. outlay draws your monit
 lets you arrange them with `h j k l`, sticks a display to a chosen side of another so it follows
 when that one changes, and applies the result with an automatic revert if you do not confirm it.
 
-> **Status: work in progress.** The xrandr reader, the layout engine and the interactive editor
-> are in place: `outlay --demo` opens the editor on a built-in fixture, and `outlay list` and
-> `outlay show` work today. Applying a layout and profile support follow. See
+> **Status: work in progress.** The editor works end to end: arrange, stick, change modes, and
+> apply with an automatic revert (`outlay --demo` tries it on a built-in fixture, `outlay -n` on
+> your live state without touching it). Profile support and polish follow. See
 > [docs/PLAN.md](docs/PLAN.md).
 
 ## Why
@@ -43,7 +43,33 @@ outlay keys                 print the keymap
 ```
 
 `--demo` uses a built-in four-output fixture and `--from-file <capture>` reads an
-`xrandr --verbose` capture; neither touches your displays.
+`xrandr --verbose` capture; neither touches your displays. `-n` reads the live state but only
+simulates applies.
+
+## Applying safely
+
+`a` shows the per-output changes, any errors that block the apply, and the exact xrandr command.
+After xrandr returns, outlay reads the state back and checks it against the request (xrandr
+exits 0 even when it ignores an output). Then it asks "Keep this layout?" for 15 seconds
+(`--revert-timeout`, `0` turns it off): only `y` keeps it. A timeout, `n`, `Esc`, Ctrl-C,
+SIGHUP or SIGTERM revert to the previous layout. Keys pressed in the first second after xrandr
+returns are ignored, so one pressed while the screens were dark cannot answer. Before each
+apply, outlay writes the revert command to `$XDG_STATE_HOME/outlay/revert.sh`, so you can run it
+by hand if anything goes wrong.
+
+## Configuration
+
+`$XDG_CONFIG_HOME/outlay/config.toml` is optional; every key has a default:
+
+```toml
+revert_seconds = 15
+nudge_step = 10
+layouts_dir = "~/.screenlayout"
+animations = true
+directions = "hjkl"        # focus letters: left, down, up, right
+# cell_aspect = 2.0        # detected from the terminal when omitted
+post_apply = ["feh --bg-fill ~/Pictures/wallpapers/current-wallpaper/*"]
+```
 
 ## License
 
