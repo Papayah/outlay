@@ -3,4 +3,5 @@
 pub mod cli;
 pub mod model;
 pub mod show;
+pub mod tui;
 pub mod xrandr;

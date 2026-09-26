@@ -1,8 +1,18 @@
-//! `outlay show` and `outlay list`: plain-text views of a snapshot.
+//! `outlay show` and `outlay list`: text views of a snapshot. The `show` diagram is the editor's
+//! canvas rendered into a buffer and printed, with colour only on a terminal.
+
+use std::io::IsTerminal;
+
+use ratatui::buffer::{Buffer, Cell};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier};
 
 use crate::model::layout::{Layout, OutputState};
 use crate::model::validate::validate;
 use crate::model::{Output, Reflection, Snapshot};
+use crate::tui;
+use crate::tui::canvas::{self, Scene, Viewport};
+use crate::tui::theme::Theme;
 
 /// Pads each column to its widest cell, two spaces apart, without trailing spaces.
 fn columns(rows: &[Vec<String>], indent: &str) -> String {
@@ -131,21 +141,180 @@ fn orientation(st: &OutputState) -> String {
     text
 }
 
-/// `show`: a summary line, one row per numbered output with its inferred link, then the
-/// validation issues of the live layout.
-pub fn table(snap: &Snapshot) -> String {
+/// How `show` draws its diagram.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DiagramOptions {
+    /// Columns available.
+    pub width: u16,
+    /// Cell height over cell width.
+    pub aspect: f64,
+    /// Emit ANSI colours.
+    pub colour: bool,
+}
+
+impl DiagramOptions {
+    /// Plain text, 80 columns, for pipes and tests.
+    pub fn plain() -> Self {
+        Self {
+            width: 80,
+            aspect: 2.0,
+            colour: false,
+        }
+    }
+
+    /// The terminal's width and cell shape, with colour, when stdout is a terminal; plain text
+    /// otherwise.
+    pub fn for_stdout() -> Self {
+        if !std::io::stdout().is_terminal() {
+            return Self::plain();
+        }
+        let width = ratatui::crossterm::terminal::size().map_or(80, |(w, _)| w);
+        Self {
+            width: width.clamp(40, 120),
+            aspect: tui::detect_cell_aspect().unwrap_or(2.0),
+            colour: Theme::from_env().colour,
+        }
+    }
+}
+
+/// The live layout drawn to scale, the same way the editor draws it.
+pub fn diagram(snap: &Snapshot, options: &DiagramOptions) -> String {
+    let layout = Layout::inferred(snap);
+    let Some(bounds) = layout.bounds() else {
+        return String::new();
+    };
+    let span = f64::from(options.width.saturating_sub(3).max(1));
+    let scale = span / f64::from(bounds.w.max(1));
+    let rows = (f64::from(bounds.h) * scale / options.aspect).round() as u16 + 1;
+    let area = Rect::new(0, 0, options.width, rows.clamp(3, MAX_DIAGRAM_ROWS));
+    let mut view = Viewport::default();
+    view.fit(area, bounds, options.aspect);
+    let mut buf = Buffer::empty(area);
+    let theme = if options.colour {
+        Theme::default()
+    } else {
+        Theme::plain()
+    };
+    let pending = vec![false; layout.len()];
+    let scene = Scene {
+        layout: &layout,
+        snap,
+        theme,
+        focus: None,
+        target: None,
+        ghosts: &[],
+        pending: &pending,
+    };
+    canvas::render(&scene, &view, area, &mut buf);
+    buffer_text(&buf, options.colour)
+}
+
+const MAX_DIAGRAM_ROWS: u16 = 30;
+
+/// A buffer as lines of text without trailing spaces, with ANSI colours when `colour` is set.
+pub fn buffer_text(buf: &Buffer, colour: bool) -> String {
+    let area = buf.area;
+    let mut out = String::new();
+    for y in area.top()..area.bottom() {
+        let cells: Vec<&Cell> = (area.left()..area.right()).map(|x| &buf[(x, y)]).collect();
+        let end = cells
+            .iter()
+            .rposition(|c| c.symbol() != " ")
+            .map_or(0, |k| k + 1);
+        let mut line = String::new();
+        let mut current = None;
+        for cell in &cells[..end] {
+            if colour {
+                let style = (cell.fg, cell.modifier);
+                if current != Some(style) {
+                    line.push_str(&sgr(style.0, style.1));
+                    current = Some(style);
+                }
+            }
+            line.push_str(cell.symbol());
+        }
+        if colour && current.is_some() {
+            line.push_str("\x1b[0m");
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The SGR sequence that selects a foreground colour and modifiers, from a clean state.
+fn sgr(fg: Color, modifier: Modifier) -> String {
+    let mut codes = vec!["0".to_owned()];
+    if modifier.contains(Modifier::BOLD) {
+        codes.push("1".to_owned());
+    }
+    if modifier.contains(Modifier::DIM) {
+        codes.push("2".to_owned());
+    }
+    let named = [
+        Color::Black,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Gray,
+    ];
+    let bright = [
+        Color::DarkGray,
+        Color::LightRed,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightBlue,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::White,
+    ];
+    if let Some(k) = named.iter().position(|&c| c == fg) {
+        codes.push((30 + k).to_string());
+    } else if let Some(k) = bright.iter().position(|&c| c == fg) {
+        codes.push((90 + k).to_string());
+    }
+    format!("\x1b[{}m", codes.join(";"))
+}
+
+/// `show`: the summary line, the diagram, then the table.
+pub fn show(snap: &Snapshot, options: &DiagramOptions) -> String {
+    let mut text = summary(snap);
+    text.push('\n');
+    text.push_str(&diagram(snap, options));
+    text.push('\n');
+    text.push_str(&table_rows(snap));
+    text
+}
+
+/// `outlay · 3 on · 1 off · screen 4480x2520 of max 16384x16384`
+fn summary(snap: &Snapshot) -> String {
     let layout = Layout::inferred(snap);
     let numbered = snap.numbered();
     let on = numbered.iter().filter(|&&i| layout.is_enabled(i)).count();
     let s = snap.screen;
-    let mut text = format!(
-        "outlay · {on} on · {} off · screen {}x{} of max {}x{}\n\n",
+    format!(
+        "outlay · {on} on · {} off · screen {}x{} of max {}x{}\n",
         numbered.len() - on,
         s.current.w,
         s.current.h,
         s.max.w,
         s.max.h
-    );
+    )
+}
+
+/// The summary line, one row per numbered output with its inferred link, then the validation
+/// issues of the live layout.
+pub fn table(snap: &Snapshot) -> String {
+    format!("{}\n{}", summary(snap), table_rows(snap))
+}
+
+fn table_rows(snap: &Snapshot) -> String {
+    let layout = Layout::inferred(snap);
+    let numbered = snap.numbered();
+    let mut text = String::new();
     let mut rows = vec![
         [
             "#", "output", "mode", "position", "rotation", "link", "display",
