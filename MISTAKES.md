@@ -132,3 +132,70 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Cause:** cargo-insta is not installed; only the insta crate is.
 - **Fix:** run `cargo test`, read each `tests/snapshots/*.snap.new`, and when it is right, accept it
   with `for f in tests/snapshots/*.snap.new; do mv "$f" "${f%.new}"; done`.
+
+## A scripted text replacement did nothing, and nothing said so
+
+- **Symptom:** a feature is missing although the edit "ran": `+` did nothing, and no error came
+  from the Python `str.replace` that should have added its handler.
+- **Cause:** `cargo fmt` had re-wrapped the anchor line since it was read, so the old text no
+  longer matched, and `str.replace` silently changes nothing.
+- **Fix:** `assert old in s` before each scripted replacement, or use the Edit tool, which fails
+  loudly on a missing match. Re-read a region after `cargo fmt` before anchoring on it.
+
+## `--rate 60.00` gives different modes on the demo and on the live capture
+
+- **Symptom:** a profile test expecting HDMI-1-0 at 59.94 fails on the demo with 60.00, and the
+  one expecting 60.00 fails on `laptop-edp-hdmi.txt` with 59.94.
+- **Cause:** the demo's HDMI-1-0 lists an exact 1920x1080 60.00 mode; the live capture has only
+  59.94 (and slower). The plan's "home-setup_save asks for 60.00 where only 59.94 exists" is
+  about the live capture.
+- **Fix:** check `outlay --demo list` / `--from-file … list` before writing rate expectations.
+
+## Inferred links start from the primary
+
+- **Symptom:** a test expects `eDP-1` stuck below `HDMI-1-0` after loading `tv-home`, but
+  `eDP-1` has no link.
+- **Cause:** inference roots each component at the primary (else the largest display), so the
+  primary is an anchor and its neighbours are stuck to it: `HDMI-1-0` is above `eDP-1`.
+- **Fix:** write link expectations from the primary outwards.
+
+## Reusing the proptest edits panics on Undo
+
+- **Symptom:** a new property panics with "handled by the history" in `tests/properties.rs`.
+- **Cause:** `apply()` there treats `Edit::Undo`/`Edit::Redo` as unreachable; only the main
+  property routes them to `History`.
+- **Fix:** filter them out: `edits.iter().filter(|e| !matches!(e, Edit::Undo | Edit::Redo))`.
+
+## A script cannot round-trip where an off output was
+
+- **Symptom:** the layout → script → layout round trip fails on an output that is off, with a
+  different `pos` or `mode`.
+- **Cause:** a script says only `--off`; the loaded layout keeps the live state of that output.
+- **Fix:** compare off outputs by their on/off state only (copy the expected `OutputState` over
+  the loaded one when both are off), as `tests/properties.rs` does.
+
+## `outlay apply` with a piped `y` reverts
+
+- **Symptom:** `echo y | outlay --demo apply tv-home` reverts after the countdown.
+- **Cause:** lines that arrive in the first second after xrandr returns are ignored, like keys in
+  the editor, and a pipe delivers the `y` at once.
+- **Fix:** write the `y` after more than a second (`tests/cli.rs` sleeps 1.3 s), or pass
+  `--revert-timeout 0`.
+
+## CLI tests could reach `~/.screenlayout`
+
+- **Symptom:** none yet; a `save` test without `--layouts-dir` would write into the real
+  `~/.screenlayout`, because the default config points there.
+- **Cause:** `tests/cli.rs` hides the config with `XDG_CONFIG_HOME`, but `layouts_dir` defaults
+  to `~/.screenlayout`.
+- **Fix:** the helper also sets `HOME=/nonexistent/outlay-test-home`, and every profile test
+  passes `--layouts-dir` to a temporary directory.
+
+## A held key in the pty moves further than the ramp says
+
+- **Symptom:** 30 `Alt-l` sent 40 ms apart through `tools/pty_drive.py hold` move eDP-1 1240 px,
+  not the 800 px the ramp predicts, and the indicator shows ×10.
+- **Cause:** `read_for(fd, 0.04)` polls in 50 ms steps, so the presses are further apart and the
+  hold lasts longer than 1.2 s.
+- **Fix:** assert the exact ramp in `tests/tui.rs` with `tick`; in the pty, check only that the
+  indicator shows a multiplier and that one `u` undoes the hold.
