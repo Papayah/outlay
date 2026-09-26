@@ -1,0 +1,144 @@
+Screen 0: minimum 320 x 200, current 6720 x 2160, maximum 16384 x 16384
+eDP-1 connected primary 2880x1620+0+0 (0x1c0) normal (normal left inverted right x axis y axis) 344mm x 194mm
+	Identifier: 0x46
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Gamma:      1.0:1.0:1.0
+	Brightness: 1.0
+	Clones:    
+	CRTC:       0
+	CRTCs:      0 1 2 3
+	Transform:  1.500000 0.000000 0.000000
+	            0.000000 1.500000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: bilinear
+	EDID: 
+		00ffffffffffff0030e4b30600000000
+		0c1f0104b52213783a00000000000000
+		00000000000001010101010101010101
+		0101010101011a3680a0703828403020
+		350058c21000001a000000fe004c4720
+		446973706c61790a2020000000fe004c
+		503135365746432d53504431000000fd
+		00304b1e5512000a2020202020200021
+	scaling mode: Full aspect 
+		supported: Full, Center, Full aspect
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 170 
+		supported: 170
+	non-desktop: 0 
+		range: (0, 1)
+  1920x1080 (0x1c0) 139.526MHz +HSync -VSync *current +preferred
+        h: width  1920 start 1968 end 2000 total 2080 skew    0 clock  67.08KHz
+        v: height 1080 start 1083 end 1088 total 1118           clock  60.00Hz
+  1680x1050 (0x1c1) 119.905MHz +HSync -VSync
+        h: width  1680 start 1728 end 1760 total 1840 skew    0 clock  65.17KHz
+        v: height 1050 start 1053 end 1058 total 1087           clock  59.95Hz
+  1280x1024 (0x1c2) 91.615MHz +HSync -VSync
+        h: width  1280 start 1328 end 1360 total 1440 skew    0 clock  63.62KHz
+        v: height 1024 start 1027 end 1032 total 1060           clock  60.02Hz
+  1280x720 (0x1c3) 64.368MHz +HSync -VSync
+        h: width  1280 start 1328 end 1360 total 1440 skew    0 clock  44.70KHz
+        v: height  720 start  723 end  728 total  745           clock  60.00Hz
+  1024x768 (0x1c4) 56.477MHz +HSync -VSync
+        h: width  1024 start 1072 end 1104 total 1184 skew    0 clock  47.70KHz
+        v: height  768 start  771 end  776 total  795           clock  60.00Hz
+  800x600 (0x1c5) 36.076MHz +HSync -VSync
+        h: width   800 start  848 end  880 total  960 skew    0 clock  37.58KHz
+        v: height  600 start  603 end  608 total  623           clock  60.32Hz
+  640x480 (0x1c6) 24.120MHz +HSync -VSync
+        h: width   640 start  688 end  720 total  800 skew    0 clock  30.15KHz
+        v: height  480 start  483 end  488 total  503           clock  59.94Hz
+HDMI-1 connected 3840x2160+2880+0 (0x1c7) normal (normal left inverted right x axis y axis) 600mm x 340mm
+	Identifier: 0x47
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Gamma:      1.0:1.0:1.0
+	Brightness: 1.0
+	Clones:    
+	CRTC:       1
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	EDID: 
+		00ffffffffffff001e6d095bb2a10300
+		0c1f0104b53c22783a00000000000000
+		00000000000001010101010101010101
+		0101010101014dd000a0f07028803020
+		350058542100001a000000fc004c4720
+		554c54524146494e450a000000ff0030
+		30374e54504331323334350a000000fd
+		00304b1e5512000a202020202020008d
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 171 
+		supported: 171
+	non-desktop: 0 
+		range: (0, 1)
+  3840x2160 (0x1c7) 536.640MHz +HSync -VSync *current +preferred
+        h: width  3840 start 3888 end 3920 total 4000 skew    0 clock 134.16KHz
+        v: height 2160 start 2163 end 2168 total 2236           clock  60.00Hz
+  3840x2160 (0x1c8) 268.320MHz +HSync -VSync
+        h: width  3840 start 3888 end 3920 total 4000 skew    0 clock  67.08KHz
+        v: height 2160 start 2163 end 2168 total 2236           clock  30.00Hz
+  2560x1440 (0x1c9) 242.965MHz +HSync -VSync
+        h: width  2560 start 2608 end 2640 total 2720 skew    0 clock  89.33KHz
+        v: height 1440 start 1443 end 1448 total 1490           clock  59.95Hz
+  1920x1080 (0x1c0) 139.526MHz +HSync -VSync
+        h: width  1920 start 1968 end 2000 total 2080 skew    0 clock  67.08KHz
+        v: height 1080 start 1083 end 1088 total 1118           clock  60.00Hz
+  1920x1080 (0x1ca) 139.387MHz +HSync -VSync
+        h: width  1920 start 1968 end 2000 total 2080 skew    0 clock  67.01KHz
+        v: height 1080 start 1083 end 1088 total 1118           clock  59.94Hz
+  1920x1080 (0x1cb) 116.272MHz +HSync -VSync
+        h: width  1920 start 1968 end 2000 total 2080 skew    0 clock  55.90KHz
+        v: height 1080 start 1083 end 1088 total 1118           clock  50.00Hz
+  1680x1050 (0x1c1) 119.905MHz +HSync -VSync
+        h: width  1680 start 1728 end 1760 total 1840 skew    0 clock  65.17KHz
+        v: height 1050 start 1053 end 1058 total 1087           clock  59.95Hz
+  1280x1024 (0x1c2) 91.615MHz +HSync -VSync
+        h: width  1280 start 1328 end 1360 total 1440 skew    0 clock  63.62KHz
+        v: height 1024 start 1027 end 1032 total 1060           clock  60.02Hz
+  1280x720 (0x1c3) 64.368MHz +HSync -VSync
+        h: width  1280 start 1328 end 1360 total 1440 skew    0 clock  44.70KHz
+        v: height  720 start  723 end  728 total  745           clock  60.00Hz
+  1024x768 (0x1c4) 56.477MHz +HSync -VSync
+        h: width  1024 start 1072 end 1104 total 1184 skew    0 clock  47.70KHz
+        v: height  768 start  771 end  776 total  795           clock  60.00Hz
+  800x600 (0x1c5) 36.076MHz +HSync -VSync
+        h: width   800 start  848 end  880 total  960 skew    0 clock  37.58KHz
+        v: height  600 start  603 end  608 total  623           clock  60.32Hz
+  640x480 (0x1c6) 24.120MHz +HSync -VSync
+        h: width   640 start  688 end  720 total  800 skew    0 clock  30.15KHz
+        v: height  480 start  483 end  488 total  503           clock  59.94Hz
+DP-1 disconnected (normal left inverted right x axis y axis)
+	Identifier: 0x48
+	Timestamp:  51234567
+	Subpixel:   unknown
+	Clones:    
+	CRTCs:      0 1 2 3
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter: 
+	max bpc: 12 
+		range: (6, 12)
+	Broadcast RGB: Automatic 
+		supported: Automatic, Full, Limited 16:235
+	link-status: Good 
+		supported: Good, Bad
+	CONNECTOR_ID: 172 
+		supported: 172
+	non-desktop: 0 
+		range: (0, 1)
