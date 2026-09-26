@@ -167,12 +167,15 @@ impl Scene<'_> {
         bbox(on.chain(self.ghosts.iter().map(|&(_, r)| r)))
     }
 
-    /// One box per mirror group: the displays that are not mirroring another one.
+    /// One box per mirror group: the displays that are not mirroring another one. A display
+    /// with a ghost is drawn only as its ghost, unless it is focused: its current place is
+    /// what the preview is compared with.
     fn boxes(&self) -> Vec<usize> {
         self.layout
             .enabled()
             .into_iter()
             .filter(|&i| !self.layout.is_mirror_child(i))
+            .filter(|&i| Some(i) == self.focus || !self.ghosts.iter().any(|&(g, _)| g == i))
             .collect()
     }
 
@@ -461,24 +464,36 @@ pub fn render(scene: &Scene, view: &Viewport, area: Rect, buf: &mut Buffer) {
         }
     }
 
-    // Ghosts: where the displays would go.
-    for &(i, r) in scene.ghosts {
-        let cells = view.cells(r);
-        let Some(rect) = cells.clip(area) else {
-            continue;
-        };
+    // Ghosts: where the displays would go. Each covers what lies under it, so it reads as the
+    // new position; all are cleared first so touching ghosts can merge their borders.
+    let ghosts: Vec<(usize, Rect)> = scene
+        .ghosts
+        .iter()
+        .filter_map(|&(i, r)| view.cells(r).clip(area).map(|rect| (i, rect)))
+        .collect();
+    for &(_, rect) in &ghosts {
+        Clear.render(rect, buf);
+    }
+    for &(i, rect) in &ghosts {
         let style = scene.colour(i).add_modifier(Modifier::BOLD);
         if rect.width < 3 || rect.height < 3 {
             buf.set_string(rect.x, rect.y, scene.number(i), style);
             continue;
         }
-        // A ghost covers what lies under it, so it reads as the new position.
-        Clear.render(rect, buf);
         Block::bordered()
             .border_type(BorderType::LightDoubleDashed)
             .border_style(style)
+            .merge_borders(MergeStrategy::Fuzzy)
             .render(rect, buf);
-        let inner = Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+    }
+    for &(i, rect) in &ghosts {
+        let style = scene.colour(i).add_modifier(Modifier::BOLD);
+        let inner = Rect::new(
+            rect.x + 1,
+            rect.y + 1,
+            rect.width.saturating_sub(2),
+            rect.height.saturating_sub(2),
+        );
         if inner.height > 0 && inner.width > 0 {
             let label = format!("{} {}", scene.number(i), layout.names[i]);
             centred(buf, inner, inner.y + (inner.height - 1) / 2, &label, style);
