@@ -1,5 +1,6 @@
 //! Talking to xrandr: the [`Backend`] trait and its implementations.
 
+pub mod command;
 pub mod edid;
 pub mod parse;
 

@@ -4,8 +4,9 @@ A keyboard-driven xrandr layout editor for the terminal. outlay draws your monit
 lets you arrange them with `h j k l`, sticks a display to a chosen side of another so it follows
 when that one changes, and applies the result with an automatic revert if you do not confirm it.
 
-> **Status: work in progress.** The xrandr reader and the layout engine are being built first;
-> the interactive editor, the apply flow and profile support follow. See [docs/PLAN.md](docs/PLAN.md).
+> **Status: work in progress.** The xrandr reader and the layout engine are in place, and
+> `outlay list` and `outlay show` work today. The interactive editor, the apply flow and profile
+> support follow. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Why
 

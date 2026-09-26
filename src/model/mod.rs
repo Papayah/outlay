@@ -1,6 +1,11 @@
 //! What the X server reports about its screen and outputs, as read from `xrandr --verbose`.
 
 pub mod geometry;
+pub mod history;
+pub mod layout;
+pub mod links;
+pub mod snap;
+pub mod validate;
 
 use std::fmt;
 
@@ -148,14 +153,19 @@ impl Output {
         out
     }
 
-    /// Every mode of one resolution, highest refresh first.
+    /// Every mode of one resolution, highest refresh first; at equal refresh, progressive modes
+    /// come before interlaced and DoubleScan ones.
     pub fn rates(&self, width: i32, height: i32) -> Vec<&Mode> {
         let mut rates: Vec<&Mode> = self
             .modes
             .iter()
             .filter(|m| m.width == width && m.height == height)
             .collect();
-        rates.sort_by(|a, b| b.refresh.total_cmp(&a.refresh));
+        rates.sort_by(|a, b| {
+            b.refresh
+                .total_cmp(&a.refresh)
+                .then(b.is_progressive().cmp(&a.is_progressive()))
+        });
         rates
     }
 
