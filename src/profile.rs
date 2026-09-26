@@ -1,5 +1,5 @@
 //! `outlay apply` and `outlay save`: profiles from the shell. An apply goes through the same
-//! [`Session`] as the editor's, so it is verified, reverts unless kept, and runs the hooks.
+//! [`Session`] as the editor's, so it is verified, runs the hooks, and reverts unless kept.
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use crate::config::Config;
 use crate::model::layout::Layout;
 use crate::model::validate::{Severity, validate};
 use crate::tui::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, UiMode};
+use crate::tui::confine;
 use crate::tui::session::{Input, Session, tilde};
 use crate::xrandr::script::{line_diff, profile_path, save_text, write_atomic};
 use crate::xrandr::{Backend, command};
@@ -77,10 +78,8 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
         say(format!("  {change}"));
     }
 
-    let (options, mut settings) = cli.tui_options(config)?;
-    if !backend.touches_x() {
-        settings.revert_file = None;
-    }
+    let (options, settings) = cli.tui_options(config)?;
+    let settings = confine(backend, settings);
     let seconds = settings.revert_seconds;
     let mut app = App::new(snap, options);
     app.load_profile(&item, &remap);

@@ -33,7 +33,7 @@ pub enum Effect {
     Apply(ApplyRequest),
     /// Restore the layout that was live before the apply.
     Revert(RevertReason),
-    /// Keep the applied layout and run the `post_apply` hooks.
+    /// Keep the applied layout.
     Keep,
     /// Put text on the clipboard with OSC 52.
     Copy(String),
