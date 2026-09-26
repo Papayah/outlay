@@ -567,3 +567,99 @@ outlay/
      - Sessions B and C: add a `## Screen z widoczną zmianą w GUI` section with the committed `docs/screenshots/*.png`, linked as `https://github.com/Papayah/outlay/blob/<branch>/docs/screenshots/<f>.png?raw=true`.
   3. Push the branch and open the PR with the file as its body: `gh pr create --base main --title "<title>" --body-file <file>`. Never merge it.
   4. Report the PR URL, the phases completed, and anything the user must decide or test before the next session.
+
+## Changes after review
+
+> Added 2026-09-26 after the user reviewed the editor from sessions A and B (PRs #1 and #2, both
+> merged). Where this section and the earlier sections differ, this section wins. Session C
+> implements it first, as phases 4b and 4c, before phase 5. Its first commit on
+> `feat/profiles-polish` is this file (`docs: sync plan`).
+
+### R1. The focused display stands out (phase 4b)
+
+**Problem.** The focused box differs from the others only by its thick border (`┏━┓`) and a
+bold title. In kitty, thick box lines are hardly thicker than light ones. Displays in the moving
+set take the focus colour too, so a focused display and its stuck child look alike.
+
+**Change** (replaces "the focused box gets a thick border" in Product design → Focus and
+structure):
+- The focused box's title line is a chip: the title with one space on each side, drawn in its
+  colour with `Modifier::REVERSED`, so the colour becomes the background. If the chip does not
+  fit, the reversed title fills the inner width and is truncated with `…`, like other labels.
+  With `NO_COLOR` set, reverse video alone still marks it. The off tray already marks the
+  focused off display with reverse video, so reverse video means focus everywhere.
+- The thick border stays, and the focused box is still drawn last.
+- Displays in the moving set keep the focus colour, without the chip.
+- A focused box below 3x3 cells shows its number in reverse video.
+
+### R2. No double borders by default (phase 4b)
+
+**Problem.** In Normal mode, `draw_canvas` (`src/tui/ui.rs`) passes the focused display's link
+parent to the canvas as the stick target, so the parent gets `BorderType::Double`. kitty draws
+`═ ║` as two thin lines per cell, so the parent looks fatter than the focused box and seems to
+be the focused one. Double lines also cannot join cleanly with thick or dashed lines; the stick
+ghost snapshot shows broken corners such as `┐════` and `╚══┳━━━`.
+
+**Change** (replaces "the stick target gets a double border"):
+- Normal mode marks no target. The seam glyph (`◂ ▸ ▴ ▾`) and the details panel's `link` row
+  already show the link.
+- In the stick flow, the target gets a thick border and a bold, underlined title. Draw order:
+  the other boxes, then the target, then the focused box. Thick lines join thick and plain
+  lines cleanly (`┳ ┨ ┯`).
+- The old look stays available behind a config key, off by default:
+  `double_borders = false`. When it is true, the Normal-mode parent and the stick target get the
+  double border exactly as before. Pass it `Config` → `Options` → `App` → `Scene`, the same way
+  as `nudge_step`. `Config` uses `deny_unknown_fields`, so add the key to `Config` and its
+  `Default`, to the config sample in Portability and environment checks, and to the README.
+
+### R3. Held nudges speed up (phase 4c)
+
+**Problem.** A nudge moves one step per key event. At the default 10 px and a typical 25 Hz
+key repeat, holding `Alt-l` moves 250 px/s, so crossing a 1920 px display takes about 8 s. Also,
+every repeat is an undo step, so a long hold pushes the whole history (cap 200) out.
+
+**Change:**
+- **Detecting a hold uses time only.** outlay pushes only `DISAMBIGUATE_ESCAPE_CODES`, so a
+  terminal reports a held key as repeated presses; no `Repeat` kind arrives. A nudge continues
+  the current burst when all three are true:
+  - it is for the same display as the previous nudge;
+  - it is in the same direction;
+  - it arrives at most 150 ms after the previous nudge.
+
+  Any other key event (bound or not), or a longer gap, ends the burst. The autorepeat delay
+  (usually 250–660 ms) ends the burst after the first press. So a single press always moves
+  exactly one step, and the speed-up starts with the first repeat.
+- **Ramp**, by time since the burst started: under 0.4 s ×1, 0.4–0.8 s ×2, 0.8–1.2 s ×5, after
+  that ×10. The multiplier applies to the current step. At 10 px and 25 Hz this gives
+  250 → 500 → 1250 → 2500 px/s, and 1920 px take about 1.7 s. Keep the 150 ms gap and the ramp
+  table as `const`s in `src/tui/app.rs`.
+- **Clock.** Use `App::now`. `Session::handle_event` already calls `app.tick(now)` before
+  `handle_key`, so `handle_key` stays pure, and tests set the time with `tick`.
+- **Feedback.** While the multiplier is above ×1, the step indicator shows it:
+  `step 10px ×5`.
+- **Undo.** A run of successful nudges of the same display in the same direction, with no other
+  action between them, is one undo step, for taps and holds alike. Record a history step only
+  for the first nudge of a run; the top of the undo stack then holds the layout from before the
+  run. A failed or no-op nudge does not start a run.
+- `+`/`-` (phase 6) change the base step, and the multiplier scales it. Phase 6 animations skip
+  nudges, so a held key never lags behind an animation.
+- No Ctrl+Alt binding.
+
+### Tests and checks for R1–R3
+
+- R1 and R2: canvas tests on cell styles and symbols, because insta snapshots store only text.
+  They check that:
+  - the focused title cells are `REVERSED` and no other cell in any box is;
+  - with the default config, Normal mode and the stick flow draw no `═ ║ ╔ ╗ ╚ ╝`;
+  - with `double_borders = true`, the stick target has a double border again.
+
+  Add a `Config::parse` test for the new key. Review the changed `.snap.new` files (stick
+  ghost, overview) before accepting them.
+- R3: key-sequence tests in `tests/tui.rs` that move the time with `tick`:
+  - `Alt-l` every 40 ms follows the ramp;
+  - `Alt-l` every 200 ms never speeds up;
+  - a change of direction starts again at ×1;
+  - one `u` undoes a whole run;
+  - a focus key between two nudges gives two undo steps.
+- Refresh `docs/screenshots/overview.png` and `stick.png` with `tools/shot.sh`. That script opens
+  a window on the developer's display, so ask the user first.
