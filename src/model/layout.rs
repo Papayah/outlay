@@ -170,6 +170,71 @@ impl Layout {
         (layout, notes)
     }
 
+    /// This layout, built on `old`, moved onto `new`: a later reading in which outputs may have
+    /// come, gone or changed connection. Outputs are matched by name:
+    /// - a surviving output keeps its state, link, restore record and number;
+    /// - links, restore records and restore children that point at outputs that are gone are
+    ///   dropped;
+    /// - an output new to the list, or one that was not relevant and is on now, starts from its
+    ///   live state with no link;
+    /// - an output that is no longer relevant loses its number, and a newly relevant one gets
+    ///   the lowest free number, so the numbers of the others stay fixed;
+    /// - `locked` comes from `new`.
+    pub fn remapped(&self, old: &Snapshot, new: &Snapshot) -> Layout {
+        let n = new.outputs.len();
+        let from: Vec<Option<usize>> = new
+            .outputs
+            .iter()
+            .map(|o| self.names.iter().position(|name| *name == o.name))
+            .collect();
+        let to = |i: usize| from.iter().position(|&f| f == Some(i));
+        let link = |l: &Link| to(l.parent).map(|parent| Link { parent, ..*l });
+        let mut layout = Layout {
+            outputs: Vec::with_capacity(n),
+            links: vec![None; n],
+            restore: vec![None; n],
+            names: new.outputs.iter().map(|o| o.name.clone()).collect(),
+            numbers: vec![None; n],
+            locked: new.outputs.iter().map(Output::has_panning).collect(),
+        };
+        for (j, out) in new.outputs.iter().enumerate() {
+            // An output that was not relevant cannot have been edited: when it is on now, it
+            // follows the live state.
+            let kept = from[j].filter(|&i| old.outputs[i].is_relevant() || out.active.is_none());
+            let Some(i) = kept else {
+                layout.outputs.push(state_from_output(out));
+                continue;
+            };
+            layout.outputs.push(self.outputs[i].clone());
+            layout.links[j] = self.links[i].as_ref().and_then(link);
+            layout.restore[j] = self.restore[i].as_ref().and_then(|r| {
+                Some(Restore {
+                    reference: to(r.reference)?,
+                    offset: r.offset,
+                    link: r.link.as_ref().and_then(link),
+                    children: r
+                        .children
+                        .iter()
+                        .filter_map(|(c, was, set)| {
+                            Some((to(*c)?, link(was)?, set.as_ref().and_then(link)))
+                        })
+                        .collect(),
+                    primary: r.primary,
+                })
+            });
+            layout.numbers[j] = self.numbers[i].filter(|_| out.is_relevant());
+        }
+        for j in new.numbered() {
+            if layout.numbers[j].is_none() {
+                let free = (1..)
+                    .find(|k| !layout.numbers.contains(&Some(*k)))
+                    .expect("a free number");
+                layout.numbers[j] = Some(free);
+            }
+        }
+        layout
+    }
+
     pub fn len(&self) -> usize {
         self.outputs.len()
     }

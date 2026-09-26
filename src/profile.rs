@@ -78,8 +78,10 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
         say(format!("  {change}"));
     }
 
-    let (options, settings) = cli.tui_options(config)?;
-    let settings = confine(backend, settings);
+    let (mut options, settings) = cli.tui_options(config)?;
+    // Any work from `tick` ends the countdown below, so nothing else may ask for it.
+    options.watch = None;
+    let (options, settings) = confine(backend, options, settings);
     let seconds = settings.revert_seconds;
     let mut app = App::new(snap, options);
     app.load_profile(&item, &remap);

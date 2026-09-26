@@ -5,8 +5,8 @@ usage: tools/pty_drive.py SCENARIO -- outlay args...     (build with cargo build
 
 Scenarios: keep, timeout (pass --revert-timeout 2), sigterm, sighup, keys, hold (a held Alt-l;
 PTY_DUMP=1 prints the screen), profiles (pass --layouts-dir with copies of tv-home.sh and
-home-setup.sh; it saves desk.sh there). With --demo or -n nothing reaches the X server. Without them the
-apply is real: ask the user first.
+home-setup.sh; it saves desk.sh there), refresh (R with an edit pending). With --demo or -n
+nothing reaches the X server. Without them the apply is real: ask the user first.
 """
 import fcntl
 import os
@@ -211,6 +211,17 @@ def main():
             print(SCREEN.text())
         send(fd, "q", 0.3)
         send(fd, "\r", 0.3)
+        print("exit:", wait(pid))
+    elif scenario == "refresh":
+        send(fd, "3\x1bl")
+        send(fd, "R", 0.5)
+        text = SCREEN.text()
+        print("no question:", "Discard" not in text)
+        print("nothing changed:", "No display changes." in text)
+        print("the edit stays:", "1 pending" in text)
+        send(fd, "u", 0.3)
+        print("the undo stays:", "no changes" in SCREEN.text())
+        send(fd, "q", 0.3)
         print("exit:", wait(pid))
     else:
         print("unknown scenario")

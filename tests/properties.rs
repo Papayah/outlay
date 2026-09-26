@@ -251,6 +251,42 @@ proptest! {
     }
 
     #[test]
+    fn a_refresh_keeps_what_did_not_change(
+        outs in arb_desk(),
+        edits in prop::collection::vec(arb_edit(), 0..20),
+        gone in 0usize..8,
+    ) {
+        let snap = desk(&outs);
+        let mut layout = Layout::inferred(&snap);
+        for edit in edits.iter().filter(|e| !matches!(e, Edit::Undo | Edit::Redo)) {
+            apply(&mut layout, &snap, edit);
+        }
+        prop_assert_eq!(&layout.remapped(&snap, &snap), &layout, "the same outputs: no change");
+
+        // One display is unplugged, gone from the list, and comes back.
+        let k = gone % snap.outputs.len();
+        let mut without = snap.clone();
+        without.outputs.remove(k);
+        let there = layout.remapped(&snap, &without);
+        prop_assert_eq!(there.len(), snap.outputs.len() - 1);
+        let back = there.remapped(&without, &snap);
+        prop_assert_eq!(&back.names, &layout.names);
+        for i in (0..layout.len()).filter(|&i| i != k) {
+            prop_assert_eq!(&back.outputs[i], &layout.outputs[i], "state of {}", i);
+            prop_assert_eq!(back.numbers[i], layout.numbers[i], "number of {}", i);
+            let link = layout.links[i].filter(|l| l.parent != k);
+            prop_assert_eq!(back.links[i], link, "link of {}", i);
+        }
+        // The display that came back starts from its live state.
+        let live = snap.outputs[k].active.as_ref();
+        prop_assert_eq!(back.outputs[k].enabled, live.is_some());
+        prop_assert_eq!(back.outputs[k].pos, live.map_or_else(Default::default, |a| a.pos));
+        prop_assert_eq!(back.outputs[k].mode.as_ref().map(|m| m.xid), live.map(|a| a.xid));
+        prop_assert_eq!(back.links[k], None);
+        prop_assert_eq!(back.numbers[k], layout.numbers[k], "its number is free again");
+    }
+
+    #[test]
     fn a_saved_layout_loads_back_the_same(outs in arb_desk(), edits in prop::collection::vec(arb_edit(), 0..20)) {
         let snap = desk(&outs);
         let mut layout = Layout::inferred(&snap);

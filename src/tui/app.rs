@@ -1,5 +1,5 @@
 //! The editor state and its key handling. Pure: [`App::handle_key`] changes the state and returns
-//! the effects (reload, quit …) for the event loop to carry out, so tests drive the whole editor
+//! the effects (refresh, quit …) for the event loop to carry out, so tests drive the whole editor
 //! without a terminal.
 
 use std::borrow::Cow;
@@ -14,7 +14,7 @@ use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
 use crate::model::links::{Align, Side, best_align};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
-use crate::model::{Mode, Snapshot};
+use crate::model::{Mode, Output, Snapshot};
 use crate::xrandr::command;
 use crate::xrandr::script::{Profile, Remap};
 
@@ -26,8 +26,11 @@ use super::theme::Theme;
 /// Work for the event loop.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
-    /// Re-read the live state and start over from it.
-    Query,
+    /// Re-read the live state and merge it into the pending layout: a full probe for `R`, a
+    /// re-query that does not wake the hardware for the watch.
+    Refresh {
+        probe: bool,
+    },
     Quit,
     /// Run xrandr, verify the result, and start the countdown.
     Apply(ApplyRequest),
@@ -168,6 +171,9 @@ pub const NUDGE_STEPS: [i32; 5] = [1, 5, 10, 50, 100];
 /// How long displays take to glide to a new position after a discrete action.
 pub const ANIMATION: Duration = Duration::from_millis(120);
 
+/// How often the editor re-reads the live state, to pick up displays that were plugged in.
+pub const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Displays gliding from where they were drawn to where the edit put them.
 #[derive(Clone, Debug, PartialEq)]
 struct Animation {
@@ -253,7 +259,6 @@ pub struct Picker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Question {
     Quit,
-    Reload,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -294,6 +299,8 @@ pub struct Options {
     pub cell_aspect: Option<f64>,
     /// Where the state comes from when it is not the live X server: `demo`, a file name.
     pub source: Option<String>,
+    /// How often to look for displays that were plugged in or unplugged; `None` never looks.
+    pub watch: Option<Duration>,
 }
 
 impl Default for Options {
@@ -306,6 +313,7 @@ impl Default for Options {
             animations: false,
             cell_aspect: None,
             source: None,
+            watch: None,
         }
     }
 }
@@ -341,11 +349,15 @@ pub struct App {
     pub profile: Option<String>,
     pub animations: bool,
     animation: Option<Animation>,
+    watch: Option<Duration>,
+    /// When the watch next re-reads the live state.
+    next_watch: Instant,
 }
 
 impl App {
     pub fn new(snap: Snapshot, options: Options) -> Self {
         let (layout, notes) = Layout::from_snapshot(&snap);
+        let now = Instant::now();
         let mut app = App {
             focus: 0,
             layout,
@@ -362,12 +374,14 @@ impl App {
             viewport: Viewport::default(),
             cell_aspect: options.cell_aspect.unwrap_or(2.0),
             source: options.source,
-            now: Instant::now(),
+            now,
             burst: None,
             nudge_run: None,
             profile: None,
             animations: options.animations,
             animation: None,
+            watch: options.watch,
+            next_watch: now + options.watch.unwrap_or_default(),
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -431,16 +445,22 @@ impl App {
         }
     }
 
-    /// Advances the clock; returns a revert when the countdown has run out.
+    /// Advances the clock; returns a revert when the countdown has run out, and a refresh when
+    /// the watch is due. The watch only runs in normal mode: popups and the countdown hold output
+    /// indices that a refresh would move.
     pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
         self.now = now;
         if !self.animating() {
             self.animation = None;
         }
-        match self.mode {
-            UiMode::Countdown(c) if now >= c.deadline => {
+        match (&self.mode, self.watch) {
+            (UiMode::Countdown(c), _) if now >= c.deadline => {
                 self.mode = UiMode::Applying;
                 vec![Effect::Revert(RevertReason::Timeout)]
+            }
+            (UiMode::Normal, Some(every)) if now >= self.next_watch => {
+                self.next_watch = now + every;
+                vec![Effect::Refresh { probe: false }]
             }
             _ => Vec::new(),
         }
@@ -508,28 +528,156 @@ impl App {
         self.cell_aspect = aspect;
     }
 
-    /// Starts over from a fresh reading of the live state. Undo history is dropped, since the
-    /// outputs may have changed.
-    pub fn reloaded(&mut self, snap: Snapshot) {
+    /// Moves the pending layout and every undo step onto `snap`, matching outputs by name (see
+    /// [`Layout::remapped`]). Focus stays on the same output while it is still relevant.
+    fn rebase(&mut self, snap: Snapshot) {
         let focused = self.layout.names.get(self.focus).cloned();
-        let (layout, notes) = Layout::from_snapshot(&snap);
-        self.snap = snap;
+        let layout = self.layout.remapped(&self.snap, &snap);
+        let numbers = layout.numbers.clone();
+        self.history.remap(|l| Layout {
+            numbers: numbers.clone(),
+            ..l.remapped(&self.snap, &snap)
+        });
         self.layout = layout;
-        self.history = History::default();
-        self.burst = None;
-        self.nudge_run = None;
-        self.mode = UiMode::Normal;
+        self.snap = snap;
         self.focus = focused
             .and_then(|name| self.snap.find(&name))
             .filter(|&i| self.snap.outputs[i].is_relevant())
             .unwrap_or_else(|| self.default_focus());
-        self.viewport.refit();
-        self.revalidate();
-        if notes.is_empty() {
-            self.say(Severity::Info, "Reloaded the live state.");
-        } else {
-            self.say(Severity::Warning, notes.join(" "));
+        self.burst = None;
+        self.nudge_run = None;
+        self.animation = None;
+    }
+
+    /// Merges a fresh reading of the live state, keeping the pending edits and the undo
+    /// history. `probe` is set for `R`, which also reports that nothing changed; the watch stays
+    /// silent then.
+    ///
+    /// A display unplugged while on is turned off in the pending layout, as one undo step; focus
+    /// moves to a display that was just connected, so Space turns it on. When nothing was
+    /// pending and the live layout changed outside outlay, the pending layout follows it.
+    pub fn refreshed(&mut self, snap: Snapshot, probe: bool) {
+        if self.mode != UiMode::Normal {
+            // A key opened a popup after the watch asked; try again on the next tick.
+            self.next_watch = self.now;
+            return;
         }
+        if snap == self.snap {
+            if probe {
+                self.say(Severity::Info, "No display changes.");
+            }
+            return;
+        }
+        let plugs = Plugs::between(&self.snap, &snap);
+        let untouched = self.pending().is_empty();
+        let enabled_before = self.enabled_names();
+        self.rebase(snap);
+        if plugs.outside && untouched {
+            let mut layout = Layout::inferred(&self.snap);
+            layout.numbers = self.layout.numbers.clone();
+            self.layout = layout;
+        }
+
+        let unplugged: Vec<usize> = plugs
+            .disconnected
+            .iter()
+            .filter_map(|name| self.snap.find(name))
+            .filter(|&i| self.layout.is_enabled(i))
+            .collect();
+        let keeps_one = self.layout.enabled().iter().any(|i| !unplugged.contains(i));
+        let mut turned_off = Vec::new();
+        let mut notes = Vec::new();
+        if keeps_one {
+            let before = self.layout.clone();
+            for &d in &unplugged {
+                if let Ok(report) = self.layout.turn_off(d) {
+                    turned_off.push(self.layout.names[d].clone());
+                    notes.extend(report.notes);
+                }
+            }
+            self.history.record(before, &self.layout);
+        }
+
+        let connected: Vec<usize> = plugs
+            .connected
+            .iter()
+            .filter_map(|name| self.snap.find(name))
+            .collect();
+        let off = connected
+            .iter()
+            .copied()
+            .find(|&i| !self.layout.is_enabled(i));
+        if let Some(&first) = connected.first() {
+            self.focus = off.unwrap_or(first);
+        }
+        if self.enabled_names() != enabled_before {
+            self.viewport.refit();
+        }
+        self.revalidate();
+
+        let mut text = Vec::new();
+        if !turned_off.is_empty() {
+            let (were, they) = if turned_off.len() == 1 {
+                ("was", "it is")
+            } else {
+                ("were", "they are")
+            };
+            text.push(format!(
+                "{} {were} unplugged while on; {they} turned off in the pending layout.",
+                listing(&turned_off)
+            ));
+        }
+        let gone: Vec<String> = plugs
+            .disconnected
+            .iter()
+            .filter(|name| !turned_off.contains(name))
+            .cloned()
+            .collect();
+        if !gone.is_empty() {
+            text.push(format!("{} disconnected.", listing(&gone)));
+        }
+        if !connected.is_empty() {
+            let names: Vec<String> = connected
+                .iter()
+                .map(|&i| self.layout.names[i].clone())
+                .collect();
+            let toggle = self
+                .keymap
+                .key_for(Context::Normal, Action::Toggle)
+                .unwrap_or_default();
+            text.push(match off {
+                Some(_) if connected.len() == 1 => {
+                    format!("{} connected: {toggle} turns it on.", names[0])
+                }
+                Some(i) => format!(
+                    "{} connected: {toggle} turns {} on.",
+                    listing(&names),
+                    self.layout.names[i]
+                ),
+                None => format!("{} connected.", listing(&names)),
+            });
+        }
+        if text.is_empty() {
+            text.push("The live state changed outside outlay.".to_owned());
+            if !untouched {
+                text.push("Your edits are still pending.".to_owned());
+            }
+        }
+        text.extend(notes);
+        let severity = if turned_off.is_empty() {
+            Severity::Info
+        } else {
+            Severity::Warning
+        };
+        self.say(severity, text.join(" "));
+    }
+
+    fn enabled_names(&self) -> Vec<String> {
+        self.layout
+            .enabled()
+            .into_iter()
+            .map(|i| self.layout.names[i].clone())
+            .collect()
     }
 
     pub fn handle_key(&mut self, ev: KeyEvent) -> Vec<Effect> {
@@ -812,12 +960,7 @@ impl App {
                     self.say(Severity::Info, format!("Nothing to {word}."));
                 }
             }
-            Action::Reload => {
-                if self.pending().is_empty() {
-                    return vec![Effect::Query];
-                }
-                self.mode = UiMode::Confirm(Question::Reload);
-            }
+            Action::Refresh => return vec![Effect::Refresh { probe: true }],
             Action::Command => self.mode = UiMode::Command(String::new()),
             Action::Refit => self.viewport.refit(),
             Action::Details => self.show_details = !self.show_details,
@@ -949,21 +1092,11 @@ impl App {
         });
     }
 
-    /// Takes a fresh reading of the live state without touching the pending layout, as long as
-    /// the outputs are still the same ones; otherwise starts over from it.
+    /// Takes a fresh reading of the live state after an apply or a revert, without touching the
+    /// pending layout. Outputs that came or went meanwhile are merged as a refresh merges them.
     pub fn adopt(&mut self, snap: Snapshot) {
-        let same = snap.outputs.len() == self.snap.outputs.len()
-            && snap
-                .outputs
-                .iter()
-                .zip(&self.snap.outputs)
-                .all(|(a, b)| a.name == b.name);
-        if same {
-            self.snap = snap;
-            self.revalidate();
-        } else {
-            self.reloaded(snap);
-        }
+        self.rebase(snap);
+        self.revalidate();
     }
 
     /// The user kept the applied layout, now read back as `snap`. The in-memory links survive
@@ -973,8 +1106,14 @@ impl App {
         let matches = self.layout.mismatches(&snap).is_empty();
         self.adopt(snap);
         if !matches {
-            self.layout = Layout::from_snapshot(&self.snap).0;
-            let _ = self.follow(&before);
+            let mut layout = Layout::from_snapshot(&self.snap).0;
+            layout.numbers = self.layout.numbers.clone();
+            self.layout = layout;
+            if before.names == self.layout.names {
+                let _ = self.follow(&before);
+            } else {
+                self.viewport.refit();
+            }
             self.revalidate();
         }
         self.mode = UiMode::Normal;
@@ -1048,7 +1187,6 @@ impl App {
         self.mode = UiMode::Normal;
         match (action, question) {
             (Action::Accept, Question::Quit) => vec![Effect::Quit],
-            (Action::Accept, Question::Reload) => vec![Effect::Query],
             _ => Vec::new(),
         }
     }
@@ -1420,7 +1558,10 @@ impl App {
     }
 
     /// Opens the picker on the profiles the session read.
-    pub fn open_profiles(&mut self, items: Vec<ProfileItem>, dir: &str) {
+    pub fn open_profiles(&mut self, mut items: Vec<ProfileItem>, dir: &str) {
+        for item in &mut items {
+            item.preview.numbers = self.layout.numbers.clone();
+        }
         if items.is_empty() {
             self.say(Severity::Info, format!("There are no profiles in {dir}."));
             return;
@@ -1454,7 +1595,9 @@ impl App {
     /// Makes the profile's layout the pending one, as one undo step.
     pub fn load_profile(&mut self, item: &ProfileItem, remap: &Remap) {
         self.mode = UiMode::Normal;
-        let (layout, notes) = item.profile.layout(&self.snap, remap);
+        let (mut layout, notes) = item.profile.layout(&self.snap, remap);
+        // A refresh may have numbered the displays differently from the snapshot's order.
+        layout.numbers = self.layout.numbers.clone();
         self.profile = Some(item.name.clone());
         if layout == self.layout {
             let text = format!("{} is the layout you have already.", item.name);
@@ -1728,6 +1871,60 @@ impl App {
         } else {
             self.simple_edit(|l, s| l.toggle(s, i));
         }
+    }
+}
+
+/// Outputs plugged in or unplugged between two readings, by name, and whether the configuration
+/// of any other output changed.
+struct Plugs {
+    /// Connected now and not before, or connected to a different display (another EDID).
+    connected: Vec<String>,
+    /// Connected before and not now, or gone from the list.
+    disconnected: Vec<String>,
+    /// An output whose connection did not change was turned on or off, moved, or changed mode.
+    outside: bool,
+}
+
+impl Plugs {
+    fn between(old: &Snapshot, new: &Snapshot) -> Self {
+        fn find<'a>(snap: &'a Snapshot, name: &str) -> Option<&'a Output> {
+            snap.find(name).map(|i| &snap.outputs[i])
+        }
+        let connected = new
+            .outputs
+            .iter()
+            .filter(|o| {
+                o.is_connected()
+                    && find(old, &o.name).is_none_or(|p| !p.is_connected() || p.edid != o.edid)
+            })
+            .map(|o| o.name.clone())
+            .collect();
+        let disconnected = old
+            .outputs
+            .iter()
+            .filter(|o| o.is_connected() && find(new, &o.name).is_none_or(|n| !n.is_connected()))
+            .map(|o| o.name.clone())
+            .collect();
+        let outside = new.outputs.iter().any(|o| {
+            find(old, &o.name).is_some_and(|p| {
+                p.is_connected() == o.is_connected()
+                    && (p.active != o.active || p.primary != o.primary)
+            })
+        });
+        Plugs {
+            connected,
+            disconnected,
+            outside,
+        }
+    }
+}
+
+/// `A`, `A and B`, `A, B and C`.
+fn listing(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 

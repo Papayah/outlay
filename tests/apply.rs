@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use common::{ix, keys};
+use common::{ix, keys, unplugged};
+use outlay::model::Rotation;
 use outlay::model::Snapshot;
-use outlay::tui::app::{App, Options, UiMode};
+use outlay::tui::app::{App, Options, UiMode, WATCH_INTERVAL};
 use outlay::tui::session::{Input, Session, Settings};
 use outlay::xrandr::{ApplyOutcome, Backend, FixtureBackend, command};
 use ratatui::crossterm::event::Event;
@@ -30,20 +31,37 @@ enum Next {
     Breaks,
 }
 
-/// A backend that records every argv and misbehaves on request.
+/// A backend that records every argv, counts full probes and re-queries, and misbehaves on
+/// request.
 struct Fake {
     inner: FixtureBackend,
     next: Mutex<VecDeque<Next>>,
     calls: Mutex<Vec<Vec<String>>>,
+    probes: Mutex<usize>,
+    requeries: Mutex<usize>,
 }
 
 impl Fake {
-    fn demo() -> Self {
+    fn new(inner: FixtureBackend) -> Self {
         Self {
-            inner: FixtureBackend::demo(),
+            inner,
             next: Mutex::new(VecDeque::new()),
             calls: Mutex::new(Vec::new()),
+            probes: Mutex::new(0),
+            requeries: Mutex::new(0),
         }
+    }
+
+    fn demo() -> Self {
+        Self::new(FixtureBackend::demo())
+    }
+
+    /// (full probes, re-queries) so far.
+    fn reads(&self) -> (usize, usize) {
+        (
+            *self.probes.lock().unwrap(),
+            *self.requeries.lock().unwrap(),
+        )
     }
 
     fn then(self, next: Next) -> Self {
@@ -58,7 +76,13 @@ impl Fake {
 
 impl Backend for Fake {
     fn query(&self) -> Result<Snapshot> {
+        *self.probes.lock().unwrap() += 1;
         self.inner.query()
+    }
+
+    fn requery(&self) -> Result<Snapshot> {
+        *self.requeries.lock().unwrap() += 1;
+        self.inner.requery()
     }
 
     fn apply(&self, argv: &[String]) -> Result<ApplyOutcome> {
@@ -118,7 +142,20 @@ struct Rig<'a> {
 
 impl<'a> Rig<'a> {
     fn new(backend: &'a Fake, settings: Settings) -> Self {
-        let app = App::new(backend.query().unwrap(), Options::default());
+        Self::with(backend, Options::default(), settings)
+    }
+
+    /// A rig whose editor watches for displays that are plugged in, as the live editor does.
+    fn watching(backend: &'a Fake, settings: Settings) -> Self {
+        let options = Options {
+            watch: Some(WATCH_INTERVAL),
+            ..Options::default()
+        };
+        Self::with(backend, options, settings)
+    }
+
+    fn with(backend: &'a Fake, options: Options, settings: Settings) -> Self {
+        let app = App::new(backend.query().unwrap(), options);
         let signal = Arc::new(AtomicBool::new(false));
         Rig {
             session: Session::new(app, backend, settings, Arc::clone(&signal)),
@@ -142,6 +179,12 @@ impl<'a> Rig<'a> {
 
     fn app(&self) -> &App {
         &self.session.app
+    }
+
+    /// Lets the clock run to `now` without input, then carries out what came of it.
+    fn wait_until(&mut self, now: Instant) {
+        self.session.tick(now);
+        self.session.perform(&mut self.input);
     }
 
     fn countdown(&self) -> outlay::tui::app::Countdown {
@@ -630,4 +673,126 @@ fn y_copies_the_portable_command() {
         "{expected}"
     );
     assert!(backend.calls().is_empty(), "copying applies nothing");
+}
+
+#[test]
+fn the_watch_re_queries_and_never_applies() {
+    let backend = Fake::demo();
+    let mut rig = Rig::watching(&backend, Settings::default());
+    let start = rig.app().now;
+    let (probes, _) = backend.reads();
+    let at = |rounds: u32| start + WATCH_INTERVAL * rounds;
+
+    rig.wait_until(start + Duration::from_secs(1));
+    assert_eq!(backend.reads(), (probes, 0), "not yet");
+    rig.wait_until(at(1));
+    assert_eq!(backend.reads(), (probes, 1), "a re-query, not a probe");
+    assert_eq!(rig.status(), "", "nothing changed, nothing to say");
+
+    let live = backend.query().unwrap();
+    backend.inner.set_state(unplugged(&live, "DP-1-3"));
+    rig.wait_until(at(2));
+    assert_eq!(rig.status(), "DP-1-3 disconnected.");
+    let dp13 = ix(&rig.app().layout, "DP-1-3");
+    assert_eq!(rig.app().layout.numbers[dp13], None);
+
+    backend.inner.set_state(live);
+    rig.wait_until(at(3));
+    assert_eq!(rig.status(), "DP-1-3 connected: Space turns it on.");
+    assert_eq!(rig.app().layout.numbers[dp13], Some(4));
+    assert_eq!(rig.app().focus, dp13);
+    assert_eq!(backend.reads().1, 3);
+    assert!(backend.calls().is_empty(), "the watch applies nothing");
+    assert!(rig.app().pending().is_empty());
+
+    // R is a full probe.
+    let (probes, requeries) = backend.reads();
+    rig.press("R");
+    assert_eq!(backend.reads(), (probes + 1, requeries));
+    assert_eq!(rig.status(), "No display changes.");
+}
+
+#[test]
+fn the_watch_waits_while_the_countdown_runs() {
+    let backend = Fake::demo();
+    let mut rig = Rig::watching(&backend, Settings::default());
+    rig.press("3<A-l>a<Enter>");
+    let c = rig.countdown();
+    let reads = backend.reads();
+    let mut now = c.started;
+    while now + Duration::from_millis(250) < c.deadline {
+        now += Duration::from_millis(250);
+        rig.wait_until(now);
+    }
+    assert_eq!(backend.reads(), reads, "no reads during the countdown");
+    assert!(matches!(rig.app().mode, UiMode::Countdown(_)));
+
+    rig.press_at("y", now);
+    assert_eq!(rig.status(), "Kept the new layout.");
+    rig.wait_until(now + Duration::from_millis(250));
+    assert_eq!(
+        backend.reads().1,
+        reads.1 + 1,
+        "the watch goes on after the answer"
+    );
+    assert_eq!(rig.status(), "Kept the new layout.");
+}
+
+#[test]
+fn a_dock_plugged_in_brings_its_displays_and_keeps_the_edits() {
+    let path = format!(
+        "{}/tests/fixtures/xrandr/dock-mst-3.txt",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let docked = FixtureBackend::from_file(path.as_ref())
+        .unwrap()
+        .query()
+        .unwrap();
+    let mut undocked = docked.clone();
+    undocked.outputs.retain(|o| !o.name.starts_with("DP-2."));
+    let backend = Fake::new(FixtureBackend::new(undocked));
+    let mut rig = Rig::watching(&backend, Settings::default());
+    assert_eq!(rig.app().snap.numbered().len(), 1, "the laptop alone");
+    rig.press("o");
+    let edp = ix(&rig.app().layout, "eDP-1");
+    let rotated = rig.app().layout.outputs[edp].rotation;
+    assert_ne!(rotated, Rotation::Normal);
+
+    backend.inner.set_state(docked);
+    let now = rig.app().now + WATCH_INTERVAL;
+    rig.wait_until(now);
+
+    let layout = &rig.app().layout;
+    let number = |name: &str| layout.numbers[ix(layout, name)];
+    assert_eq!(number("eDP-1"), Some(1), "the laptop keeps its number");
+    assert_eq!(number("DP-2.1"), Some(2));
+    assert_eq!(number("DP-2.2"), Some(3));
+    assert_eq!(number("DP-2.3"), Some(4));
+    let edp = ix(layout, "eDP-1");
+    assert_eq!(layout.outputs[edp].rotation, rotated, "the edit survives");
+    assert!(
+        layout.is_enabled(ix(layout, "DP-2.1")),
+        "on, as xrandr says"
+    );
+    assert!(layout.is_enabled(ix(layout, "DP-2.2")));
+    assert_eq!(
+        rig.app().focus,
+        ix(layout, "DP-2.3"),
+        "focus goes to the display that is off"
+    );
+    assert_eq!(
+        rig.status(),
+        "DP-2.1, DP-2.2 and DP-2.3 connected: Space turns DP-2.3 on."
+    );
+    assert!(backend.calls().is_empty());
+
+    rig.press("u");
+    assert!(
+        rig.app().pending().is_empty(),
+        "the undo survives: {:?}",
+        rig.app().pending()
+    );
+    rig.press("<C-r>");
+    let layout = &rig.app().layout;
+    assert_eq!(layout.outputs[ix(layout, "eDP-1")].rotation, rotated);
 }

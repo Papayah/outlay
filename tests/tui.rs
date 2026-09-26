@@ -3,11 +3,12 @@
 
 mod common;
 
-use common::{ix, keys, link, rect, stuck};
+use common::{ix, keys, link, rect, stuck, unplugged};
+use outlay::model::Snapshot;
 use outlay::model::geometry::Rect;
 use outlay::model::links::{Align, Side};
 use outlay::model::validate::Severity;
-use outlay::tui::app::{App, Effect, Options, StickStep, UiMode};
+use outlay::tui::app::{App, Effect, Options, StickStep, UiMode, WATCH_INTERVAL};
 use outlay::tui::theme::Theme;
 use outlay::tui::ui;
 use outlay::xrandr::{Backend, FixtureBackend};
@@ -504,18 +505,250 @@ fn escape_never_quits() {
     assert_eq!(app.mode, UiMode::Normal);
 }
 
+/// The demo as read live: the fixture backend's state.
+fn live() -> Snapshot {
+    FixtureBackend::demo().query().unwrap()
+}
+
+/// The demo before the LG monitor was plugged into DP-1-3.
+fn without_dp13() -> App {
+    App::new(unplugged(&live(), "DP-1-3"), Options::default())
+}
+
+fn watching() -> App {
+    let options = Options {
+        watch: Some(WATCH_INTERVAL),
+        ..Options::default()
+    };
+    App::new(live(), options)
+}
+
+/// The text of a rendered screen, one string per row.
+fn rows(app: &mut App) -> Vec<String> {
+    let terminal = screen(app, 100, 30);
+    let buf = terminal.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
+}
+
+/// The rows of the off tray, below its ` off ` title.
+fn off_tray(app: &mut App) -> Vec<String> {
+    let rows = rows(app);
+    let Some(top) = rows.iter().position(|r| r.contains("├ off ")) else {
+        return Vec::new();
+    };
+    rows[top + 1..rows.len() - 3]
+        .iter()
+        .map(|r| r.rsplit('│').nth(1).unwrap_or_default().trim().to_owned())
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
 #[test]
-fn reload_starts_over_from_the_live_state() {
+fn the_watch_asks_every_two_seconds_in_normal_mode_only() {
+    let watch = [Effect::Refresh { probe: false }];
+    let mut app = watching();
+    let start = app.now;
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    assert!(app.tick(at(1999)).is_empty());
+    assert_eq!(app.tick(at(2000)), watch);
+    assert!(app.tick(at(2250)).is_empty(), "not again at once");
+    assert_eq!(app.tick(at(4000)), watch);
+
+    // Not with a picker open; as soon as it closes.
+    press(&mut app, "m");
+    assert!(app.tick(at(9000)).is_empty());
+    press(&mut app, "<Esc>");
+    assert_eq!(app.tick(at(9250)), watch);
+
+    // Not during the countdown, however long it runs.
+    app.countdown(at(10_000), 15);
+    for ms in (10_250..25_000).step_by(250) {
+        assert!(app.tick(at(ms)).is_empty(), "at {ms} ms");
+    }
+
+    // A key opened a popup after the watch asked: the reading is dropped, and the next tick
+    // in normal mode asks again.
+    let mut app = watching();
+    let start = app.now;
+    assert_eq!(app.tick(start + WATCH_INTERVAL), watch);
+    press(&mut app, "m");
+    app.refreshed(unplugged(&live(), "DP-1-3"), false);
+    assert!(matches!(app.mode, UiMode::Picker(_)));
+    assert_eq!(app.snap, live(), "nothing merged under the picker");
+    press(&mut app, "<Esc>");
+    let next = start + WATCH_INTERVAL + Duration::from_millis(250);
+    assert_eq!(app.tick(next), watch);
+
+    // Off unless asked for.
     let mut app = demo();
-    assert_eq!(press(&mut app, "R"), [Effect::Query]);
+    assert!(app.tick(app.now + Duration::from_secs(60)).is_empty());
+}
+
+#[test]
+fn r_refreshes_at_once_and_keeps_the_edits() {
+    let mut app = demo();
+    assert_eq!(press(&mut app, "R"), [Effect::Refresh { probe: true }]);
     press(&mut app, "3<A-l>");
-    assert!(press(&mut app, "R").is_empty());
-    assert_eq!(press(&mut app, "y"), [Effect::Query]);
-    app.reloaded(FixtureBackend::demo().query().unwrap());
+    assert_eq!(
+        press(&mut app, "R"),
+        [Effect::Refresh { probe: true }],
+        "no question with edits pending"
+    );
+    assert_eq!(app.mode, UiMode::Normal);
+    app.refreshed(live(), true);
+    assert_eq!(app.pending().len(), 1, "the edit is still pending");
+    assert!(app.history.can_undo());
+    assert_eq!(status(&app), "No display changes.");
+}
+
+#[test]
+fn an_identical_reading_changes_nothing_and_says_nothing() {
+    let mut app = demo();
+    press(&mut app, "3<A-l>1");
+    let (layout, focus) = (app.layout.clone(), app.focus);
+    app.status = None;
+    app.refreshed(live(), false);
+    assert_eq!(app.layout, layout);
+    assert_eq!(app.focus, focus);
+    assert_eq!(app.history.undo_len(), 1);
+    assert_eq!(app.status, None, "the watch stays silent");
+}
+
+#[test]
+fn a_display_plugged_in_shows_up_off_with_focus() {
+    let mut app = without_dp13();
+    assert_eq!(app.snap.numbered().len(), 3);
+    assert!(
+        off_tray(&mut app).is_empty(),
+        "every connected display is on"
+    );
+    press(&mut app, "3<A-l>");
+    let edited = app.layout.clone();
+
+    app.refreshed(live(), false);
+    let dp13 = ix(&app.layout, "DP-1-3");
+    assert_eq!(app.layout.numbers[dp13], Some(4));
+    assert_eq!(app.focus, dp13);
+    assert!(!app.layout.is_enabled(dp13));
+    assert_eq!(status(&app), "DP-1-3 connected: Space turns it on.");
+    assert_eq!(off_tray(&mut app), ["4 DP-1-3    LG HDR 4K"]);
+
+    // The edit, the links and the numbers of the others survive.
+    let changes: Vec<String> = app.pending().iter().map(ToString::to_string).collect();
+    assert_eq!(changes, ["eDP-1  pos 2240,1440 → 2250,1440"]);
+    for name in ["HDMI-1-0", "DP-1-2", "eDP-1"] {
+        assert_eq!(rect(&app.layout, name), rect(&edited, name), "{name}");
+        assert_eq!(link(&app.layout, name), link(&edited, name), "{name}");
+        let (i, e) = (ix(&app.layout, name), ix(&edited, name));
+        assert_eq!(app.layout.numbers[i], edited.numbers[e], "{name}");
+    }
+    press(&mut app, "4");
+    assert_eq!(app.focus, dp13, "4 reaches it");
+    press(&mut app, ":off 3<Enter>");
+    assert!(
+        !app.layout.is_enabled(ix(&app.layout, "eDP-1")),
+        "so does :off 3"
+    );
+    press(&mut app, "u");
+
+    // The undo survives too.
+    press(&mut app, "u");
+    assert!(app.pending().is_empty());
+    assert_eq!(status(&app), "");
+
+    press(&mut app, " ");
+    assert!(app.layout.is_enabled(dp13), "Space turns it on");
+    assert!(off_tray(&mut app).is_empty());
+}
+
+#[test]
+fn a_display_unplugged_while_on_is_turned_off_and_u_brings_it_back() {
+    let mut app = demo();
+    press(&mut app, "3<A-l>");
+    app.refreshed(unplugged(&live(), "HDMI-1-0"), false);
+
+    let hdmi = ix(&app.layout, "HDMI-1-0");
+    assert!(!app.layout.is_enabled(hdmi));
+    let text = app.status.clone().unwrap();
+    assert_eq!(
+        text.text,
+        "HDMI-1-0 was unplugged while on; it is turned off in the pending layout."
+    );
+    assert_eq!(text.severity, Severity::Warning);
+    assert_eq!(
+        app.layout.numbers[hdmi],
+        Some(1),
+        "still active, still numbered"
+    );
+    let changes: Vec<String> = app.pending().iter().map(ToString::to_string).collect();
+    assert_eq!(
+        changes,
+        [
+            "HDMI-1-0  on → off",
+            "DP-1-2  pos 1920,0 → 0,0",
+            "eDP-1  pos 2240,1440 → 330,1440",
+        ]
+    );
+
+    press(&mut app, "u");
+    assert!(app.layout.is_enabled(hdmi), "u brings it back");
+    let changes: Vec<String> = app.pending().iter().map(ToString::to_string).collect();
+    assert_eq!(
+        changes,
+        ["eDP-1  pos 2240,1440 → 2250,1440"],
+        "the edit stays"
+    );
+    press(&mut app, "u");
+    assert!(app.pending().is_empty());
+
+    // An unplugged display that was already off is only reported.
+    let mut app = demo();
+    app.refreshed(unplugged(&live(), "DP-1-3"), false);
+    assert_eq!(status(&app), "DP-1-3 disconnected.");
     assert!(app.pending().is_empty());
     assert!(!app.history.can_undo());
-    assert_eq!(app.layout.names[app.focus], "eDP-1", "focus stays on eDP-1");
-    assert_eq!(status(&app), "Reloaded the live state.");
+    assert_eq!(app.layout.numbers[ix(&app.layout, "DP-1-3")], None);
+}
+
+#[test]
+fn a_display_plugged_back_in_returns_to_its_place() {
+    let mut app = demo();
+    press(&mut app, "1");
+    app.refreshed(unplugged(&live(), "HDMI-1-0"), false);
+    app.refreshed(live(), false);
+    let hdmi = ix(&app.layout, "HDMI-1-0");
+    assert_eq!(app.focus, hdmi);
+    assert_eq!(status(&app), "HDMI-1-0 connected: Space turns it on.");
+    press(&mut app, " ");
+    assert!(app.pending().is_empty(), "back where it was");
+}
+
+#[test]
+fn a_layout_changed_outside_outlay() {
+    let mut moved = live();
+    let i = moved.find("eDP-1").unwrap();
+    moved.outputs[i].active.as_mut().unwrap().pos.x = 2000;
+
+    // Nothing was pending: the editor follows the live layout.
+    let mut app = demo();
+    app.refreshed(moved.clone(), false);
+    assert!(app.pending().is_empty());
+    assert_eq!(rect(&app.layout, "eDP-1").x, 2000);
+    assert_eq!(status(&app), "The live state changed outside outlay.");
+
+    // With edits pending, the pending layout stays as it was.
+    let mut app = demo();
+    press(&mut app, "1:move 0 -10<Enter>");
+    let edited = app.layout.clone();
+    app.refreshed(moved, false);
+    assert_eq!(app.layout, edited);
+    assert_eq!(
+        status(&app),
+        "The live state changed outside outlay. Your edits are still pending."
+    );
+    assert_eq!(app.pending().len(), 2);
 }
 
 #[test]
@@ -688,6 +921,14 @@ fn snapshot_overlap() {
 fn snapshot_help() {
     let mut app = demo();
     press(&mut app, "?");
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
+}
+
+#[test]
+fn snapshot_plugged_in() {
+    let mut app = without_dp13();
+    press(&mut app, "3<A-l>");
+    app.refreshed(live(), false);
     insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
 }
 

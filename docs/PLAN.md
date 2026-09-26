@@ -136,7 +136,7 @@ global: --from-file <xrandr-verbose.txt>   read state from a capture; never touc
 | Key | Action |
 |---|---|
 | `h j k l` / arrows | Focus the nearest enabled display in that direction. Candidates are displays whose centre lies in that half-plane. Score = main-axis distance + 2 × cross-axis offset. |
-| `Tab` / `Shift-Tab`, `1`–`9` | Cycle focus / jump to display N. Numbers follow xrandr order and stay fixed for the session. Displays in the off tray can be focused by number too. |
+| `Tab` / `Shift-Tab`, `1`–`9` | Cycle focus / jump to display N. Numbers follow xrandr order at startup and stay fixed for the session; a display connected later gets the lowest free number. Displays in the off tray can be focused by number too. |
 | `H J K L` / Shift-arrows | Snap-move (see Movement). |
 | `Alt-h/j/k/l` / Alt-arrows | Nudge by the step. `+`/`-` cycle the step through 1/5/10/50/100 px (default 10); the current step appears in the status line. |
 | `s` / `S` | Stick (see Stick flow) / unstick. |
@@ -148,7 +148,7 @@ global: --from-file <xrandr-verbose.txt>   read state from a capture; never touc
 | `u` / `Ctrl-r` | Undo / redo. A failed or no-op action adds no history step. |
 | `a` | Apply (confirm popup). |
 | `y` | Copy the pending xrandr command via OSC 52. |
-| `R` | Reload live state; confirms first if changes are pending. |
+| `R` | Refresh: re-probe the outputs and merge the result as the hotplug watch does (see Event loop), keeping pending edits and undo. No confirm. |
 | `w` / `e` | Save a profile / open a profile (picker with mini previews). |
 | `:` | Command line. |
 | `z` | Re-fit the view. |
@@ -339,6 +339,11 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
    - A simulated backend (`--demo`, `--from-file`, `-n`) runs no hooks and writes no `revert.sh`: `tui::confine` clears both.
 7. **Event loop.**
    - Always poll with a timeout: at most 250 ms when idle and 16 ms while animating. The loop must never block, because `signal_hook::flag::register` replaces the default SIGTERM action.
+   - **Hotplug.** Every 2 s in normal mode, `App::tick` asks for `Effect::Refresh { probe: false }`, a `--current` re-query (about 5 ms; it does not probe, so it never wakes the NVIDIA GPU). Checked live: `--current` sees HDMI and USB-C plugs on both providers.
+     - Never during the countdown, while applying or with a popup open (they hold output indices), never in `outlay apply`, and never for a simulated backend (`tui::confine`).
+     - An identical reading does nothing. Otherwise `Layout::remapped` moves the pending layout and every undo step onto the new outputs by name: edits stay, links to outputs that are gone are dropped, and a newly relevant output gets the lowest free number.
+     - A newly connected display takes the focus, so `Space` turns it on. One unplugged while on is turned off in the pending layout as an undo step, if another display stays on. Nothing is applied.
+     - When nothing was pending and the layout changed outside outlay, the pending layout follows the live one.
    - Tests inject the signal `AtomicBool` instead of sending real signals.
 
 **Validation** (`model/validate.rs`), also shown live:
@@ -429,14 +434,14 @@ outlay/
 ```
 
 - **`UiMode`**: `Normal`, `Stick{step, target, side, align}`, `ModePicker`, `RatePicker`, `Command(String)`, `ConfirmApply`, `Countdown{deadline, input_blocked_until}`, `Help`, `ProfilePicker`, `Remap`, `SavePrompt`, `ConfirmQuit`.
-- **Effects** such as `Apply`, `Revert`, `Query`, `SaveFile`, `Copy` and `Quit` are carried out by the loop in `tui/mod.rs`. Because `handle_key` is pure, tests can drive the whole app with no terminal.
+- **Effects** such as `Apply`, `Revert`, `Refresh`, `SaveFile`, `Copy` and `Quit` are carried out by the loop in `tui/mod.rs`. Because `handle_key` is pure, tests can drive the whole app with no terminal.
 - **Types:**
   - `Mode { xid, name, width, height, refresh: f64, interlaced, double_scan, preferred }`. A mode reference is (output, xid), because XIDs are shared across outputs.
   - `Output { name, connection, primary, modes, edid, physical_mm, crtcs, active: Option<ActiveConfig{xid, pos, rotation, reflection, transform, panning}> }`.
 
 ### xrandr parsing traps
 
-- **Queries.** Use `xrandr --verbose`: it gives XIDs, exact refresh rates and EDID. Startup and `R` re-probe; re-queries after an apply use `--current`.
+- **Queries.** Use `xrandr --verbose`: it gives XIDs, exact refresh rates and EDID. Startup and `R` re-probe; re-queries after an apply and the hotplug watch use `--current`.
 - **Screen line:** `Screen 0: minimum W x H, current W x H, maximum W x H`.
 - **Output header:** `NAME (connected|disconnected|unknown connection)[ primary][ WxH+X+Y (0xID)][ rotation][ X axis|Y axis|X and Y axis] (normal left inverted right x axis y axis)[ Wmm x Hmm]`.
   - The name is the first token and may contain `-` and `.`.

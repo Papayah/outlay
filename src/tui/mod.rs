@@ -109,20 +109,26 @@ impl Input for TerminalInput {
     }
 }
 
-/// Settings made safe for `backend`. A simulated backend (`--demo`, `--from-file`, `-n`) must
-/// never reach the real desktop: no `revert.sh` that would change the real screens, and no
-/// `post_apply` hook that would redraw the real wallpaper.
-pub fn confine(backend: &dyn Backend, mut settings: Settings) -> Settings {
+/// Options and settings made safe for `backend`. A simulated backend (`--demo`, `--from-file`,
+/// `-n`) must never reach the real desktop: no `revert.sh` that would change the real screens,
+/// and no `post_apply` hook that would redraw the real wallpaper. Its state only changes through
+/// outlay, so there is nothing to watch either.
+pub fn confine(
+    backend: &dyn Backend,
+    mut options: Options,
+    mut settings: Settings,
+) -> (Options, Settings) {
     if !backend.touches_x() {
+        options.watch = None;
         settings.revert_file = None;
         settings.hooks.clear();
     }
-    settings
+    (options, settings)
 }
 
 /// Opens the editor on `backend`'s state and runs it until the user quits.
 pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Result<()> {
-    let settings = confine(backend, settings);
+    let (options, settings) = confine(backend, options, settings);
     let fixed_aspect = options.cell_aspect;
     let app = App::new(backend.query()?, options);
     // The loop polls with a timeout, so it notices these flags; the default action (die on the
@@ -230,7 +236,12 @@ mod tests {
     use crate::xrandr::FixtureBackend;
 
     #[test]
-    fn a_simulated_backend_gets_no_revert_file_and_no_hooks() {
+    fn a_simulated_backend_gets_no_revert_file_no_hooks_and_no_watch() {
+        let options = || Options {
+            watch: Some(app::WATCH_INTERVAL),
+            nudge_step: 5,
+            ..Options::default()
+        };
         let settings = Settings {
             revert_file: Some(PathBuf::from("/state/outlay/revert.sh")),
             hooks: vec!["feh --bg-fill ~/wall/*".to_owned()],
@@ -239,22 +250,25 @@ mod tests {
         };
         let backend = FixtureBackend::demo();
         assert!(!backend.touches_x());
-        let confined = confine(&backend, settings);
+        let (opts, confined) = confine(&backend, options(), settings);
         assert_eq!(confined.revert_file, None);
         assert!(confined.hooks.is_empty());
+        assert_eq!(opts.watch, None);
         assert_eq!(confined.revert_seconds, 7, "the rest stays");
+        assert_eq!(opts.nudge_step, 5, "the rest stays");
 
-        // The live backend keeps both; nothing here runs xrandr.
+        // The live backend keeps all three; nothing here runs xrandr.
         let live = crate::xrandr::XrandrCli::new();
-        let kept = confine(&live, confined.clone());
+        let (_, kept) = confine(&live, options(), confined.clone());
         assert_eq!(kept.hooks, confined.hooks);
         let settings = Settings {
             revert_file: Some(PathBuf::from("/state/outlay/revert.sh")),
             hooks: vec!["true".to_owned()],
             ..Settings::default()
         };
-        let kept = confine(&live, settings);
+        let (opts, kept) = confine(&live, options(), settings);
         assert!(kept.revert_file.is_some());
         assert_eq!(kept.hooks, ["true"]);
+        assert_eq!(opts.watch, Some(app::WATCH_INTERVAL));
     }
 }
