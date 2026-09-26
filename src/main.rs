@@ -6,6 +6,7 @@ use clap::Parser;
 
 use outlay::cli::{Cli, Command};
 use outlay::show;
+use outlay::tui;
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
@@ -18,10 +19,13 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let snapshot = cli.backend()?.query()?;
-    // Until the interactive editor exists, a bare `outlay` prints the table.
-    let text = match cli.command.unwrap_or(Command::Show) {
-        Command::Show => show::table(&snapshot),
+    let backend = cli.backend()?;
+    let Some(command) = cli.command else {
+        return tui::run(backend.as_ref(), cli.tui_options());
+    };
+    let snapshot = backend.query()?;
+    let text = match command {
+        Command::Show => show::show(&snapshot, &show::DiagramOptions::for_stdout()),
         Command::List => show::list(&snapshot),
     };
     print_stdout(&text)

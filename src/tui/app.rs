@@ -1,0 +1,1004 @@
+//! The editor state and its key handling. Pure: [`App::handle_key`] changes the state and returns
+//! the effects (reload, quit …) for the event loop to carry out, so tests drive the whole editor
+//! without a terminal.
+
+use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+
+use crate::model::geometry::{Dir, Point, Rect};
+use crate::model::history::History;
+use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
+use crate::model::links::{Align, Side, best_align};
+use crate::model::snap::SnapKind;
+use crate::model::validate::{Issue, Severity, validate};
+use crate::model::{Mode, Snapshot};
+
+use super::canvas::Viewport;
+use super::cmdline::{self, Cmd};
+use super::keys::{Action, Context, Keymap, normalise};
+use super::theme::Theme;
+
+/// Work for the event loop.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effect {
+    /// Re-read the live state and start over from it.
+    Query,
+    Quit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Status {
+    pub text: String,
+    pub severity: Severity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StickStep {
+    Target,
+    Side,
+}
+
+/// The `s` flow: pick a target, then a side and an alignment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StickFlow {
+    pub step: StickStep,
+    /// The display being stuck.
+    pub display: usize,
+    pub target: usize,
+    pub side: Side,
+    pub align: Align,
+    /// Where displays would go, in the current coordinates. Always includes the stuck display.
+    pub ghosts: Vec<(usize, Rect)>,
+    /// Why the stick would be refused.
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pick {
+    Resolution(i32, i32),
+    Mode(u32),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickItem {
+    pub label: String,
+    pub pick: Pick,
+}
+
+/// The resolution picker (`m`) or the rate picker (`r`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picker {
+    pub output: usize,
+    pub title: String,
+    pub items: Vec<PickItem>,
+    pub selected: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Question {
+    Quit,
+    Reload,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiMode {
+    Normal,
+    Stick(StickFlow),
+    Picker(Picker),
+    Command(String),
+    Confirm(Question),
+    Help { scroll: u16 },
+}
+
+/// Settings the editor starts with.
+#[derive(Clone, Debug)]
+pub struct Options {
+    pub keymap: Keymap,
+    pub theme: Theme,
+    pub nudge_step: i32,
+    /// Cell height divided by cell width; `None` detects it from the terminal.
+    pub cell_aspect: Option<f64>,
+    /// Where the state comes from when it is not the live X server: `demo`, a file name.
+    pub source: Option<String>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            keymap: Keymap::default(),
+            theme: Theme::default(),
+            nudge_step: 10,
+            cell_aspect: None,
+            source: None,
+        }
+    }
+}
+
+pub struct App {
+    /// The live state, as last read.
+    pub snap: Snapshot,
+    /// The pending layout.
+    pub layout: Layout,
+    pub history: History,
+    /// The focused output (an index into the snapshot). It may be off.
+    pub focus: usize,
+    pub mode: UiMode,
+    pub status: Option<Status>,
+    /// Validation of the pending layout, errors first.
+    pub issues: Vec<Issue>,
+    pub step: i32,
+    pub show_details: bool,
+    pub keymap: Keymap,
+    pub theme: Theme,
+    pub viewport: Viewport,
+    pub cell_aspect: f64,
+    pub source: Option<String>,
+}
+
+impl App {
+    pub fn new(snap: Snapshot, options: Options) -> Self {
+        let (layout, notes) = Layout::from_snapshot(&snap);
+        let mut app = App {
+            focus: 0,
+            layout,
+            snap,
+            history: History::default(),
+            mode: UiMode::Normal,
+            status: None,
+            issues: Vec::new(),
+            step: options.nudge_step,
+            show_details: true,
+            keymap: options.keymap,
+            theme: options.theme,
+            viewport: Viewport::default(),
+            cell_aspect: options.cell_aspect.unwrap_or(2.0),
+            source: options.source,
+        };
+        app.focus = app.default_focus();
+        app.revalidate();
+        if !notes.is_empty() {
+            app.say(Severity::Warning, notes.join(" "));
+        }
+        app
+    }
+
+    /// The primary display, else the first enabled one, else the first numbered one.
+    fn default_focus(&self) -> usize {
+        self.layout
+            .primary()
+            .or_else(|| self.layout.enabled().first().copied())
+            .or_else(|| self.snap.numbered().first().copied())
+            .unwrap_or(0)
+    }
+
+    pub fn say(&mut self, severity: Severity, text: impl Into<String>) {
+        self.status = Some(Status {
+            text: text.into(),
+            severity,
+        });
+    }
+
+    fn revalidate(&mut self) {
+        self.issues = validate(&self.layout, &self.snap);
+    }
+
+    /// Per-output differences between the pending layout and the live state.
+    pub fn pending(&self) -> Vec<OutputDiff> {
+        self.layout.diff(&self.snap)
+    }
+
+    /// Which outputs have pending changes, indexed like the layout.
+    pub fn pending_flags(&self) -> Vec<bool> {
+        let mut flags = vec![false; self.layout.len()];
+        for d in self.pending() {
+            flags[d.index] = true;
+        }
+        flags
+    }
+
+    pub fn context(&self) -> Context {
+        match &self.mode {
+            UiMode::Normal => Context::Normal,
+            UiMode::Stick(flow) if flow.step == StickStep::Target => Context::StickTarget,
+            UiMode::Stick(_) => Context::StickSide,
+            UiMode::Picker(_) => Context::Picker,
+            UiMode::Command(_) => Context::Command,
+            UiMode::Confirm(_) => Context::Confirm,
+            UiMode::Help { .. } => Context::Help,
+        }
+    }
+
+    pub fn set_cell_aspect(&mut self, aspect: f64) {
+        self.cell_aspect = aspect;
+    }
+
+    /// Starts over from a fresh reading of the live state. Undo history is dropped, since the
+    /// outputs may have changed.
+    pub fn reloaded(&mut self, snap: Snapshot) {
+        let focused = self.layout.names.get(self.focus).cloned();
+        let (layout, notes) = Layout::from_snapshot(&snap);
+        self.snap = snap;
+        self.layout = layout;
+        self.history = History::default();
+        self.mode = UiMode::Normal;
+        self.focus = focused
+            .and_then(|name| self.snap.find(&name))
+            .filter(|&i| self.snap.outputs[i].is_relevant())
+            .unwrap_or_else(|| self.default_focus());
+        self.viewport.refit();
+        self.revalidate();
+        if notes.is_empty() {
+            self.say(Severity::Info, "Reloaded the live state.");
+        } else {
+            self.say(Severity::Warning, notes.join(" "));
+        }
+    }
+
+    pub fn handle_key(&mut self, ev: KeyEvent) -> Vec<Effect> {
+        let Some(key) = normalise(&ev) else {
+            return Vec::new();
+        };
+        let context = self.context();
+        match self.keymap.lookup(context, key) {
+            Some(action) => self.perform(context, action),
+            None => {
+                if let (UiMode::Command(line), ratatui::crossterm::event::KeyCode::Char(c)) =
+                    (&mut self.mode, key.code)
+                    && (key.mods - KeyModifiers::SHIFT).is_empty()
+                {
+                    line.push(c);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    fn perform(&mut self, context: Context, action: Action) -> Vec<Effect> {
+        match context {
+            Context::Normal => self.normal(action),
+            Context::StickTarget | Context::StickSide => {
+                self.stick_key(action);
+                Vec::new()
+            }
+            Context::Picker => {
+                self.picker_key(action);
+                Vec::new()
+            }
+            Context::Command => self.command_key(action),
+            Context::Confirm => self.confirm_key(action),
+            Context::Help => {
+                if let UiMode::Help { scroll } = &mut self.mode {
+                    match action {
+                        Action::Move(Dir::Down) => *scroll = scroll.saturating_add(1),
+                        Action::Move(Dir::Up) => *scroll = scroll.saturating_sub(1),
+                        Action::Cancel => self.mode = UiMode::Normal,
+                        _ => {}
+                    }
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Runs one edit. A successful edit becomes an undo step and the viewport follows its
+    /// normalisation shift; a failed or no-op edit only sets the status.
+    fn edit<T>(
+        &mut self,
+        f: impl FnOnce(&mut Layout, &Snapshot) -> Result<T, EditError>,
+        report: impl Fn(&T) -> &CommitReport,
+    ) -> Option<T> {
+        let before = self.layout.clone();
+        match f(&mut self.layout, &self.snap) {
+            Ok(done) => {
+                let r = report(&done);
+                self.viewport.shift(r.shift);
+                let mut notes = r.notes.clone();
+                if !r.pushed.is_empty() {
+                    let names: Vec<String> =
+                        r.pushed.iter().map(|&i| self.layout.label(i)).collect();
+                    notes.insert(0, format!("Pushed {} out of the way.", names.join(", ")));
+                }
+                self.history.record(before, &self.layout);
+                self.revalidate();
+                self.status = None;
+                if !notes.is_empty() {
+                    self.say(Severity::Info, notes.join(" "));
+                }
+                Some(done)
+            }
+            Err(err) => {
+                self.layout = before;
+                let severity = match err {
+                    EditError::Refused(_) => Severity::Warning,
+                    EditError::NoChange(_) | EditError::NoSnapSpot(_) => Severity::Info,
+                };
+                let text = match err {
+                    EditError::NoSnapSpot(dir) => {
+                        let nudge = self
+                            .keymap
+                            .key_for(Context::Normal, Action::Nudge(dir))
+                            .unwrap_or_default();
+                        format!(
+                            "No snap spot further {}. {nudge} nudges freely.",
+                            dir.word()
+                        )
+                    }
+                    EditError::NoChange(text) => capitalise(&text),
+                    EditError::Refused(text) => text,
+                };
+                self.say(severity, text);
+                None
+            }
+        }
+    }
+
+    fn simple_edit(
+        &mut self,
+        f: impl FnOnce(&mut Layout, &Snapshot) -> Result<CommitReport, EditError>,
+    ) -> bool {
+        self.edit(f, |r| r).is_some()
+    }
+
+    /// Undo and redo restore whole layouts; the viewport follows the shift most displays made,
+    /// so the ones that stay put do not jump.
+    fn follow(&mut self, before: &Layout) {
+        let mut deltas: Vec<Point> = (0..self.layout.len())
+            .filter(|&i| before.is_enabled(i) && self.layout.is_enabled(i))
+            .filter(|&i| before.size(i) == self.layout.size(i))
+            .map(|i| {
+                let (a, b) = (before.outputs[i].pos, self.layout.outputs[i].pos);
+                Point::new(b.x - a.x, b.y - a.y)
+            })
+            .collect();
+        deltas.sort_by_key(|p| (p.x, p.y));
+        let common = deltas
+            .chunk_by(|a, b| a == b)
+            .max_by_key(|run| run.len())
+            .map(|run| run[0]);
+        if let Some(shift) = common {
+            self.viewport.shift(shift);
+        }
+    }
+
+    fn normal(&mut self, action: Action) -> Vec<Effect> {
+        let f = self.focus;
+        match action {
+            Action::Focus(dir) => {
+                if self.layout.is_enabled(f) {
+                    if let Some(next) = self.layout.focus_towards(f, dir) {
+                        self.focus = next;
+                    }
+                } else {
+                    self.focus = self.default_focus();
+                }
+            }
+            Action::FocusNext | Action::FocusPrev => {
+                // Mirror children share their root's box, so focus skips them.
+                let order: Vec<usize> = self
+                    .snap
+                    .numbered()
+                    .into_iter()
+                    .filter(|&i| !self.layout.is_mirror_child(i))
+                    .collect();
+                let n = order.len();
+                let at = order.iter().position(|&i| i == self.layout.mirror_root(f));
+                self.focus = match at {
+                    Some(k) if action == Action::FocusNext => order[(k + 1) % n],
+                    Some(k) => order[(k + n - 1) % n],
+                    None => order.first().copied().unwrap_or(f),
+                };
+            }
+            Action::FocusNumber(n) => match self.by_number(n) {
+                Some(i) => self.focus = i,
+                None => self.say(Severity::Info, format!("There is no display {n}.")),
+            },
+            Action::Snap(dir) => {
+                if let Some(done) = self.edit(|l, _| l.snap_move(f, dir), |s| &s.report)
+                    && let SnapKind::Swapped(n) = done.kind
+                {
+                    let text = format!(
+                        "Swapped {} and {}.",
+                        self.layout.label(f),
+                        self.layout.label(n)
+                    );
+                    self.say(Severity::Info, text);
+                }
+            }
+            Action::Nudge(dir) => {
+                let step = self.step;
+                self.simple_edit(|l, _| l.nudge(f, dir, step));
+            }
+            Action::Stick => self.start_stick(),
+            Action::Unstick => {
+                if self.simple_edit(|l, _| l.unstick(f)) {
+                    let text = format!("{} is an anchor now.", self.layout.label(f));
+                    self.say(Severity::Info, text);
+                }
+            }
+            Action::ModePicker => self.open_resolutions(),
+            Action::RatePicker => self.open_rates(),
+            Action::Smaller | Action::Larger => {
+                let larger = action == Action::Larger;
+                self.simple_edit(|l, s| l.step_resolution(s, f, larger));
+            }
+            Action::SlowerRate | Action::FasterRate => {
+                let higher = action == Action::FasterRate;
+                self.simple_edit(|l, s| l.step_rate(s, f, higher));
+            }
+            Action::RotateCw | Action::RotateCcw => {
+                let cw = action == Action::RotateCw;
+                self.simple_edit(|l, _| l.rotate(f, cw));
+            }
+            Action::Primary => {
+                self.simple_edit(|l, _| l.set_primary(f));
+            }
+            Action::Toggle => {
+                self.simple_edit(|l, s| l.toggle(s, f));
+            }
+            Action::Undo | Action::Redo => {
+                let before = self.layout.clone();
+                let done = if action == Action::Undo {
+                    self.history.undo(&mut self.layout)
+                } else {
+                    self.history.redo(&mut self.layout)
+                };
+                let word = if action == Action::Undo {
+                    "undo"
+                } else {
+                    "redo"
+                };
+                if done {
+                    self.follow(&before);
+                    self.revalidate();
+                    self.status = None;
+                } else {
+                    self.say(Severity::Info, format!("Nothing to {word}."));
+                }
+            }
+            Action::Reload => {
+                if self.pending().is_empty() {
+                    return vec![Effect::Query];
+                }
+                self.mode = UiMode::Confirm(Question::Reload);
+            }
+            Action::Command => self.mode = UiMode::Command(String::new()),
+            Action::Refit => self.viewport.refit(),
+            Action::Details => self.show_details = !self.show_details,
+            Action::Help => self.mode = UiMode::Help { scroll: 0 },
+            Action::Quit => return self.quit(false),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn quit(&mut self, force: bool) -> Vec<Effect> {
+        if force || self.pending().is_empty() {
+            return vec![Effect::Quit];
+        }
+        self.mode = UiMode::Confirm(Question::Quit);
+        Vec::new()
+    }
+
+    fn by_number(&self, n: usize) -> Option<usize> {
+        (0..self.layout.len()).find(|&i| self.layout.numbers[i] == Some(n))
+    }
+
+    fn confirm_key(&mut self, action: Action) -> Vec<Effect> {
+        let UiMode::Confirm(question) = self.mode else {
+            return Vec::new();
+        };
+        self.mode = UiMode::Normal;
+        match (action, question) {
+            (Action::Accept, Question::Quit) => vec![Effect::Quit],
+            (Action::Accept, Question::Reload) => vec![Effect::Query],
+            _ => Vec::new(),
+        }
+    }
+
+    // --- Stick flow -------------------------------------------------------------------------
+
+    /// Displays `f` can stick to: every box but its own.
+    fn stick_targets(&self, f: usize) -> Vec<usize> {
+        self.snap
+            .numbered()
+            .into_iter()
+            .filter(|&i| i != f && self.layout.is_enabled(i) && !self.layout.is_mirror_child(i))
+            .collect()
+    }
+
+    fn start_stick(&mut self) {
+        let f = self.focus;
+        if !self.layout.is_enabled(f) {
+            let text = format!("{} is off.", self.layout.label(f));
+            self.say(Severity::Info, text);
+            return;
+        }
+        let targets = self.stick_targets(f);
+        let fr = self.layout.rect(f);
+        let parent = self.layout.links[f]
+            .map(|l| self.layout.mirror_root(l.parent))
+            .filter(|p| targets.contains(p));
+        let nearest = targets.iter().copied().min_by_key(|&t| {
+            let (tx, ty) = self.layout.rect(t).center2();
+            let (fx, fy) = fr.center2();
+            (tx - fx).pow(2) + (ty - fy).pow(2)
+        });
+        let Some(target) = parent.or(nearest) else {
+            self.say(Severity::Info, "There is nothing to stick to.");
+            return;
+        };
+        let mut flow = StickFlow {
+            step: StickStep::Target,
+            display: f,
+            target,
+            side: Side::RightOf,
+            align: Align::Start,
+            ghosts: Vec::new(),
+            problem: None,
+        };
+        if targets.len() == 1 {
+            self.enter_side(&mut flow);
+        }
+        self.status = None;
+        self.mode = UiMode::Stick(flow);
+    }
+
+    /// Moves to the side step, starting from the current link to the target, else from where
+    /// the display sits now.
+    fn enter_side(&self, flow: &mut StickFlow) {
+        let (f, t) = (flow.display, flow.target);
+        let (fr, tr) = (self.layout.rect(f), self.layout.rect(t));
+        flow.step = StickStep::Side;
+        match self.layout.links[f] {
+            Some(link) if self.layout.mirror_root(link.parent) == t => {
+                flow.side = link.side;
+                flow.align = link.align;
+            }
+            _ => {
+                if let Some((dir, _)) = tr.shared_edge(&fr) {
+                    flow.side = Side::from_dir(dir);
+                    flow.align = best_align(flow.side, fr, tr).0;
+                } else {
+                    let (fx, fy) = fr.center2();
+                    let (tx, ty) = tr.center2();
+                    let (dx, dy) = (fx - tx, fy - ty);
+                    let across =
+                        dx.abs() * i64::from(tr.h.max(1)) >= dy.abs() * i64::from(tr.w.max(1));
+                    flow.side = match (across, dx >= 0, dy >= 0) {
+                        (true, true, _) => Side::RightOf,
+                        (true, false, _) => Side::LeftOf,
+                        (false, _, true) => Side::Below,
+                        (false, _, false) => Side::Above,
+                    };
+                    flow.align = Align::default_for(flow.side);
+                }
+            }
+        }
+        self.preview(flow);
+    }
+
+    /// Fills in where the displays would go if the flow were committed now.
+    fn preview(&self, flow: &mut StickFlow) {
+        let (f, t) = (flow.display, flow.target);
+        let mut trial = self.layout.clone();
+        flow.ghosts.clear();
+        flow.problem = None;
+        match trial.stick(&self.snap, f, t, flow.side, flow.align) {
+            Ok(report) => {
+                let back = |r: Rect| r.translated(-report.shift.x, -report.shift.y);
+                for i in trial.enabled() {
+                    if trial.is_mirror_child(i) {
+                        continue;
+                    }
+                    let r = back(trial.rect(i));
+                    if i == f || r != self.layout.rect(i) {
+                        flow.ghosts.push((i, r));
+                    }
+                }
+            }
+            Err(err) => flow.problem = Some(err.to_string()),
+        }
+    }
+
+    fn stick_key(&mut self, action: Action) {
+        let UiMode::Stick(mut flow) = std::mem::replace(&mut self.mode, UiMode::Normal) else {
+            return;
+        };
+        let targets = self.stick_targets(flow.display);
+        let keep = match (flow.step, action) {
+            (_, Action::Cancel) => false,
+            (StickStep::Target, Action::TargetNumber(n)) => match self.by_number(n) {
+                Some(t) if targets.contains(&t) => {
+                    flow.target = t;
+                    self.enter_side(&mut flow);
+                    true
+                }
+                _ => {
+                    self.say(Severity::Info, format!("Display {n} cannot be the target."));
+                    true
+                }
+            },
+            (StickStep::Target, Action::Target(dir)) => {
+                let skip: Vec<usize> = (0..self.layout.len())
+                    .filter(|i| !targets.contains(i))
+                    .collect();
+                if let Some(t) = self.layout.nearest_towards(flow.target, dir, &skip) {
+                    flow.target = t;
+                }
+                true
+            }
+            (StickStep::Target, Action::TargetNext | Action::TargetPrev) => {
+                if let Some(at) = targets.iter().position(|&t| t == flow.target) {
+                    let n = targets.len();
+                    let next = if action == Action::TargetNext {
+                        (at + 1) % n
+                    } else {
+                        (at + n - 1) % n
+                    };
+                    flow.target = targets[next];
+                }
+                true
+            }
+            (StickStep::Target, Action::Accept) => {
+                self.enter_side(&mut flow);
+                true
+            }
+            (StickStep::Side, Action::Side(dir)) => {
+                flow.side = Side::from_dir(dir);
+                flow.align = Align::default_for(flow.side);
+                self.preview(&mut flow);
+                true
+            }
+            (StickStep::Side, Action::Mirror) => {
+                flow.side = Side::Same;
+                self.preview(&mut flow);
+                true
+            }
+            (StickStep::Side, Action::AlignNext | Action::AlignPrev) => {
+                if flow.side != Side::Same {
+                    flow.align = if action == Action::AlignNext {
+                        flow.align.next()
+                    } else {
+                        flow.align.previous()
+                    };
+                    self.preview(&mut flow);
+                }
+                true
+            }
+            (StickStep::Side, Action::Back) => {
+                flow.step = StickStep::Target;
+                flow.ghosts.clear();
+                flow.problem = None;
+                targets.len() > 1
+            }
+            (StickStep::Side, Action::Accept) => {
+                let (f, t, side, align) = (flow.display, flow.target, flow.side, flow.align);
+                if self.simple_edit(|l, s| l.stick(s, f, t, side, align)) {
+                    let text = format!(
+                        "Stuck {} {}.",
+                        self.layout.label(f),
+                        self.layout.link_text(f)
+                    );
+                    if self.status.is_none() {
+                        self.say(Severity::Info, text);
+                    }
+                }
+                false
+            }
+            _ => true,
+        };
+        if keep {
+            self.mode = UiMode::Stick(flow);
+        }
+    }
+
+    /// The status line text of the stick flow.
+    pub fn stick_summary(&self, flow: &StickFlow) -> String {
+        let who = self.layout.label(flow.display);
+        let target = self.layout.label(flow.target);
+        let text = match flow.step {
+            StickStep::Target => format!("Stick {who} to {target}?"),
+            StickStep::Side if flow.side == Side::Same => format!("Stick {who}: mirror {target}"),
+            StickStep::Side => format!(
+                "Stick {who} {} {target}, {}",
+                flow.side.as_str(),
+                flow.align.label(flow.side)
+            ),
+        };
+        match &flow.problem {
+            Some(problem) => format!("{text} ({problem})"),
+            None => text,
+        }
+    }
+
+    // --- Pickers ----------------------------------------------------------------------------
+
+    fn picker_mode(&mut self) -> Option<Mode> {
+        let f = self.focus;
+        if !self.layout.is_enabled(f) {
+            let toggle = self
+                .keymap
+                .key_for(Context::Normal, Action::Toggle)
+                .unwrap_or_default();
+            let text = format!("{} is off; {toggle} turns it on.", self.layout.label(f));
+            self.say(Severity::Info, text);
+            return None;
+        }
+        self.layout.outputs[f].mode.clone()
+    }
+
+    fn open_resolutions(&mut self) {
+        let Some(current) = self.picker_mode() else {
+            return;
+        };
+        let f = self.focus;
+        let out = &self.snap.outputs[f];
+        let items: Vec<PickItem> = out
+            .resolutions()
+            .into_iter()
+            .map(|r| {
+                let top = out
+                    .rates(r.width, r.height)
+                    .first()
+                    .map(|m| m.refresh)
+                    .unwrap_or_default();
+                let mark = |on: bool, c: char| if on { c } else { ' ' };
+                let is_current = r.width == current.width && r.height == current.height;
+                PickItem {
+                    label: format!(
+                        "{}{} {:>9}  up to {top:.2} Hz",
+                        mark(is_current, '•'),
+                        mark(r.preferred, '+'),
+                        format!("{}x{}", r.width, r.height),
+                    ),
+                    pick: Pick::Resolution(r.width, r.height),
+                }
+            })
+            .collect();
+        let selected = items
+            .iter()
+            .position(|it| it.pick == Pick::Resolution(current.width, current.height))
+            .unwrap_or(0);
+        self.mode = UiMode::Picker(Picker {
+            output: f,
+            title: format!("{} resolution", self.layout.label(f)),
+            items,
+            selected,
+        });
+    }
+
+    fn open_rates(&mut self) {
+        let Some(current) = self.picker_mode() else {
+            return;
+        };
+        let f = self.focus;
+        let items: Vec<PickItem> = self.snap.outputs[f]
+            .rates(current.width, current.height)
+            .into_iter()
+            .map(|m| {
+                let mark = |on: bool, c: char| if on { c } else { ' ' };
+                PickItem {
+                    label: format!(
+                        "{}{} {:>9} Hz",
+                        mark(m.xid == current.xid, '•'),
+                        mark(m.preferred, '+'),
+                        m.rate_label()
+                    ),
+                    pick: Pick::Mode(m.xid),
+                }
+            })
+            .collect();
+        if items.is_empty() {
+            let text = format!("{} lists no other rates.", self.layout.label(f));
+            self.say(Severity::Info, text);
+            return;
+        }
+        let selected = items
+            .iter()
+            .position(|it| it.pick == Pick::Mode(current.xid))
+            .unwrap_or(0);
+        self.mode = UiMode::Picker(Picker {
+            output: f,
+            title: format!(
+                "{} rate at {}x{}",
+                self.layout.label(f),
+                current.width,
+                current.height
+            ),
+            items,
+            selected,
+        });
+    }
+
+    fn picker_key(&mut self, action: Action) {
+        let UiMode::Picker(picker) = &mut self.mode else {
+            return;
+        };
+        match action {
+            Action::Move(Dir::Down) => {
+                picker.selected = (picker.selected + 1).min(picker.items.len().saturating_sub(1));
+            }
+            Action::Move(Dir::Up) => picker.selected = picker.selected.saturating_sub(1),
+            Action::Accept => {
+                let (i, pick) = (picker.output, picker.items[picker.selected].pick);
+                self.mode = UiMode::Normal;
+                match pick {
+                    Pick::Resolution(w, h) => self.simple_edit(|l, s| l.set_resolution(s, i, w, h)),
+                    Pick::Mode(xid) => self.simple_edit(|l, s| l.set_mode(s, i, xid)),
+                };
+            }
+            Action::Cancel => self.mode = UiMode::Normal,
+            _ => {}
+        }
+    }
+
+    // --- Command line -----------------------------------------------------------------------
+
+    fn command_key(&mut self, action: Action) -> Vec<Effect> {
+        let UiMode::Command(line) = &mut self.mode else {
+            return Vec::new();
+        };
+        match action {
+            Action::Back => {
+                if line.pop().is_none() {
+                    self.mode = UiMode::Normal;
+                }
+                Vec::new()
+            }
+            Action::Accept => {
+                let line = std::mem::take(line);
+                self.mode = UiMode::Normal;
+                if line.trim().is_empty() {
+                    return Vec::new();
+                }
+                self.run_command(&line)
+            }
+            Action::Cancel => {
+                self.mode = UiMode::Normal;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Runs one command-line command against the focused display (or the one it names).
+    pub fn run_command(&mut self, line: &str) -> Vec<Effect> {
+        let cmd = match cmdline::parse(line) {
+            Ok(cmd) => cmd,
+            Err(err) => {
+                self.say(Severity::Warning, err);
+                return Vec::new();
+            }
+        };
+        let f = self.focus;
+        match cmd {
+            Cmd::Pos(x, y) => {
+                self.simple_edit(|l, _| l.move_to(f, x, y));
+            }
+            Cmd::Move(dx, dy) => {
+                self.simple_edit(|l, _| l.move_by(f, dx, dy));
+            }
+            Cmd::Mode { w, h, rate: None } => {
+                self.simple_edit(|l, s| l.set_resolution(s, f, w, h));
+            }
+            Cmd::Mode {
+                w,
+                h,
+                rate: Some(r),
+            } => match nearest_rate(&self.snap, f, w, h, r) {
+                Some(xid) => {
+                    self.simple_edit(|l, s| l.set_mode(s, f, xid));
+                }
+                None => {
+                    let text = format!("{} has no {w}x{h} mode.", self.layout.label(f));
+                    self.say(Severity::Warning, text);
+                }
+            },
+            Cmd::Rate(r) => {
+                let size = self.layout.outputs[f].mode.as_ref().map(Mode::size);
+                match size.and_then(|s| nearest_rate(&self.snap, f, s.w, s.h, r)) {
+                    Some(xid) => {
+                        self.simple_edit(|l, s| l.set_mode(s, f, xid));
+                    }
+                    None => {
+                        let text = format!("{} has no mode to change.", self.layout.label(f));
+                        self.say(Severity::Warning, text);
+                    }
+                }
+            }
+            Cmd::Rotate(r) => {
+                self.simple_edit(|l, _| l.set_rotation(f, r));
+            }
+            Cmd::Reflect(r) => {
+                self.simple_edit(|l, _| l.set_reflection(f, r));
+            }
+            Cmd::ResetScale => {
+                self.simple_edit(|l, _| l.reset_scale(f));
+            }
+            Cmd::Stick {
+                child,
+                side,
+                parent,
+                align,
+            } => {
+                let (Some(c), Some(p)) = (self.named(Some(child)), self.named(Some(parent))) else {
+                    return Vec::new();
+                };
+                let align = align.unwrap_or(Align::default_for(side));
+                if self.simple_edit(|l, s| l.stick(s, c, p, side, align)) && self.status.is_none() {
+                    let text = format!(
+                        "Stuck {} {}.",
+                        self.layout.label(c),
+                        self.layout.link_text(c)
+                    );
+                    self.say(Severity::Info, text);
+                }
+            }
+            Cmd::Unstick(t) => {
+                if let Some(i) = self.named(t) {
+                    self.simple_edit(|l, _| l.unstick(i));
+                }
+            }
+            Cmd::Primary(t) => {
+                if let Some(i) = self.named(t) {
+                    self.simple_edit(|l, _| l.set_primary(i));
+                }
+            }
+            Cmd::On(t) => self.switch(t, true),
+            Cmd::Off(t) => self.switch(t, false),
+            Cmd::Quit { force } => return self.quit(force),
+        }
+        Vec::new()
+    }
+
+    /// The output a command names, or the focused one; reports a bad name.
+    fn named(&mut self, token: Option<String>) -> Option<usize> {
+        let Some(token) = token else {
+            return Some(self.focus);
+        };
+        match cmdline::resolve_output(&self.layout, &token) {
+            Ok(i) => Some(i),
+            Err(err) => {
+                self.say(Severity::Warning, capitalise(&err));
+                None
+            }
+        }
+    }
+
+    /// `:on` and `:off`.
+    fn switch(&mut self, token: Option<String>, on: bool) {
+        let Some(i) = self.named(token) else { return };
+        if self.layout.is_enabled(i) == on {
+            let state = if on { "on" } else { "off" };
+            let text = format!("{} is already {state}.", self.layout.label(i));
+            self.say(Severity::Info, text);
+        } else {
+            self.simple_edit(|l, s| l.toggle(s, i));
+        }
+    }
+}
+
+/// The mode of output `i` at `w`x`h` whose refresh is nearest to `rate`, as xrandr picks it.
+fn nearest_rate(snap: &Snapshot, i: usize, w: i32, h: i32, rate: f64) -> Option<u32> {
+    snap.outputs[i]
+        .rates(w, h)
+        .into_iter()
+        .min_by(|a, b| {
+            (a.refresh - rate)
+                .abs()
+                .total_cmp(&(b.refresh - rate).abs())
+        })
+        .map(|m| m.xid)
+}
+
+fn capitalise(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut out: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    out.push_str(chars.as_str());
+    if !out.ends_with('.') {
+        out.push('.');
+    }
+    out
+}

@@ -12,9 +12,11 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 thiserror = "2"
 
 [dev-dependencies]
+insta = "1.48"
 proptest = "1.11"
 
 [profile.release]

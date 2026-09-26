@@ -1,0 +1,17 @@
+---
+source: tests/tui.rs
+assertion_line: 438
+expression: "screen(&mut app, 50, 12).backend()"
+---
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"  The terminal is too small: 50x12. outlay needs  "
+"                      60x16.                      "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "

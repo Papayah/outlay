@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::tui::app::Options;
+use crate::tui::theme::Theme;
 use crate::xrandr::{Backend, FixtureBackend, XrandrCli};
 
 #[derive(Debug, Parser)]
@@ -33,7 +35,7 @@ pub struct Cli {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Print the output table, then exit
+    /// Print the to-scale diagram and the output table, then exit
     Show,
     /// List outputs, then resolutions with their rates
     List,
@@ -50,6 +52,25 @@ impl Cli {
             return Ok(Box::new(FixtureBackend::from_file(path)?));
         }
         Ok(Box::new(XrandrCli::new()))
+    }
+
+    /// Editor settings from the flags.
+    pub fn tui_options(&self) -> Options {
+        let source = if self.demo {
+            Some("demo".to_owned())
+        } else {
+            self.from_file.as_ref().map(|p| {
+                p.file_name().map_or_else(
+                    || p.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            })
+        };
+        Options {
+            theme: Theme::from_env(),
+            source,
+            ..Options::default()
+        }
     }
 }
 

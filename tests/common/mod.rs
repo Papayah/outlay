@@ -159,3 +159,44 @@ pub fn stuck(
 ) -> Option<(String, Side, Align, i32)> {
     Some((parent.to_owned(), side, align, offset))
 }
+
+/// Key events from a script: plain characters, plus `<Enter>`, `<Esc>`, `<Tab>`, `<S-Tab>`,
+/// `<BS>`, arrows (`<Left>`, `<S-Up>` …), `<A-h>` (Alt) and `<C-r>` (Ctrl). `<lt>` types `<`.
+pub fn keys(script: &str) -> Vec<ratatui::crossterm::event::KeyEvent> {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut out = Vec::new();
+    let mut rest = script;
+    while let Some(c) = rest.chars().next() {
+        if c == '<'
+            && let Some(end) = rest.find('>')
+        {
+            let name = &rest[1..end];
+            rest = &rest[end + 1..];
+            let (mods, base) = match name.split_once('-') {
+                Some(("A", b)) => (KeyModifiers::ALT, b),
+                Some(("C", b)) => (KeyModifiers::CONTROL, b),
+                Some(("S", b)) => (KeyModifiers::SHIFT, b),
+                _ => (KeyModifiers::NONE, name),
+            };
+            let code = match base {
+                "Enter" => KeyCode::Enter,
+                "Esc" => KeyCode::Esc,
+                "Tab" if mods == KeyModifiers::SHIFT => KeyCode::BackTab,
+                "Tab" => KeyCode::Tab,
+                "BS" => KeyCode::Backspace,
+                "Left" => KeyCode::Left,
+                "Right" => KeyCode::Right,
+                "Up" => KeyCode::Up,
+                "Down" => KeyCode::Down,
+                "lt" => KeyCode::Char('<'),
+                b if b.chars().count() == 1 => KeyCode::Char(b.chars().next().unwrap()),
+                other => panic!("unknown key <{other}>"),
+            };
+            out.push(KeyEvent::new(code, mods));
+        } else {
+            rest = &rest[c.len_utf8()..];
+            out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+    out
+}

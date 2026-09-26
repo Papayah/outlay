@@ -207,6 +207,11 @@ impl Layout {
     /// The nearest enabled display in `dir` from `f`: candidates have their centre in that
     /// half-plane, and the score is the main-axis distance plus twice the cross-axis offset.
     pub fn focus_towards(&self, f: usize, dir: Dir) -> Option<usize> {
+        self.nearest_towards(f, dir, &[])
+    }
+
+    /// [`Layout::focus_towards`], never landing on a display in `skip`.
+    pub fn nearest_towards(&self, f: usize, dir: Dir, skip: &[usize]) -> Option<usize> {
         if !self.is_enabled(f) {
             return None;
         }
@@ -214,7 +219,10 @@ impl Layout {
         let (fx, fy) = self.rect(root).center2();
         (0..self.len())
             .filter(|&o| {
-                self.is_enabled(o) && !self.is_mirror_child(o) && !self.are_mirrors(o, root)
+                self.is_enabled(o)
+                    && !self.is_mirror_child(o)
+                    && !self.are_mirrors(o, root)
+                    && !skip.contains(&o)
             })
             .filter_map(|o| {
                 let (cx, cy) = self.rect(o).center2();

@@ -75,6 +75,33 @@ fn show_prints_the_table() {
 }
 
 #[test]
+fn show_draws_the_layout_to_scale_above_the_table() {
+    let (ok, stdout, stderr) = outlay(&["--demo", "show"]);
+    assert!(ok, "{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[1], "", "{stdout}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("│           1 HDMI-1-0           │")),
+        "{stdout}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("▸")),
+        "the stick link of HDMI-1-0 points at DP-1-2: {stdout}"
+    );
+    let table = lines
+        .iter()
+        .position(|l| l.starts_with("#  output"))
+        .unwrap();
+    assert!(table > 10, "the diagram comes first: {stdout}");
+    assert!(
+        !stdout.contains('\x1b'),
+        "no colour when stdout is not a terminal"
+    );
+}
+
+#[test]
 fn a_bad_capture_is_reported() {
     let (ok, _, stderr) = outlay(&["--from-file", "/nonexistent/capture.txt", "show"]);
     assert!(!ok);
