@@ -4,7 +4,8 @@
 usage: tools/pty_drive.py SCENARIO -- outlay args...     (build with cargo build --release)
 
 Scenarios: keep, timeout (pass --revert-timeout 2), sigterm, sighup, keys, hold (a held Alt-l;
-PTY_DUMP=1 prints the screen). With --demo or -n nothing reaches the X server. Without them the
+PTY_DUMP=1 prints the screen), profiles (pass --layouts-dir with copies of tv-home.sh and
+home-setup.sh; it saves desk.sh there). With --demo or -n nothing reaches the X server. Without them the
 apply is real: ask the user first.
 """
 import fcntl
@@ -192,6 +193,24 @@ def main():
         send(fd, "u", 0.3)
         print("one undo restores it:", "no changes" in SCREEN.text())
         send(fd, "q", 0.3)
+        print("exit:", wait(pid))
+    elif scenario == "profiles":
+        send(fd, "e", 0.5)
+        print("picker:", "profiles · " in SCREEN.text())
+        send(fd, "j\r", 0.5)
+        print("opened:", "Opened tv-home" in SCREEN.text())
+        send(fd, "w", 0.3)
+        print("save prompt:", "save as tv-home" in SCREEN.text())
+        send(fd, "\x7f" * 7 + "desk\r", 0.5)
+        print("saved:", "Saved " in SCREEN.text())
+        send(fd, ":e home-setup\r", 0.5)
+        print("remap:", "Choose where each one goes" in SCREEN.text())
+        send(fd, "\r", 0.5)
+        print("opened after remap:", "Opened home-setup" in SCREEN.text())
+        if os.environ.get("PTY_DUMP"):
+            print(SCREEN.text())
+        send(fd, "q", 0.3)
+        send(fd, "\r", 0.3)
         print("exit:", wait(pid))
     else:
         print("unknown scenario")

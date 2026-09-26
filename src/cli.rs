@@ -43,14 +43,32 @@ pub struct Cli {
     /// [default: 15, or revert_seconds from the config]
     #[arg(long, global = true, value_name = "SECONDS")]
     pub revert_timeout: Option<u64>,
+
+    /// Where profiles live [default: ~/.screenlayout, or layouts_dir from the config]
+    #[arg(long, global = true, value_name = "DIR")]
+    pub layouts_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+#[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
 pub enum Command {
     /// Print the to-scale diagram and the output table, then exit
     Show,
     /// List outputs, then resolutions with their rates
     List,
+    /// Apply a profile (<layouts-dir>/<PROFILE>.sh, or a path) with the automatic revert;
+    /// with -n, print the command only
+    Apply {
+        /// A profile name, or a path to a script
+        profile: String,
+    },
+    /// Save the live layout as an arandr-compatible profile; with -n, print it only
+    Save {
+        /// A profile name, or a path to a script
+        profile: String,
+        /// Overwrite a different existing file without asking
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 /// How long a `post_apply` hook may run.
@@ -101,8 +119,16 @@ impl Cli {
             revert_file: default_revert_file(),
             hooks: config.post_apply.clone(),
             hook_timeout: HOOK_TIMEOUT,
+            layouts_dir: Some(self.layouts_dir(config)),
         };
         Ok((options, settings))
+    }
+
+    /// `--layouts-dir`, else the config's `layouts_dir`.
+    pub fn layouts_dir(&self, config: &Config) -> PathBuf {
+        self.layouts_dir
+            .clone()
+            .unwrap_or_else(|| config.layouts_dir())
     }
 }
 
@@ -142,5 +168,35 @@ mod tests {
         let (_, settings) = cli.tui_options(&config).unwrap();
         assert_eq!(settings.revert_seconds, 30);
         assert_eq!(settings.hooks, ["true"]);
+    }
+
+    #[test]
+    fn profile_commands_and_the_layouts_dir() {
+        let cli = Cli::try_parse_from(["outlay", "apply", "home", "-n"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Apply {
+                profile: "home".to_owned()
+            })
+        );
+        assert!(cli.dry_run);
+        let cli =
+            Cli::try_parse_from(["outlay", "save", "-f", "x/y.sh", "--layouts-dir", "/l"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Save {
+                profile: "x/y.sh".to_owned(),
+                force: true
+            })
+        );
+        let config = Config {
+            layouts_dir: "/from/config".to_owned(),
+            ..Config::default()
+        };
+        assert_eq!(cli.layouts_dir(&config), PathBuf::from("/l"));
+        let cli = Cli::try_parse_from(["outlay"]).unwrap();
+        assert_eq!(cli.layouts_dir(&config), PathBuf::from("/from/config"));
+        let (_, settings) = cli.tui_options(&config).unwrap();
+        assert_eq!(settings.layouts_dir, Some(PathBuf::from("/from/config")));
     }
 }

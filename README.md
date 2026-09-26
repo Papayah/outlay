@@ -57,6 +57,21 @@ returns are ignored, so one pressed while the screens were dark cannot answer. B
 apply, outlay writes the revert command to `$XDG_STATE_HOME/outlay/revert.sh`, so you can run it
 by hand if anything goes wrong.
 
+## Profiles
+
+Profiles are arandr-style scripts in `~/.screenlayout` (`--layouts-dir` or `layouts_dir` in the
+config point elsewhere), so arandr and outlay read each other's files. In the editor, `e` opens a
+picker that draws each profile to scale; opening one makes its layout the pending one (one `u`
+undoes it), and `a` applies it as usual. `w` saves the pending layout: an existing script keeps
+every line that is not an xrandr call, and outlay shows a diff and asks before overwriting it.
+When a profile names an output that is not connected (`eDP-2` on a laptop that now calls its
+panel `eDP-1`), a dialog asks where it goes, starting from a free output of the same kind.
+
+From the shell, `outlay apply home` applies `~/.screenlayout/home.sh` with the same verification
+and countdown (type `y` and Enter to keep it; `--revert-timeout 0` keeps it without asking, for
+key bindings), and `outlay save home` saves the live layout (`-f` overwrites a different file
+without asking). With `-n`, both only print what they would run or write.
+
 ## Configuration
 
 `$XDG_CONFIG_HOME/outlay/config.toml` is optional; every key has a default:

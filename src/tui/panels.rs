@@ -27,6 +27,9 @@ pub fn title_bar(app: &App, area: Rect, buf: &mut Buffer) {
     if let Some(source) = &app.source {
         left.push(Span::styled(format!(" · {source}"), app.theme.dim()));
     }
+    if let Some(profile) = &app.profile {
+        left.push(Span::raw(format!(" · profile {profile}")));
+    }
     Line::from(left).render(area, buf);
 
     let pending = app.pending().len();
@@ -276,22 +279,29 @@ pub fn hint_line(app: &App, area: Rect, buf: &mut Buffer) {
     Line::from(spans).render(area, buf);
 }
 
-/// `:pos 10 20█` in place of the hint line.
-pub fn command_line(app: &App, line: &str, area: Rect, buf: &mut Buffer) {
+/// `:pos 10 20█` or `save as home█` in place of the hint line.
+pub fn command_line(
+    app: &App,
+    prompt: &str,
+    line: &str,
+    context: Context,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     let hints: Vec<String> = app
         .keymap
-        .hints(Context::Command, |_| true)
+        .hints(context, |_| true)
         .into_iter()
         .map(|(k, h)| format!("{k} {h}"))
         .collect();
     let hints = hints.join(" · ");
     let text = Line::from(vec![
-        Span::styled(":", app.theme.key()),
+        Span::styled(prompt.to_owned(), app.theme.key()),
         Span::raw(line.to_owned()),
         Span::styled("█", Style::new().add_modifier(Modifier::SLOW_BLINK)),
     ]);
     text.render(area, buf);
-    let used = line.chars().count() + 3;
+    let used = prompt.chars().count() + line.chars().count() + 2;
     let hint_width = hints.chars().count() + 1;
     if used + hint_width < usize::from(area.width) {
         let x = area.right() - hint_width as u16;

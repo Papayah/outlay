@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
 use super::app::{App, UiMode};
 use super::canvas::{self, Scene};
+use super::keys::Context;
 use super::{panels, popups};
 
 /// Below this the editor shows a "terminal too small" screen.
@@ -56,7 +57,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     panels::status_line(app, status, buf);
     match &app.mode {
-        UiMode::Command(line) => panels::command_line(app, line, hints, buf),
+        UiMode::Command(line) => panels::command_line(app, ":", line, Context::Command, hints, buf),
+        UiMode::SavePrompt(line) => {
+            panels::command_line(app, "save as ", line, Context::SavePrompt, hints, buf);
+        }
         _ => panels::hint_line(app, hints, buf),
     }
 
@@ -71,6 +75,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         UiMode::Applying => popups::applying(main, buf),
         UiMode::Countdown(c) => popups::countdown(app, c, main, buf),
         UiMode::Message(m) => popups::message(app, m, main, buf),
+        UiMode::Profiles(picker) => popups::profiles(app, picker, main, buf),
+        UiMode::Remap(dialog) => popups::remap(app, dialog, main, buf),
+        UiMode::Overwrite(plan) => popups::overwrite(app, plan, main, buf),
         _ => {}
     }
 }

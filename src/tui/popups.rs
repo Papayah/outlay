@@ -8,8 +8,10 @@ use ratatui::widgets::{Block, Clear, LineGauge, Padding, Paragraph, Widget, Wrap
 
 use crate::model::validate::Severity;
 
-use super::app::{App, ApplyPlan, Countdown, Message, Picker, Question};
-use super::canvas::truncate;
+use super::app::{
+    App, ApplyPlan, Countdown, Message, Picker, ProfilePicker, Question, RemapDialog, SavePlan,
+};
+use super::canvas::{self, Scene, Viewport, truncate};
 use super::cmdline::USAGE;
 use super::keys::Context;
 
@@ -302,4 +304,156 @@ pub fn message(app: &App, message: &Message, area: Rect, buf: &mut Buffer) {
         area,
         buf,
     );
+}
+
+/// The profile picker: names on the left, the selected profile drawn to scale on the right, and
+/// what loading it would change or skip below.
+pub fn profiles(app: &App, picker: &ProfilePicker, area: Rect, buf: &mut Buffer) {
+    let names_width = picker
+        .items
+        .iter()
+        .map(|it| it.name.chars().count() + 4)
+        .max()
+        .unwrap_or(10)
+        .clamp(12, 32) as u16;
+    let width = area.width.saturating_sub(4).min(names_width + 52);
+    let height = area.height.saturating_sub(2).min(20);
+    let rect = centred(area, width, height);
+    let inner = frame(format!("profiles · {}", picker.items.len()), rect, buf);
+    if inner.height < 4 || inner.width < names_width + 12 {
+        return;
+    }
+    let body = Rect::new(inner.x, inner.y, inner.width, inner.height - 2);
+    let list = Rect::new(body.x, body.y, names_width, body.height);
+    let rows = usize::from(list.height);
+    let first = picker.selected.saturating_sub(rows.saturating_sub(1));
+    for (k, item) in picker.items.iter().enumerate().skip(first).take(rows) {
+        let y = list.y + (k - first) as u16;
+        let mark = if item.unmatched.is_empty() { ' ' } else { '~' };
+        let text = format!(" {mark}{:<w$}", item.name, w = usize::from(list.width) - 2);
+        let style = if k == picker.selected {
+            app.theme.selected()
+        } else {
+            Style::new()
+        };
+        buf.set_string(list.x, y, truncate(&text, usize::from(list.width)), style);
+    }
+
+    for y in body.top()..body.bottom() {
+        buf.set_string(list.right(), y, "│", app.theme.dim());
+    }
+
+    let item = &picker.items[picker.selected];
+    let side = Rect::new(
+        list.right() + 2,
+        body.y,
+        body.width - list.width - 2,
+        body.height,
+    );
+    let mut notes: Vec<Line> = Vec::new();
+    if !item.unmatched.is_empty() {
+        notes.push(Line::styled(
+            format!("~ not connected: {}", item.unmatched.join(" ")),
+            app.theme.severity(Severity::Warning),
+        ));
+    }
+    let changes = item.preview.diff(&app.snap).len();
+    notes.push(Line::styled(
+        match changes {
+            0 => "no changes".to_owned(),
+            1 => "1 output changes".to_owned(),
+            n => format!("{n} outputs change"),
+        },
+        app.theme.dim(),
+    ));
+    let note_rows = (notes.len() as u16).min(side.height.saturating_sub(3));
+    let drawing = Rect::new(side.x, side.y, side.width, side.height - note_rows);
+    let pending = vec![false; item.preview.len()];
+    let scene = Scene {
+        layout: &item.preview,
+        snap: &app.snap,
+        theme: app.theme,
+        focus: None,
+        target: None,
+        double_borders: false,
+        ghosts: &[],
+        pending: &pending,
+    };
+    let mut view = Viewport::default();
+    view.update(drawing, scene.bounds(), app.cell_aspect);
+    canvas::render(&scene, &view, drawing, buf);
+    let below = Rect::new(side.x, drawing.bottom(), side.width, note_rows);
+    Paragraph::new(notes).render(below, buf);
+
+    let hint_row = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
+    hints(app, Context::Profiles).render(hint_row, buf);
+}
+
+/// Where each of a profile's missing outputs goes.
+pub fn remap(app: &App, dialog: &RemapDialog, area: Rect, buf: &mut Buffer) {
+    let mut lines = vec![Line::from(format!(
+        "{} names outputs that are not connected. Choose where each one goes:",
+        dialog.item.name
+    ))];
+    lines.push(Line::default());
+    let width = dialog
+        .rows
+        .iter()
+        .map(|(from, _)| from.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (k, (from, to)) in dialog.rows.iter().enumerate() {
+        let target = match to {
+            Some(i) => {
+                let out = &app.snap.outputs[*i];
+                format!("{} {}", app.layout.label(*i), out.label())
+                    .trim_end()
+                    .to_owned()
+            }
+            None => "skip".to_owned(),
+        };
+        let text = format!("  {from:<width$}  →  ‹ {target} ›");
+        let style = if k == dialog.selected {
+            app.theme.selected()
+        } else {
+            Style::new()
+        };
+        lines.push(Line::styled(text, style));
+    }
+    text_popup(
+        app,
+        format!("open {}", dialog.item.name),
+        lines,
+        Context::Remap,
+        area,
+        buf,
+    );
+}
+
+/// "Overwrite this profile?" with the line diff.
+pub fn overwrite(app: &App, plan: &SavePlan, area: Rect, buf: &mut Buffer) {
+    let mut lines = vec![Line::from(format!(
+        "{} exists and differs:",
+        super::session::tilde(&plan.path)
+    ))];
+    lines.push(Line::default());
+    let rows = usize::from(area.height.saturating_sub(9));
+    let changed: Vec<&String> = plan.diff.iter().filter(|l| !l.starts_with("  ")).collect();
+    for line in changed.iter().take(rows) {
+        let style = if line.starts_with('+') {
+            app.theme.success()
+        } else {
+            app.theme.severity(Severity::Error)
+        };
+        lines.push(Line::styled((*line).clone(), style));
+    }
+    if changed.len() > rows {
+        lines.push(Line::styled(
+            format!("… {} more", changed.len() - rows),
+            app.theme.dim(),
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from("Overwrite it? Other lines stay as they are."));
+    text_popup(app, "save".to_owned(), lines, Context::Confirm, area, buf);
 }

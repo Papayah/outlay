@@ -17,9 +17,10 @@ use ratatui::crossterm::event::Event;
 
 use crate::model::Snapshot;
 use crate::model::validate::Severity;
+use crate::xrandr::script::{self, line_diff, profile_path, save_text};
 use crate::xrandr::{Backend, command};
 
-use super::app::{App, ApplyRequest, Effect, RevertReason};
+use super::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, SavePlan};
 
 /// Where input comes from, as far as the session cares: after xrandr returns, keys pressed
 /// while the screens were dark are thrown away.
@@ -37,6 +38,8 @@ pub struct Settings {
     /// Shell commands run after a layout is kept.
     pub hooks: Vec<String>,
     pub hook_timeout: Duration,
+    /// Where profiles live. Unset, `w` and `e` only report that.
+    pub layouts_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -46,7 +49,16 @@ impl Default for Settings {
             revert_file: None,
             hooks: Vec::new(),
             hook_timeout: Duration::from_secs(10),
+            layouts_dir: None,
         }
+    }
+}
+
+/// A path as the status line shows it: `~/.screenlayout/home.sh`.
+pub fn tilde(path: &Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_owned)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
     }
 }
 
@@ -73,6 +85,8 @@ pub struct Session<'a> {
     /// Bytes for the terminal, written between two draws (OSC 52).
     pub outbox: Vec<u8>,
     pub quit: bool,
+    /// Whether the last applied layout was kept.
+    pub kept: bool,
 }
 
 impl<'a> Session<'a> {
@@ -91,6 +105,7 @@ impl<'a> Session<'a> {
             queue: VecDeque::new(),
             outbox: Vec::new(),
             quit: false,
+            kept: false,
         }
     }
 
@@ -108,6 +123,11 @@ impl<'a> Session<'a> {
     pub fn tick(&mut self, now: Instant) {
         let effects = self.app.tick(now);
         self.queue.extend(effects);
+    }
+
+    /// Queues work, as a key would: `outlay apply` asks for the apply and the answer this way.
+    pub fn push(&mut self, effect: Effect) {
+        self.queue.push_back(effect);
     }
 
     /// Whether effects are waiting. The loop draws once before performing them, so "applying…"
@@ -158,6 +178,106 @@ impl<'a> Session<'a> {
                         "Copied the xrandr command to the clipboard (OSC 52).",
                     );
                 }
+                Effect::ListProfiles => self.list_profiles(),
+                Effect::OpenProfile(name) => self.open_profile(&name),
+                Effect::SaveProfile(name) => self.save_profile(&name),
+                Effect::WriteProfile(plan) => self.write_profile(&plan),
+            }
+        }
+    }
+
+    fn layouts_dir(&mut self) -> Option<PathBuf> {
+        if self.settings.layouts_dir.is_none() {
+            self.app
+                .say(Severity::Warning, "No layouts directory is set.");
+        }
+        self.settings.layouts_dir.clone()
+    }
+
+    fn list_profiles(&mut self) {
+        let Some(dir) = self.layouts_dir() else {
+            return;
+        };
+        let paths = match script::list_profiles(&dir) {
+            Ok(paths) => paths,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => {
+                let text = format!("Could not read {}: {err}.", tilde(&dir));
+                self.app.say(Severity::Error, text);
+                return;
+            }
+        };
+        let items = paths
+            .into_iter()
+            .filter_map(|path| {
+                let text = std::fs::read_to_string(&path).ok()?;
+                Some(ProfileItem::new(&self.app.snap, path, &text))
+            })
+            .collect();
+        self.app.open_profiles(items, &tilde(&dir));
+    }
+
+    fn open_profile(&mut self, name: &str) {
+        let Some(dir) = self.layouts_dir() else {
+            return;
+        };
+        let path = profile_path(&dir, name);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let item = ProfileItem::new(&self.app.snap, path, &text);
+                self.app.open_profile(item);
+            }
+            Err(err) => {
+                let text = format!("Could not read {}: {err}.", tilde(&path));
+                self.app.say(Severity::Error, text);
+            }
+        }
+    }
+
+    /// Saves the pending layout. An existing file keeps its other lines; when the result
+    /// differs from it, the editor asks first and shows the diff.
+    fn save_profile(&mut self, name: &str) {
+        let Some(dir) = self.layouts_dir() else {
+            return;
+        };
+        let path = profile_path(&dir, name);
+        let old = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => {
+                let text = format!("Could not read {}: {err}.", tilde(&path));
+                self.app.say(Severity::Error, text);
+                return;
+            }
+        };
+        let command = command::script_command(&self.app.layout, &self.app.snap);
+        let text = save_text(old.as_deref(), &command);
+        match old {
+            Some(old) if old == text => {
+                let text = format!("{} is up to date.", tilde(&path));
+                self.app.say(Severity::Info, text);
+            }
+            Some(old) => self.app.confirm_overwrite(SavePlan {
+                diff: line_diff(&old, &text),
+                path,
+                text,
+            }),
+            None => self.write_profile(&SavePlan {
+                path,
+                text,
+                diff: Vec::new(),
+            }),
+        }
+    }
+
+    fn write_profile(&mut self, plan: &SavePlan) {
+        match script::write_atomic(&plan.path, &plan.text, 0o755) {
+            Ok(()) => self
+                .app
+                .saved(script::profile_name(&plan.path), &tilde(&plan.path)),
+            Err(err) => {
+                let text = format!("Could not write {}: {err}.", tilde(&plan.path));
+                self.app.say(Severity::Error, text);
             }
         }
     }
@@ -183,7 +303,9 @@ impl<'a> Session<'a> {
         };
         let revert_args = command::revert_args(&before);
         if let Some(path) = &self.settings.revert_file {
-            if let Err(err) = write_script(path, &command::revert_script(&revert_args)) {
+            if let Err(err) =
+                script::write_atomic(path, &command::revert_script(&revert_args), 0o755)
+            {
                 self.app.report(
                     "Apply failed",
                     vec![format!(
@@ -303,6 +425,7 @@ impl<'a> Session<'a> {
         if self.applied.is_none() {
             return;
         }
+        self.kept = false;
         match self.revert_quietly() {
             Ok(snap) => self
                 .app
@@ -316,24 +439,13 @@ impl<'a> Session<'a> {
             return;
         };
         super::arm_panic_revert(None);
+        self.kept = true;
         self.app.kept(applied.after);
         let failures = run_hooks(&self.settings.hooks, self.settings.hook_timeout);
         if !failures.is_empty() {
             self.app.say(Severity::Warning, failures.join(" "));
         }
     }
-}
-
-/// Writes an executable script atomically: a temporary file, then a rename.
-fn write_script(path: &Path, text: &str) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("sh.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    std::fs::rename(&tmp, path)
 }
 
 /// The OSC 52 sequence that puts `text` on the clipboard.
@@ -426,17 +538,5 @@ mod tests {
                 "post_apply `sleep 5` took longer than 0 s and was stopped.",
             ]
         );
-    }
-
-    #[test]
-    fn scripts_are_written_executable() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("outlay-script-{}", std::process::id()));
-        let path = dir.join("nested").join("revert.sh");
-        write_script(&path, "#!/bin/sh\ntrue\n").unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o755);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "#!/bin/sh\ntrue\n");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }
