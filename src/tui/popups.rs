@@ -92,10 +92,6 @@ pub fn confirm(app: &App, question: Question, area: Rect, buf: &mut Buffer) {
     };
     let (title, text) = match question {
         Question::Quit => ("Quit", format!("Discard {changes} and quit?")),
-        Question::Reload => (
-            "Reload",
-            format!("Discard {changes} and reload the live state?"),
-        ),
     };
     let hint = hints(app, Context::Confirm);
     let width = (text.chars().count().max(hint.width()) + 4) as u16;

@@ -1,5 +1,5 @@
 //! Carries out the effects the editor asks for: apply → verify → countdown → keep or revert,
-//! reload, copy. Everything that talks to xrandr, the file system or the terminal's clipboard
+//! refresh, copy. Everything that talks to xrandr, the file system or the terminal's clipboard
 //! happens here, behind the [`Backend`] and [`Input`] traits, so tests run the whole flow with
 //! a fake backend, a scripted clock and an injected signal flag.
 
@@ -165,12 +165,19 @@ impl<'a> Session<'a> {
                     self.quit = true;
                     self.queue.clear();
                 }
-                Effect::Query => match self.backend.query() {
-                    Ok(snap) => self.app.reloaded(snap),
+                Effect::Refresh { probe: true } => match self.backend.query() {
+                    Ok(snap) => self.app.refreshed(snap, true),
                     Err(err) => self
                         .app
-                        .say(Severity::Error, format!("Reload failed: {err:#}")),
+                        .say(Severity::Error, format!("Refresh failed: {err:#}")),
                 },
+                // The watch: a re-query that does not probe, so it never wakes a sleeping GPU.
+                // A failed read is tried again on the next round.
+                Effect::Refresh { probe: false } => {
+                    if let Ok(snap) = self.backend.requery() {
+                        self.app.refreshed(snap, false);
+                    }
+                }
                 Effect::Apply(request) => self.apply(request, input),
                 Effect::Revert(reason) => self.revert(reason),
                 Effect::Keep => self.keep(),

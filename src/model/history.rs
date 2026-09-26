@@ -44,6 +44,17 @@ impl History {
         true
     }
 
+    /// Runs `f` over every undo and redo step, when the outputs changed under them. Steps that
+    /// came out the same as their neighbour merge, so no undo step does nothing.
+    pub fn remap(&mut self, f: impl Fn(&Layout) -> Layout) {
+        for stack in [&mut self.undo, &mut self.redo] {
+            for layout in stack.iter_mut() {
+                *layout = f(layout);
+            }
+            stack.dedup();
+        }
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

@@ -98,7 +98,12 @@ Global flags: `--demo`, `--from-file <capture>`, `-n`, `--layouts-dir <dir>`,
 | `y` | copy the pending xrandr command (OSC 52) |
 | `w` / `e` | save a profile / open one |
 | `:` | command line (`:pos 1920 0`, `:stick 3 below 2 center`, `:e home`; `Tab` completes) |
-| `R`, `z`, `i`, `?`, `q` | reload, re-fit the view, details panel, help, quit |
+| `R`, `z`, `i`, `?`, `q` | refresh (keeps your edits), re-fit the view, details panel, help, quit |
+
+A display you plug in while outlay is open shows up in the off list by itself within about two
+seconds, with focus on it, so `Space` turns it on. One you unplug while it is on is turned off in
+the pending layout, and `u` brings it back. Pending edits and undo survive both; `R` does the same
+at once, with a full probe of the outputs.
 
 `Esc` closes popups and cancels; it never quits. `?` and `outlay keys` list every binding and
 command, generated from the same table the editor dispatches from.

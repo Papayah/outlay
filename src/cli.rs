@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::tui::app::Options;
+use crate::tui::app::{Options, WATCH_INTERVAL};
 use crate::tui::session::{Settings, default_revert_file};
 use crate::tui::theme::Theme;
 use crate::xrandr::{Backend, DryRun, FixtureBackend, XrandrCli, check_session};
@@ -119,6 +119,7 @@ impl Cli {
             animations: config.animations && !self.no_anim,
             cell_aspect: config.cell_aspect,
             source,
+            watch: Some(WATCH_INTERVAL),
         };
         let settings = Settings {
             revert_seconds: self.revert_timeout.unwrap_or(config.revert_seconds),

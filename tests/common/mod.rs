@@ -126,6 +126,21 @@ pub fn desk(outs: &[Out]) -> Snapshot {
     }
 }
 
+/// `snap` with output `name` unplugged: disconnected, with no modes and no EDID. An output that
+/// was on stays active, as xrandr leaves it until something turns it off.
+pub fn unplugged(snap: &Snapshot, name: &str) -> Snapshot {
+    let mut snap = snap.clone();
+    let i = snap
+        .find(name)
+        .unwrap_or_else(|| panic!("no output {name}"));
+    let out = &mut snap.outputs[i];
+    out.connection = Connection::Disconnected;
+    out.modes.clear();
+    out.edid = None;
+    out.physical_mm = None;
+    snap
+}
+
 pub fn load(outs: &[Out]) -> (Snapshot, Layout) {
     let snap = desk(outs);
     let layout = Layout::inferred(&snap);

@@ -227,6 +227,11 @@ impl FixtureBackend {
     pub fn applied(&self) -> Vec<Vec<String>> {
         self.applied.lock().expect("fixture lock").clone()
     }
+
+    /// Replaces the state, as plugging a display in or unplugging one does.
+    pub fn set_state(&self, snapshot: Snapshot) {
+        *self.state.lock().expect("fixture lock") = snapshot;
+    }
 }
 
 impl Backend for FixtureBackend {
