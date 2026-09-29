@@ -37,7 +37,7 @@ They are list- and menu-driven. None of them has any of the features that define
 | Stack | **Rust 2024 + ratatui 0.30** (crossterm backend). One binary; its only runtime dependency is the `xrandr` program. |
 | Sticking | **Persistent links.** A stuck display follows its target when the target's mode, rotation or position changes. Links are inferred from touching edges at load. |
 | Direction keys | **Vim `h j k l`** plus the arrow keys. Plain key = focus, Shift = snap-move, Alt = nudge. This matches the pattern of the user's i3 bindings. The four letters can be changed in the config. |
-| Hosting | **GitHub, private repo `Papayah/outlay`**, created with `gh` (logged in as Papayah over SSH). Add no LICENSE file; the user picks one later. |
+| Hosting | **GitHub, private repo `Papayah/outlay`**, created with `gh` (logged in as Papayah over SSH). Licensed **GPL-3.0-or-later** (`LICENSE` holds the text from gnu.org; every dependency is MIT or Apache-2.0). |
 | Git identity | **Author and committer: `Papayah <maciej.chmiest@gmail.com>`.** The global git identity is the work one and must never appear in this repo. See Session rules. |
 | Delivery | **Three sessions, one PR each.** A = phases 0–2, B = phases 3–4, C = phases 5–6. The user merges each PR before starting the next session. |
 
