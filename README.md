@@ -197,4 +197,5 @@ The hooks never run with `--demo`, `--from-file` or `-n`, which do not touch the
 
 ## License
 
-Not chosen yet.
+outlay is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License, version 3 or (at your option) any later version. See [`LICENSE`](LICENSE).
