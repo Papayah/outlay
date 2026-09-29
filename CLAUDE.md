@@ -40,6 +40,13 @@ cargo test
 - **Keys.** The keymap table in `src/tui/keys.rs` is the only source of keys. Dispatch, the hint
   line, `?` help and `outlay keys` are all generated from it; never hard-code a key elsewhere.
 - **Commits.** Conventional commits (`feat:`, `fix:`, `docs:` …), one commit per plan phase.
+- **Releases.** Bump `version` in `Cargo.toml` and run `cargo check` to update `Cargo.lock`, commit
+  `chore: release X.Y.Z`, then `git tag -a vX.Y.Z -m "outlay X.Y.Z"`. Push the tag **only on the
+  user's go-ahead**: it publishes a GitHub release that every `curl | sh` install then picks up.
+  The asset names are a contract with `install.sh` (`docs/PLAN.md`, "Distribution").
+- **`install.sh` stays POSIX sh.** No `local`, no arrays, no GNU-only flags; `shellcheck -s sh`
+  must pass (CI runs it). Here `/bin/sh` is bash, so `OUTLAY_TEST_SH=/path/to/dash cargo test
+  --test install` runs the installer tests under another shell.
 
 ## Layout
 
@@ -54,10 +61,15 @@ cargo test
   behind the `Backend` and `Input` traits, `mod.rs` owns the terminal, signals and panic hook,
   `keys.rs` the keymap table, `canvas.rs` the to-scale drawing and sticky viewport (also used by
   `outlay show`), `ui.rs` the screen composition.
+- `install.sh`: the `curl | sh` installer and updater. `.github/workflows/release.yml` builds the
+  static musl release binaries on `v*` tags, checks the installer on them end to end, and
+  publishes them with `install.sh` and `SHA256SUMS`.
 - Tests: `tests/common/mod.rs` builds snapshots from a few lines (`on("A", 1920, 1080, 0, 0)`);
   `tests/scenarios.rs` holds golden desk layouts, `tests/properties.rs` the proptest invariants,
   `tests/commands.rs` the golden apply/revert/script commands, `tests/tui.rs` key sequences
   and insta screen snapshots (`tests/snapshots/`; review `.snap.new` files before renaming them),
   `tests/apply.rs` the apply flow with a fake backend, clock and signal flag,
   `tests/profiles.rs` the user's scripts (copied into `tests/fixtures/screenlayout/`) on the
-  fixtures, the remap, the round trip, and `w`/`e` through the session with temporary dirs.
+  fixtures, the remap, the round trip, and `w`/`e` through the session with temporary dirs,
+  `tests/install.rs` `install.sh` piped into `sh -s --` against a `file://` fake release, with a
+  cleared environment and a sandboxed home.

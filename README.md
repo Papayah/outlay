@@ -7,6 +7,23 @@ It reads and writes the same `~/.screenlayout` scripts as arandr.
 
 ![The editor: three displays drawn to scale, the focused one with a reversed title](docs/screenshots/overview.png)
 
+## Install
+
+```sh
+curl -fsSL https://github.com/Papayah/outlay/releases/latest/download/install.sh | sh
+```
+
+This installs a static binary for x86_64 or aarch64 Linux to `~/.local/bin/outlay`, with shell
+completions. Run the same command again to update.
+
+outlay needs an X11 session and the `xrandr` program (`xorg-xrandr` on Arch, `x11-xserver-utils`
+on Debian and Ubuntu, `xrandr` on Fedora, openSUSE, Void and Alpine). Wayland compositors need
+their own tools, such as wlr-randr, kanshi or `hyprctl`.
+
+For options, end the line with `sh -s --` and add them: `--version 0.1.0` installs that release,
+`--to DIR` installs into another directory, and `--uninstall` removes outlay again (`--help` lists
+the rest). To build it yourself, see [Build from source](#build-from-source).
+
 ## Why
 
 arandr needs a mouse. The existing xrandr TUIs (vrandr, tuirandr, trandr) are list- and
@@ -30,30 +47,6 @@ menu-driven. outlay is built around a spatial canvas instead:
 | Changes modes and rates | menus | pickers, `[` `]` `{` `}` in place |
 | Confirms a new layout | no | verifies, then reverts unless kept |
 | Profiles | `~/.screenlayout/*.sh` | the same files, with a remap for renamed outputs |
-
-## Install
-
-outlay needs Linux with an X11 session and the `xrandr` program at run time (`xorg-xrandr` on
-Arch, `x11-xserver-utils` on Debian and Ubuntu, `xrandr` on Fedora, openSUSE, Void and Alpine).
-Wayland compositors need their own tools, such as wlr-randr, kanshi or `hyprctl`.
-
-Build it with Rust 1.91 or newer:
-
-```sh
-git clone https://github.com/Papayah/outlay && cd outlay
-cargo build --release
-install -Dm755 target/release/outlay ~/.local/bin/outlay
-```
-
-For one static binary that runs on any distribution:
-
-```sh
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --target x86_64-unknown-linux-musl
-```
-
-Shell completions: `outlay completions bash > ~/.local/share/bash-completion/completions/outlay`,
-or `zsh`, `fish`, `elvish`, `powershell`.
 
 ## Try it without touching your screens
 
@@ -194,6 +187,32 @@ post_apply_timeout = 10
 outlay does not wait for a program a command leaves running in the background (`… &`); send
 that program's output elsewhere (`>/dev/null 2>&1 &`) so it outlives outlay without trouble.
 The hooks never run with `--demo`, `--from-file` or `-n`, which do not touch the screens.
+
+## Build from source
+
+With Rust 1.91 or newer:
+
+```sh
+cargo install --git https://github.com/Papayah/outlay --locked
+```
+
+Or from a clone:
+
+```sh
+git clone https://github.com/Papayah/outlay && cd outlay
+cargo build --release
+install -Dm755 target/release/outlay ~/.local/bin/outlay
+```
+
+For one static binary that runs on any distribution, as the releases are built:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+Shell completions: `outlay completions bash > ~/.local/share/bash-completion/completions/outlay`,
+or `zsh`, `fish`, `elvish`, `powershell`.
 
 ## License
 
