@@ -1,0 +1,113 @@
+name: Release
+
+# A `v*` tag builds static musl binaries and publishes them as a GitHub release. Pull requests that
+# touch the release inputs run everything except the publish step, so a tag is never the
+# pipeline's first run.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Cargo.toml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    # LTO with one codegen unit is slow, most of all on the arm runner.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the version Cargo.toml declares as rust-version, so CI cannot pass on a compiler
+      # newer than the one the crate promises to build with.
+      - uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          targets: ${{ matrix.target }}
+      - name: Read the version from Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)
+          test -n "$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Check that the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $VERSION in Cargo.toml"
+            exit 1
+          fi
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Smoke-test the binary
+        run: |
+          bin=target/$TARGET/release/outlay
+          test "$("$bin" --version)" = "outlay $VERSION"
+          "$bin" --demo list > /dev/null
+          file "$bin"
+          # Rust's musl binaries are static-pie, which file(1) does not call "statically linked".
+          file "$bin" | grep -q static
+      - name: Package
+        run: |
+          name=outlay-$VERSION-$TARGET
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/outlay" README.md LICENSE "dist/$name/"
+          tar -C dist --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
+          tar -tvzf "dist/$name.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: outlay-${{ matrix.target }}
+          path: dist/outlay-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only the publish step writes, and it runs only on a tag.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: outlay-*
+          merge-multiple: true
+          path: dist
+      - name: Assemble the release assets
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)
+          test -n "$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -- --verify-tag --title "outlay $VERSION" --generate-notes
+          # A prerelease (v1.2.0-rc.1) must never become "latest", which the installer follows.
+          case "$GITHUB_REF_NAME" in *-*) set -- "$@" --prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" "$@" dist/*
