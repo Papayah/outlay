@@ -1,8 +1,12 @@
 name: Release
 
-# A `v*` tag builds static musl binaries and publishes them as a GitHub release. Pull requests that
-# touch the release inputs run everything except the publish step, so a tag is never the
-# pipeline's first run.
+# A `v*` tag builds static musl binaries and publishes them as a GitHub release, with install.sh
+# and SHA256SUMS. Pull requests that touch the release inputs run everything except the publish
+# step, so a tag is never the pipeline's first run.
+#
+# The asset names are a contract that install.sh relies on (docs/PLAN.md, "Distribution"):
+# outlay-<version>-<target>.tar.gz holding outlay-<version>-<target>/{outlay,README.md,LICENSE},
+# install.sh, and SHA256SUMS covering them all.
 
 on:
   push:
@@ -11,6 +15,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - install.sh
       - Cargo.toml
       - Cargo.lock
   workflow_dispatch:
@@ -99,9 +104,32 @@ jobs:
           version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)
           test -n "$version"
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          cp install.sh dist/
           cd dist
-          sha256sum -- *.tar.gz > SHA256SUMS
+          sha256sum -- *.tar.gz install.sh > SHA256SUMS
           cat SHA256SUMS
+      # The Rust tests run install.sh against a release they build themselves; this runs it
+      # against the real tarballs, laid out the way GitHub serves them.
+      - name: Install from the assets, as a user would
+        run: |
+          rel=$RUNNER_TEMP/rel
+          mkdir -p "$rel/download/v$VERSION" "$rel/latest/download"
+          cp dist/* "$rel/download/v$VERSION/"
+          cp dist/SHA256SUMS "$rel/latest/download/"
+          export OUTLAY_RELEASES_URL=file://$rel
+
+          sh install.sh --to "$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/outlay" --demo list
+          again=$(sh install.sh --to "$RUNNER_TEMP/bin" 2>&1)
+          echo "$again"
+          case "$again" in *"outlay $VERSION is up to date"*) ;; *) exit 1 ;; esac
+
+          # The default directory, in a scratch home: completions come from the real binary.
+          export HOME=$RUNNER_TEMP/home
+          unset XDG_DATA_HOME XDG_CONFIG_HOME XDG_STATE_HOME
+          sh install.sh
+          test "$("$HOME/.local/bin/outlay" --version)" = "outlay $VERSION"
+          grep -q outlay "$HOME/.local/share/bash-completion/completions/outlay"
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
