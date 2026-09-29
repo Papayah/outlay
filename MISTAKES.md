@@ -283,3 +283,92 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   fails with "lifetime may not live long enough".
 - **Cause:** closure signatures do not get lifetime elision the way `fn` signatures do.
 - **Fix:** use a nested `fn find<'a>(snap: &'a Snapshot, name: &str) -> Option<&'a Output>`.
+
+## `git fetch` and `git push` hang: SSH to GitHub is blocked on the wired network
+
+- **Symptom:** `git fetch origin` never returns (the tool call goes to the background after
+  120 s); `ssh -T git@github.com` times out on port 22, and `ssh.github.com:443` times out
+  during the banner exchange.
+- **Cause:** the wired network behind the dock (default route `192.168.227.254`, on
+  `enp0s13f0u1u1`) blocks SSH to GitHub, with or without the VPN; disconnecting the VPN did not
+  help (2026-09-29). HTTPS works. Check the route with `ip route | head -2`.
+- **Fix:** put a `timeout` on network commands, and go over HTTPS with gh as the credential
+  helper, keeping `origin` as it is:
+  `git -c url."https://github.com/".insteadOf=git@github.com: -c credential.helper= -c credential.helper='!gh auth git-credential' push -u origin BRANCH`.
+  A push that changes a workflow file needs more (next entry). Over the user's mobile hotspot
+  (default route on `wlan0`) SSH works: `ssh -T git@github.com` greets Papayah.
+
+## An HTTPS push that touches `.github/workflows/` is rejected
+
+- **Symptom:** `! [remote rejected] … (refusing to allow an OAuth App to create or update
+  workflow .github/workflows/ci.yml without workflow scope)`.
+- **Cause:** gh's token has the `repo` scope but not `workflow`, and GitHub requires `workflow`
+  for any push that changes a workflow file. SSH pushes do not need it.
+- **Fix:** push over SSH from a network that allows it (on 2026-09-29 the user switched to a
+  mobile hotspot, and `git push` over SSH went through). Or the user runs
+  `gh auth refresh -h github.com -s workflow` (a browser device flow, so it is theirs to run;
+  suggest `! gh auth refresh -h github.com -s workflow`), and the HTTPS push above works.
+
+## gnu.org is unreachable, and two local GPLv3 texts differ
+
+- **Symptom:** `curl https://www.gnu.org/licenses/gpl-3.0.txt` times out. Local 674-line
+  GPLv3 copies come in two versions.
+- **Cause:** the work VPN blocks gnu.org; without the VPN it answers. The copies with
+  `http://fsf.org/` (sha256 `8ceb4b9e…`) are the older revision; the current text uses `https://`
+  and `licenses/why-not-lgpl.html`.
+- **Fix:** `/usr/share/doc/bison/COPYING` (sha256 `3972dc97…`) is the current text. It is
+  identical to `gh api licenses/gpl-3.0 --jq .body`, apart from the newline jq adds at the end,
+  and `cmp` against gnu.org's `gpl-3.0.txt` (checked off the VPN) finds no difference.
+  `LICENSE` in this repo is that file.
+
+## shellcheck, actionlint, dash and busybox are not installed
+
+- **Symptom:** none of them is on PATH, `/bin/sh` is bash, and installing packages needs sudo.
+- **Fix:** fetch them into the scratchpad, without installing anything:
+  - `gh release download -R koalaman/shellcheck --pattern '*linux.x86_64.tar.xz'` and
+    `gh release download -R rhysd/actionlint --pattern '*linux_amd64.tar.gz'`, then unpack them.
+    actionlint's flag is `-no-color` (`-color=never` is a parse error); pass
+    `-shellcheck <path>` so it also checks the `run:` scripts.
+  - dash and busybox: take the version from `pacman -Si dash busybox`, `curl -fsSLO` the
+    `.pkg.tar.zst` from a server in `/etc/pacman.d/mirrorlist`
+    (`$repo/os/x86_64/dash-<ver>-x86_64.pkg.tar.zst`; dash is in `core`, busybox in `extra`),
+    and unpack it with `tar --zstd -xf`.
+  - `OUTLAY_TEST_SH=<scratch>/usr/bin/dash cargo test --test install` runs the installer tests
+    under that shell. For busybox, point it at a two-line wrapper that runs
+    `exec …/busybox sh "$@"`.
+
+## `kill -INT` of a background installer tests nothing
+
+- **Symptom:** a SIGINT sent to `sh install.sh &` (even through `setsid`, to the process group)
+  does not run the INT trap. The script goes on and fails on the interrupted download instead
+  of exiting 130.
+- **Cause:** a non-interactive shell starts background jobs with SIGINT ignored, and a signal
+  that is ignored on entry cannot be trapped. SIGTERM is not affected.
+- **Fix:** test SIGTERM with `kill -TERM -- -PGID`. For a real Ctrl-C, run the shell under
+  Python's `pty.fork()` and write `\x03` to the master. The installer exited 130 and cleaned up
+  under dash, bash and busybox.
+
+## A zsh glob that matches nothing aborts the command
+
+- **Symptom:** `rm -rf "$dir"/*` on an empty directory prints `no matches found` and removes
+  nothing, and a test loop built on it measures the wrong thing.
+- **Cause:** the tool shell is zsh, and an unmatched glob is an error there (see also the entry
+  on `$extra`).
+- **Fix:** write loops and test harnesses to a file and run them with `bash file`.
+
+## Only the x86_64 musl binary is static-pie
+
+- **Symptom:** none yet; a check that greps `file` output for `static-pie` would fail on
+  aarch64.
+- **Cause:** in the release run, `file` reported the x86_64 musl binary as `static-pie linked`,
+  but the aarch64 one as `statically linked` (not PIE).
+- **Fix:** match `static`, as `release.yml` does, and do not describe both as static-pie.
+
+## `sleep` in a tool shell command prints "Too many arguments." and does not wait
+
+- **Symptom:** a polling loop such as `for i in …; do gh pr checks …; sleep 30; done` finishes
+  in seconds, with one `Too many arguments.` per iteration, while the checks are still pending.
+- **Cause:** the tool harness blocks a foreground `sleep`.
+- **Fix:** run the wait in the background (`gh pr checks N --watch --interval 30` with
+  `run_in_background`); the harness reports when it exits. `gh pr checks` exits 8 while checks
+  are pending.
