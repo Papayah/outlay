@@ -478,6 +478,72 @@ impl Scaling {
         }
     }
 
+    /// A uniform scale by `factor`, in the form `kind` uses. On X11 this is what
+    /// `xrandr --scale FxF` sets, and a factor of 1 is no transform at all.
+    pub fn uniform(kind: Kind, factor: f64) -> Self {
+        match kind {
+            Kind::X11 if (factor - 1.0).abs() < Transform::EPSILON => Self::unit(kind),
+            Kind::X11 => Self::X11(Transform::scale(factor, factor)),
+            Kind::Wayland => Self::Logical(factor),
+        }
+    }
+
+    /// The factor of a uniform scale; `None` for an X11 transform that is anything else.
+    pub fn factor(&self) -> Option<f64> {
+        match self.scale_factors() {
+            Some((sx, sy)) if (sx - sy).abs() < Transform::EPSILON => Some(sx),
+            _ => None,
+        }
+    }
+
+    /// Whether two scalings come to the same, within what the display server's fixed-point
+    /// numbers keep: xrandr prints 1.1 as 1.099991, and `wl_fixed` steps by 1/256. The X11
+    /// filter of a plain scale does not count.
+    pub fn approx_eq(&self, other: &Scaling) -> bool {
+        const PRINTED: f64 = 1e-3;
+        const LOGICAL: f64 = 5e-3;
+        let close = |a: f64, b: f64, tolerance: f64| (a - b).abs() < tolerance;
+        match (self, other) {
+            (Self::Logical(a), Self::Logical(b)) => close(*a, *b, LOGICAL),
+            (Self::X11(a), Self::X11(b)) => match (a.scale_factors(), b.scale_factors()) {
+                (Some((ax, ay)), Some((bx, by))) => {
+                    close(ax, bx, PRINTED) && close(ay, by, PRINTED)
+                }
+                _ => {
+                    a.filter == b.filter
+                        && a.matrix
+                            .iter()
+                            .flatten()
+                            .zip(b.matrix.iter().flatten())
+                            .all(|(x, y)| close(*x, *y, PRINTED))
+                }
+            },
+            _ => false,
+        }
+    }
+
+    /// The scale as the editor shows it: `×1.5` or `×2x1` on X11, `150%` on Wayland. `None` for
+    /// an X11 transform that is not a plain scale.
+    pub fn badge(&self) -> Option<String> {
+        let trim = |v: f64| {
+            let s = format!("{v:.3}");
+            s.trim_end_matches('0').trim_end_matches('.').to_owned()
+        };
+        match self {
+            Self::Logical(s) => {
+                let percent = format!("{:.1}", s * 100.0);
+                Some(format!(
+                    "{}%",
+                    percent.trim_end_matches('0').trim_end_matches('.')
+                ))
+            }
+            Self::X11(t) => match t.scale_factors()? {
+                (sx, sy) if (sx - sy).abs() < Transform::EPSILON => Some(format!("×{}", trim(sx))),
+                (sx, sy) => Some(format!("×{}x{}", trim(sx), trim(sy))),
+            },
+        }
+    }
+
     /// The X11 transform, if this is one.
     pub fn transform(&self) -> Option<&Transform> {
         match self {
@@ -591,5 +657,56 @@ impl Transform {
             .map(|v| format!("{v}"))
             .collect::<Vec<_>>()
             .join(",")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_badges() {
+        let x11 = |s: f64| Scaling::uniform(Kind::X11, s).badge().unwrap();
+        assert_eq!(x11(1.5), "×1.5");
+        assert_eq!(x11(2.0), "×2");
+        assert_eq!(x11(1.0), "×1");
+        assert_eq!(x11(1.099991), "×1.1", "xrandr's printed fixed point");
+        assert_eq!(
+            Scaling::X11(Transform::scale(2.0, 1.0)).badge().unwrap(),
+            "×2x1"
+        );
+        let mut skew = Transform::identity();
+        skew.matrix[0][1] = 0.5;
+        assert_eq!(Scaling::X11(skew).badge(), None);
+        let wl = |s: f64| Scaling::uniform(Kind::Wayland, s).badge().unwrap();
+        assert_eq!(wl(1.5), "150%");
+        assert_eq!(wl(1.0), "100%");
+        assert_eq!(wl(1.125), "112.5%");
+    }
+
+    #[test]
+    fn scalings_compare_within_fixed_point() {
+        let x11 = |s: f64| Scaling::uniform(Kind::X11, s);
+        assert!(x11(1.1).approx_eq(&x11(1.099991)));
+        assert!(!x11(1.25).approx_eq(&x11(1.5)));
+        assert!(x11(1.0).approx_eq(&Scaling::X11(Transform::identity())));
+        let mut nearest = Transform::scale(2.0, 2.0);
+        nearest.filter = "nearest".to_owned();
+        assert!(
+            x11(2.0).approx_eq(&Scaling::X11(nearest)),
+            "the filter of a plain scale does not count"
+        );
+        let mut skew = Transform::identity();
+        skew.matrix[0][1] = 0.5;
+        assert!(Scaling::X11(skew.clone()).approx_eq(&Scaling::X11(skew.clone())));
+        assert!(!Scaling::X11(skew).approx_eq(&x11(1.0)));
+        assert!(Scaling::Logical(1.25).approx_eq(&Scaling::Logical(1.2539)));
+        assert!(
+            !Scaling::Logical(1.0).approx_eq(&x11(1.0)),
+            "kinds never match"
+        );
+        assert_eq!(x11(1.0), Scaling::unit(Kind::X11));
+        assert_eq!(x11(1.5).factor(), Some(1.5));
+        assert_eq!(Scaling::X11(Transform::scale(2.0, 1.0)).factor(), None);
     }
 }

@@ -44,7 +44,7 @@ menu-driven. outlay is built around a spatial canvas instead:
 |---|---|---|
 | Arrange displays | drag with the mouse | `h j k l`, snap, swap, nudge |
 | Keeps a display attached to another | no | stick links that re-flow |
-| Changes modes and rates | menus | pickers, `[` `]` `{` `}` in place |
+| Changes modes, rates and scale | menus | pickers, `[` `]` `{` `}` `<` `>` in place |
 | Confirms a new layout | no | verifies, then reverts unless kept |
 | Profiles | `~/.screenlayout/*.sh` | the same files, with a remap for renamed outputs |
 
@@ -84,13 +84,14 @@ Global flags: `--demo`, `--from-file <capture>`, `-n`, `--layouts-dir <dir>`,
 | `s` / `S` | stick to a side of another display / unstick |
 | `m` / `[` `]` | resolution picker / next smaller or larger resolution |
 | `r` / `{` `}` | rate picker / next lower or higher rate |
+| `x` / `<` `>` | scale picker / next smaller or larger scale (on X11, a larger scale is a larger desktop) |
 | `o` / `O` | rotate clockwise / counter-clockwise |
 | `p`, `Space` | make primary, turn on or off |
 | `u` / `Ctrl-r` | undo / redo |
 | `a` | apply, with the automatic revert |
 | `y` | copy the pending xrandr command (OSC 52) |
 | `w` / `e` | save a profile / open one |
-| `:` | command line (`:pos 1920 0`, `:stick 3 below 2 center`, `:e home`; `Tab` completes) |
+| `:` | command line (`:pos 1920 0`, `:scale 1.25`, `:stick 3 below 2 center`, `:e home`; `Tab` completes) |
 | `R`, `z`, `i`, `?`, `q` | refresh (keeps your edits), re-fit the view, details panel, help, quit |
 
 A display you plug in while outlay is open shows up in the off list by itself within about two

@@ -106,7 +106,7 @@ impl Context {
             Context::Normal => "Layout",
             Context::StickTarget => "Stick, step 1: target",
             Context::StickSide => "Stick, step 2: side",
-            Context::Picker => "Mode and rate pickers",
+            Context::Picker => "Mode, rate and scale pickers",
             Context::Command => "Command line",
             Context::Confirm => "Questions",
             Context::ConfirmApply => "Apply confirmation",
@@ -137,6 +137,9 @@ pub enum Action {
     RatePicker,
     SlowerRate,
     FasterRate,
+    ScalePicker,
+    SmallerScale,
+    LargerScale,
     RotateCw,
     RotateCcw,
     Primary,
@@ -269,6 +272,9 @@ pub const TABLE: &[Binding] = &[
     bind(C::Normal, &[ch('r')], act(A::RatePicker), Some("rate"), "Pick a refresh rate"),
     bind(C::Normal, &[ch('{')], act(A::SlowerRate), None, "Next lower refresh rate"),
     bind(C::Normal, &[ch('}')], act(A::FasterRate), None, "Next higher refresh rate"),
+    bind(C::Normal, &[ch('x')], act(A::ScalePicker), None, "Pick a scale"),
+    bind(C::Normal, &[ch('<')], act(A::SmallerScale), None, "Next smaller scale"),
+    bind(C::Normal, &[ch('>')], act(A::LargerScale), None, "Next larger scale"),
     bind(C::Normal, &[ch('o')], act(A::RotateCw), Some("rotate"), "Rotate clockwise"),
     bind(C::Normal, &[ch('O')], act(A::RotateCcw), None, "Rotate counter-clockwise"),
     bind(C::Normal, &[ch('p')], act(A::Primary), None, "Make primary"),
@@ -748,7 +754,9 @@ mod tests {
         );
         assert_eq!(look(C::Picker, Key::char('h')), None, "only j and k");
         assert_eq!(look(C::Picker, Key::char('k')), Some(Action::Move(Dir::Up)));
-        assert_eq!(look(C::Normal, Key::char('x')), None);
+        assert_eq!(look(C::Normal, Key::char('x')), Some(Action::ScalePicker));
+        assert_eq!(look(C::Normal, Key::char('>')), Some(Action::LargerScale));
+        assert_eq!(look(C::Normal, Key::char('X')), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The `:` command line: parsing only. The app runs the parsed command.
 
-use crate::model::layout::Layout;
+use crate::model::layout::{Layout, MAX_SCALE, MIN_SCALE};
 use crate::model::links::{Align, Side};
 use crate::model::{Reflection, Rotation};
 
@@ -20,8 +20,11 @@ pub enum Cmd {
     Rate(f64),
     Rotate(Rotation),
     Reflect(Reflection),
-    /// `:scale 1`: editing the scale is left for a later version.
-    ResetScale,
+    /// `:scale F`, or `:scale P%` (Wayland), as a factor.
+    Scale {
+        factor: f64,
+        percent: bool,
+    },
     /// `:stick A left-of|right-of|above|below|same-as B [start|center|end]`
     Stick {
         child: String,
@@ -62,7 +65,7 @@ pub const USAGE: &[(&str, &str)] = &[
     (":rate R", "Set the rate nearest to R"),
     (":rotate normal|left|right|inverted", "Rotate"),
     (":reflect normal|x|y|xy", "Reflect"),
-    (":scale 1", "Reset the scale"),
+    (":scale F", "Set the scale, 0.25 to 8; on Wayland also 150%"),
     (
         ":stick A SIDE B [start|center|end]",
         "SIDE: left-of right-of above below same-as",
@@ -145,10 +148,26 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
                 .ok_or_else(|| "usage: :reflect normal|x|y|xy".to_owned()),
             _ => Err("usage: :reflect normal|x|y|xy".to_owned()),
         },
-        "scale" => match args {
-            [s] if s.parse::<f64>().is_ok_and(|v| (v - 1.0).abs() < 1e-9) => Ok(Cmd::ResetScale),
-            _ => Err(":scale 1 resets the scale; other scales are not supported yet".to_owned()),
-        },
+        "scale" => {
+            let usage = || format!("usage: :scale F, from {MIN_SCALE} to {MAX_SCALE}");
+            let [s] = args else {
+                return Err(usage());
+            };
+            let (number, percent) = match s.strip_suffix('%') {
+                Some(n) => (n, true),
+                None => (*s, false),
+            };
+            let value = number
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| format!("{s:?} is not a scale such as 1.5"))?;
+            let factor = if percent { value / 100.0 } else { value };
+            if !(MIN_SCALE..=MAX_SCALE).contains(&factor) {
+                return Err(usage());
+            }
+            Ok(Cmd::Scale { factor, percent })
+        }
         "stick" => {
             let usage = || {
                 "usage: :stick A left-of|right-of|above|below|same-as B [start|center|end]"
@@ -318,8 +337,12 @@ mod tests {
         assert_eq!(parse("rate 60"), Ok(Cmd::Rate(60.0)));
         assert_eq!(parse("rotate left"), Ok(Cmd::Rotate(Rotation::Left)));
         assert_eq!(parse("reflect xy"), Ok(Cmd::Reflect(Reflection::XY)));
-        assert_eq!(parse("scale 1"), Ok(Cmd::ResetScale));
-        assert_eq!(parse("scale 1.0"), Ok(Cmd::ResetScale));
+        let scale = |factor: f64, percent: bool| Ok(Cmd::Scale { factor, percent });
+        assert_eq!(parse("scale 1"), scale(1.0, false));
+        assert_eq!(parse("scale 1.25"), scale(1.25, false));
+        assert_eq!(parse("scale 150%"), scale(1.5, true));
+        assert_eq!(parse("scale 0.25"), scale(0.25, false));
+        assert_eq!(parse("scale 8"), scale(8.0, false));
         assert_eq!(
             parse("stick 3 left-of DP-1-2 end"),
             Ok(Cmd::Stick {
@@ -393,7 +416,13 @@ mod tests {
         );
         assert!(parse("mode 1920").unwrap_err().contains("not a resolution"));
         assert!(parse("rate -1").unwrap_err().contains("not a refresh rate"));
-        assert!(parse("scale 1.5").unwrap_err().contains("not supported"));
+        assert_eq!(
+            parse("scale 9"),
+            Err("usage: :scale F, from 0.25 to 8".to_owned())
+        );
+        assert!(parse("scale 10%").unwrap_err().starts_with("usage"));
+        assert!(parse("scale big").unwrap_err().contains("not a scale"));
+        assert!(parse("scale").unwrap_err().starts_with("usage"));
         assert!(parse("stick 1 beside 2").unwrap_err().starts_with("usage"));
         assert!(
             parse("frobnicate")

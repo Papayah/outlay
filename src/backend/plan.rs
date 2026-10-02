@@ -157,14 +157,19 @@ fn on(st: &OutputState, scaling: Scaling, scaling_change: ScalingChange) -> Opti
     })
 }
 
-/// The scaling is written only to drop the live one; otherwise the output keeps what it has.
+/// The scaling is written only when it changes, so an unchanged output keeps its filter and any
+/// transform that is more than a scale.
 fn pending_on(st: &OutputState, live: &Output, kind: Kind) -> Option<On> {
-    let kept = live.active.as_ref().map(|a| a.scaling.clone());
-    let live_scaled = kept.as_ref().is_some_and(|s| !s.is_identity());
-    if live_scaled && st.scaling.is_identity() {
+    let live = live
+        .active
+        .as_ref()
+        .map_or_else(|| Scaling::unit(kind), |a| a.scaling.clone());
+    if st.scaling.approx_eq(&live) {
+        on(st, live, ScalingChange::Keep)
+    } else if st.scaling.is_identity() {
         on(st, st.scaling.clone(), ScalingChange::Reset)
     } else {
-        on(st, kept.unwrap_or(Scaling::unit(kind)), ScalingChange::Keep)
+        on(st, st.scaling.clone(), ScalingChange::Set)
     }
 }
 

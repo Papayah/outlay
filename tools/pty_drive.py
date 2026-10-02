@@ -3,7 +3,8 @@
 
 usage: tools/pty_drive.py SCENARIO -- outlay args...     (build with cargo build --release)
 
-Scenarios: keep, timeout (pass --revert-timeout 2), sigterm, sighup, keys, hold (a held Alt-l;
+Scenarios: keep, timeout (pass --revert-timeout 2), scale (> on the focused display, pass
+--revert-timeout 10), sigterm, sighup, keys, hold (a held Alt-l;
 PTY_DUMP=1 prints the screen), profiles (pass --layouts-dir with copies of tv-home.sh and
 home-setup.sh; it saves desk.sh there), refresh (R with an edit pending). With --demo or -n
 nothing reaches the X server. Without them the apply is real: ask the user first.
@@ -146,6 +147,25 @@ def main():
         print("reverted:", "No answer in 2 s" in out)
         send(fd, "q", 0.5)
         print("asks to quit with pending edits:", "Discard 1 pending change and quit?" in SCREEN.text())
+        send(fd, "\r", 0.3)
+        print("exit:", wait(pid))
+    elif scenario == "scale":
+        # run with --revert-timeout 10: > on the focused display, apply, let the countdown run out.
+        send(fd, ">", 0.5)
+        print("scaled:", "×1.25" in SCREEN.text())
+        send(fd, "a", 0.5)
+        print("confirm popup:", "1.25x1.25" in SCREEN.text())
+        send(fd, "\r", 0.3)
+        # The post_apply hooks run before the countdown and again after the revert.
+        seen = read_for(fd, 4.0)
+        print("countdown:", "Keep this layout?" in SCREEN.text() or "Keep this layout?" in seen)
+        if os.environ.get("PTY_DUMP"):
+            print(SCREEN.text())
+        seen = read_for(fd, 12.0)
+        print("reverted:", "No answer in 10 s" in SCREEN.text() or "No answer in 10 s" in seen)
+        if os.environ.get("PTY_DUMP"):
+            print(SCREEN.text())
+        send(fd, "q", 0.5)
         send(fd, "\r", 0.3)
         print("exit:", wait(pid))
     elif scenario == "sigterm":

@@ -130,13 +130,11 @@ fn orientation(st: &OutputState) -> String {
     if st.reflection != Reflection::Normal {
         text.push_str(&format!(", reflect {}", st.reflection));
     }
-    match st.scaling.scale_factors() {
-        Some((sx, sy)) if (sx - sy).abs() < 1e-6 && (sx - 1.0).abs() > 1e-6 => {
-            text.push_str(&format!(" ×{sx}"))
+    if !st.scaling.is_identity() {
+        match st.scaling.badge() {
+            Some(badge) => text.push_str(&format!(" {badge}")),
+            None => text.push_str(" transformed"),
         }
-        Some((sx, sy)) if (sx - sy).abs() >= 1e-6 => text.push_str(&format!(" ×{sx}x{sy}")),
-        Some(_) => {}
-        None => text.push_str(" transformed"),
     }
     text
 }

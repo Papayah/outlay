@@ -228,3 +228,64 @@ fn plans_round_trip_through_xid_arguments() {
         assert_eq!(back.primary, restore.primary);
     }
 }
+
+#[test]
+fn a_scale_is_written_only_where_it_changes() {
+    // Unchanged, eDP-1 keeps its ×1.5 and its filter: nothing about the scale is written.
+    let snap = fixture("scaled");
+    let (mut layout, _) = Layout::from_snapshot(&snap);
+    assert_eq!(
+        command::command_line(&apply_args(&layout, &snap)),
+        "xrandr --output eDP-1 --primary --mode 0x1c0 --pos 0x0 --rotate normal --reflect normal \
+         --output HDMI-1 --mode 0x1c7 --pos 2880x0 --rotate normal --reflect normal"
+    );
+
+    let edp = snap.find("eDP-1").unwrap();
+    layout.set_scale(edp, 1.25).unwrap();
+    let diff: Vec<String> = layout.diff(&snap).iter().map(ToString::to_string).collect();
+    assert_eq!(
+        diff,
+        ["eDP-1  scale ×1.5 → ×1.25", "HDMI-1  pos 2880,0 → 2400,0"]
+    );
+    assert_eq!(
+        command::command_line(&apply_args(&layout, &snap)),
+        "xrandr --output eDP-1 --primary --mode 0x1c0 --pos 0x0 --rotate normal --reflect normal \
+         --scale 1.25x1.25 \
+         --output HDMI-1 --mode 0x1c7 --pos 2400x0 --rotate normal --reflect normal"
+    );
+    assert!(
+        portable_args(&layout, &snap).contains(&"1.25x1.25".to_owned()),
+        "y copies it too"
+    );
+
+    // Applied, it reads back as asked; from there, ×1.5 is a change again.
+    let backend = FixtureBackend::new(snap.clone());
+    let outcome = backend.apply(&Plan::pending(&layout, &snap)).unwrap();
+    assert!(outcome.success, "{}", outcome.stderr);
+    let live = backend.query().unwrap();
+    assert!(
+        layout.mismatches(&live).is_empty(),
+        "{:?}",
+        layout.mismatches(&live)
+    );
+    assert!(layout.diff(&live).is_empty());
+    let (mut again, _) = Layout::from_snapshot(&live);
+    again.set_scale(edp, 1.5).unwrap();
+    let diff: Vec<String> = again.diff(&live).iter().map(ToString::to_string).collect();
+    assert_eq!(
+        diff,
+        ["eDP-1  scale ×1.25 → ×1.5", "HDMI-1  pos 2400,0 → 2880,0"]
+    );
+
+    // On the demo, only the output that changes gets --scale; centred below DP-1-2, it re-flows.
+    let snap = fixture("demo");
+    let (mut layout, _) = Layout::from_snapshot(&snap);
+    layout.set_scale(snap.find("eDP-1").unwrap(), 1.5).unwrap();
+    let line = command::command_line(&apply_args(&layout, &snap));
+    assert_eq!(line.matches("--scale").count(), 1, "{line}");
+    assert!(
+        line.contains("--output eDP-1 --mode 0x1cf --pos 1760x1440 --rotate normal --reflect normal --scale 1.5x1.5"),
+        "{line}"
+    );
+    assert!(!line.contains("--transform"), "{line}");
+}

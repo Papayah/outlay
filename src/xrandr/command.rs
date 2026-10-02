@@ -70,7 +70,14 @@ fn output_args(planned: &Planned, plan: PlanForm, form: Form, args: &mut Vec<Str
         }
         (PlanForm::Apply, ScalingChange::Reset) => {}
         (PlanForm::Apply, ScalingChange::Set) => match on.scaling.scale_factors() {
-            Some((sx, sy)) => push(args, &["--scale", &format!("{sx}x{sy}")]),
+            Some((sx, sy)) => {
+                push(args, &["--scale", &format!("{sx}x{sy}")]);
+                // `--scale` picks the bilinear filter; a profile may have asked for another.
+                let filter = on.scaling.transform().map_or("", |t| t.filter.as_str());
+                if form != Form::Script && !filter.is_empty() && filter != "bilinear" {
+                    push(args, &["--filter", filter]);
+                }
+            }
             None => transform_args(&on.scaling, args),
         },
     }

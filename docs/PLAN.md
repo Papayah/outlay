@@ -142,6 +142,7 @@ global: --from-file <xrandr-verbose.txt>   read state from a capture; never touc
 | `s` / `S` | Stick (see Stick flow) / unstick. |
 | `m` / `[` `]` | Resolution picker / previous or next resolution in place. |
 | `r` / `{` `}` | Rate picker / previous or next rate in place. |
+| `x` / `<` `>` | Scale picker / previous or next scale in place (see `docs/PLAN-wayland.md`, "Scale editing"). |
 | `o` / `O` | Rotate clockwise / counter-clockwise. |
 | `p` | Make primary. |
 | `Space` | Turn the output on or off. Refuses to turn off the last enabled display. |
@@ -160,7 +161,7 @@ global: --from-file <xrandr-verbose.txt>   read state from a capture; never touc
 Command line:
 - `:pos X Y`, `:move DX DY`, `:mode WxH[@R]`, `:rate R`
 - `:rotate normal|left|right|inverted`, `:reflect normal|x|y|xy`
-- `:scale 1` (reset only; editing scale is left for v0.2)
+- `:scale F` (0.25 to 8; `:scale 1` resets)
 - `:stick A left-of|right-of|above|below|same-as B [start|center|end]`, `:unstick`
 - `:primary`, `:on`, `:off`
 - `:w [name]`, `:e name`, `:apply`, `:q`, `:q!`
@@ -487,7 +488,7 @@ outlay/
   - Add a short PNP → vendor table: DEL, SAM, GSM, PHL, AUO, BOE, LGD, SHP, SDC, CMN, ACR, AUS/ASU, BNQ, HWP, LEN, AOC, ENC, VSC, MSI.
 - **Apply command** (`command.rs`):
   - Include outputs in snapshot order that are connected or active, in one invocation.
-  - Enabled: `--output N [--primary] --mode 0xXID --pos XxY --rotate R --reflect F`, plus `--transform none` when the user resets the scale.
+  - Enabled: `--output N [--primary] --mode 0xXID --pos XxY --rotate R --reflect F`, plus `--scale SxS` when the scale changes and `--transform none` when it is reset to 1.
   - Disabled: `--output N --off`.
   - Script and `y` form: `--mode NAME --rate {:.2}`.
 
