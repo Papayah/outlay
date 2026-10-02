@@ -120,7 +120,7 @@ fn validation_flags_floating_crtcs_size_and_stale_outputs() {
     );
 
     let mut small = desk(&[on("A", 3840, 2160, 0, 0), on("B", 3840, 2160, 3840, 0)]);
-    small.screen.max = outlay::model::geometry::Size::new(4096, 4096);
+    small.screen.as_mut().unwrap().max = outlay::model::geometry::Size::new(4096, 4096);
     let layout = Layout::inferred(&small);
     assert_eq!(
         validate(&layout, &small)[0].to_string(),

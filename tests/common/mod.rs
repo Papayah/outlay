@@ -6,7 +6,8 @@ use outlay::model::geometry::{Point, Rect, Size};
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Link, Side};
 use outlay::model::{
-    ActiveConfig, Connection, Mode, Output, Reflection, Rotation, ScreenLimits, Snapshot, Transform,
+    ActiveConfig, Caps, Connection, Mode, ModeId, Output, Reflection, Rotation, Scaling,
+    ScreenLimits, Snapshot, Transform,
 };
 
 /// Every output offers these modes, so resizes are possible in any direction.
@@ -59,7 +60,7 @@ impl Out {
 
 fn mode(xid: u32, (w, h, refresh): (i32, i32, f64), preferred: bool) -> Mode {
     Mode {
-        xid,
+        id: ModeId::from_xid(xid),
         name: format!("{w}x{h}"),
         width: w,
         height: h,
@@ -67,6 +68,7 @@ fn mode(xid: u32, (w, h, refresh): (i32, i32, f64), preferred: bool) -> Mode {
         interlaced: false,
         double_scan: false,
         preferred,
+        custom: false,
     }
 }
 
@@ -90,12 +92,12 @@ pub fn desk(outs: &[Out]) -> Snapshot {
             .expect("native mode");
         modes[native].preferred = true;
         let active = spec.pos.map(|(x, y)| ActiveConfig {
-            xid: modes[native].xid,
+            mode: modes[native].id,
             pos: Point::new(x, y),
             size: Size::new(w, h),
             rotation: Rotation::Normal,
             reflection: Reflection::Normal,
-            transform: Transform::identity(),
+            scaling: Scaling::X11(Transform::identity()),
             panning: None,
         });
         outputs.push(Output {
@@ -104,6 +106,7 @@ pub fn desk(outs: &[Out]) -> Snapshot {
             primary: spec.primary,
             modes,
             edid: None,
+            identity: None,
             physical_mm: None,
             crtc: spec.pos.map(|_| k as u32),
             crtcs: (0..8).collect(),
@@ -117,12 +120,13 @@ pub fn desk(outs: &[Out]) -> Snapshot {
             Size::new(s.w.max(a.pos.x + a.size.w), s.h.max(a.pos.y + a.size.h))
         });
     Snapshot {
-        screen: ScreenLimits {
+        screen: Some(ScreenLimits {
             min: Size::new(320, 200),
             current,
             max: Size::new(16384, 16384),
-        },
+        }),
         outputs,
+        caps: Caps::x11(),
     }
 }
 
@@ -137,6 +141,7 @@ pub fn unplugged(snap: &Snapshot, name: &str) -> Snapshot {
     out.connection = Connection::Disconnected;
     out.modes.clear();
     out.edid = None;
+    out.identity = None;
     out.physical_mm = None;
     snap
 }

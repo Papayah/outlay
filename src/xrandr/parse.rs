@@ -9,10 +9,11 @@
 
 use thiserror::Error;
 
-use super::edid::{Edid, decode_hex};
+use crate::model::edid::{Edid, decode_hex};
 use crate::model::geometry::{Point, Rect, Size};
 use crate::model::{
-    ActiveConfig, Connection, Mode, Output, Reflection, Rotation, ScreenLimits, Snapshot, Transform,
+    ActiveConfig, Caps, Connection, Mode, ModeId, Output, Reflection, Rotation, Scaling,
+    ScreenLimits, Snapshot, Transform,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -75,7 +76,11 @@ pub fn parse_verbose(text: &str) -> Result<Snapshot, ParseError> {
         .into_iter()
         .map(|b| b.build(text.lines().count()))
         .collect::<Result<_, _>>()?;
-    Ok(Snapshot { screen, outputs })
+    Ok(Snapshot {
+        screen: Some(screen),
+        outputs,
+        caps: Caps::x11(),
+    })
 }
 
 /// `0: minimum 320 x 200, current 3840 x 1080, maximum 16384 x 16384`
@@ -256,6 +261,7 @@ impl OutputBuilder {
                 primary,
                 modes: Vec::new(),
                 edid: None,
+                identity: None,
                 physical_mm: None,
                 crtc: None,
                 crtcs: Vec::new(),
@@ -364,6 +370,7 @@ impl OutputBuilder {
         let mut out = self.output;
         if !self.edid_hex.is_empty() {
             out.edid = decode_hex(&self.edid_hex).and_then(|bytes| Edid::parse(&bytes));
+            out.identity = out.edid.as_ref().map(Edid::identity);
         }
         out.physical_mm = self
             .header_mm
@@ -373,12 +380,12 @@ impl OutputBuilder {
             // Panning equal to the output's own rectangle has no effect, so it does not count.
             let panning = self.panning.filter(|p| *p != h.rect && p.w > 0 && p.h > 0);
             out.active = Some(ActiveConfig {
-                xid: h.xid,
+                mode: ModeId::from_xid(h.xid),
                 pos: Point::new(h.rect.x, h.rect.y),
                 size: Size::new(h.rect.w, h.rect.h),
                 rotation: h.rotation,
                 reflection: h.reflection,
-                transform,
+                scaling: Scaling::X11(transform),
                 panning,
             });
         }
@@ -495,7 +502,7 @@ impl ModeBuilder {
             _ => 0.0,
         };
         Ok(Mode {
-            xid: self.xid,
+            id: ModeId::from_xid(self.xid),
             name: self.name,
             width,
             height,
@@ -503,6 +510,7 @@ impl ModeBuilder {
             interlaced: self.interlaced,
             double_scan: self.double_scan,
             preferred: self.preferred,
+            custom: false,
         })
     }
 }
@@ -521,9 +529,9 @@ mod tests {
     #[test]
     fn reads_the_screen_limits() {
         let snap = parse("");
-        assert_eq!(snap.screen.min, Size::new(320, 200));
-        assert_eq!(snap.screen.current, Size::new(3840, 1080));
-        assert_eq!(snap.screen.max, Size::new(16384, 16384));
+        assert_eq!(snap.screen.unwrap().min, Size::new(320, 200));
+        assert_eq!(snap.screen.unwrap().current, Size::new(3840, 1080));
+        assert_eq!(snap.screen.unwrap().max, Size::new(16384, 16384));
     }
 
     #[test]
@@ -536,7 +544,7 @@ mod tests {
         assert!(out.primary);
         assert_eq!(out.physical_mm, Some(Size::new(597, 336)));
         let active = out.active.as_ref().unwrap();
-        assert_eq!(active.xid, 0x1c8);
+        assert_eq!(active.mode, ModeId(0x1c8));
         assert_eq!(active.rect(), Rect::new(16, 0, 1440, 2560));
         assert_eq!(active.rotation, Rotation::Left);
         assert_eq!(active.reflection, Reflection::XY);
@@ -597,8 +605,8 @@ mod tests {
         assert_eq!(out.crtc, Some(2));
         assert_eq!(out.crtcs, vec![0, 1, 2, 3]);
         let active = out.active.as_ref().unwrap();
-        assert_eq!(active.transform.scale_factors(), Some((1.5, 1.5)));
-        assert_eq!(active.transform.filter, "bilinear");
+        assert_eq!(active.scaling.scale_factors(), Some((1.5, 1.5)));
+        assert_eq!(active.scaling.transform().unwrap().filter, "bilinear");
         assert_eq!(active.panning, Some(Rect::new(0, 0, 2880, 3240)));
     }
 
@@ -677,7 +685,7 @@ mod tests {
         );
         assert_eq!(snap.outputs[0].modes.len(), 1);
         assert_eq!(snap.outputs[1].modes.len(), 1);
-        assert_eq!(snap.outputs[1].modes[0].xid, 0x4f);
+        assert_eq!(snap.outputs[1].modes[0].id, ModeId(0x4f));
         assert!(!snap.outputs[1].is_relevant());
     }
 

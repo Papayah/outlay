@@ -52,10 +52,10 @@ pub fn validate(layout: &Layout, snap: &Snapshot) -> Vec<Issue> {
     for &i in &on {
         let out = &snap.outputs[i];
         // The live mode of a stale output is no longer listed; only a pending change counts.
-        let live = out.active.as_ref().map(|a| a.xid);
+        let live = out.active.as_ref().map(|a| a.mode);
         if let Some(mode) = &layout.outputs[i].mode
-            && out.mode(mode.xid).is_none()
-            && Some(mode.xid) != live
+            && out.mode(mode.id).is_none()
+            && Some(mode.id) != live
         {
             issues.push(issue(
                 Error,
@@ -64,9 +64,9 @@ pub fn validate(layout: &Layout, snap: &Snapshot) -> Vec<Issue> {
             ));
         }
     }
-    if let Some(b) = layout.bounds() {
+    if let (Some(b), Some(screen)) = (layout.bounds(), snap.screen) {
         let (w, h) = (b.right(), b.bottom());
-        let max = snap.screen.max;
+        let max = screen.max;
         if w > max.w || h > max.h {
             issues.push(issue(
                 Error,

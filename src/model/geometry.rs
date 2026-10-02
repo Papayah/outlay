@@ -1,6 +1,6 @@
 //! Integer screen geometry in X pixels.
 
-use super::{Rotation, Transform};
+use super::{Rotation, Scaling};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Point {
@@ -173,38 +173,44 @@ impl Dir {
     }
 }
 
-/// The size an output covers on the screen: the mode rotated, then passed through the output's
-/// transform, the way the X server computes a CRTC's footprint. For a plain `--scale` this is the
-/// mode size times the scale, with width and height swapped for `left` and `right`.
-pub fn effective_size(mode: Size, rotation: Rotation, transform: &Transform) -> Size {
+/// The size an output covers on the screen: the mode rotated, then scaled. On X11 the scaling is
+/// the output's transform, the way the X server computes a CRTC's footprint; for a plain
+/// `--scale` this is the mode size times the scale, with width and height swapped for `left` and
+/// `right`. A Wayland scale divides the rotated size instead.
+pub fn effective_size(mode: Size, rotation: Rotation, scaling: &Scaling) -> Size {
     let rotated = if rotation.swaps_axes() {
         Size::new(mode.h, mode.w)
     } else {
         mode
     };
-    transform.bounds(rotated)
+    scaling.bounds(rotated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Transform;
 
     #[test]
     fn effective_size_rotates_then_scales() {
         let fhd = Size::new(1920, 1080);
         assert_eq!(
-            effective_size(fhd, Rotation::Normal, &Transform::identity()),
+            effective_size(fhd, Rotation::Normal, &Scaling::X11(Transform::identity())),
             fhd
         );
         assert_eq!(
-            effective_size(fhd, Rotation::Left, &Transform::identity()),
+            effective_size(fhd, Rotation::Left, &Scaling::X11(Transform::identity())),
             Size::new(1080, 1920)
         );
         assert_eq!(
-            effective_size(fhd, Rotation::Inverted, &Transform::identity()),
+            effective_size(
+                fhd,
+                Rotation::Inverted,
+                &Scaling::X11(Transform::identity())
+            ),
             fhd
         );
-        let scaled = Transform::scale(1.5, 1.5);
+        let scaled = Scaling::X11(Transform::scale(1.5, 1.5));
         assert_eq!(
             effective_size(fhd, Rotation::Normal, &scaled),
             Size::new(2880, 1620)
@@ -214,10 +220,24 @@ mod tests {
             Size::new(1620, 2880)
         );
         // A non-uniform scale applies in screen space, after the rotation.
-        let wide = Transform::scale(2.0, 1.0);
+        let wide = Scaling::X11(Transform::scale(2.0, 1.0));
         assert_eq!(
             effective_size(fhd, Rotation::Left, &wide),
             Size::new(2160, 1920)
+        );
+    }
+
+    #[test]
+    fn a_logical_scale_divides_and_truncates() {
+        let panel = Size::new(2880, 1800);
+        assert_eq!(
+            effective_size(panel, Rotation::Normal, &Scaling::Logical(2.0)),
+            Size::new(1440, 900)
+        );
+        // 2880 / 1.75 = 1645.7 and 1800 / 1.75 = 1028.6: wlroots truncates both.
+        assert_eq!(
+            effective_size(panel, Rotation::Right, &Scaling::Logical(1.75)),
+            Size::new(1028, 1645)
         );
     }
 
@@ -252,7 +272,7 @@ mod tests {
     #[test]
     fn effective_size_absorbs_printed_rounding() {
         // xrandr prints the fixed-point matrix with six decimals: 1.1 becomes 1.099991.
-        let t = Transform::scale(1.099991, 1.099991);
+        let t = Scaling::X11(Transform::scale(1.099991, 1.099991));
         assert_eq!(
             effective_size(Size::new(1920, 1080), Rotation::Normal, &t),
             Size::new(2112, 1188)

@@ -14,7 +14,7 @@ use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
 use crate::model::links::{Align, Side, best_align};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
-use crate::model::{Mode, Output, Snapshot};
+use crate::model::{Mode, ModeId, Output, Snapshot};
 use crate::xrandr::command;
 use crate::xrandr::script::{Profile, Remap};
 
@@ -238,7 +238,7 @@ pub struct StickFlow {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pick {
     Resolution(i32, i32),
-    Mode(u32),
+    Mode(ModeId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1476,11 +1476,11 @@ impl App {
                 PickItem {
                     label: format!(
                         "{}{} {:>9} Hz",
-                        mark(m.xid == current.xid, '•'),
+                        mark(m.id == current.id, '•'),
                         mark(m.preferred, '+'),
                         m.rate_label()
                     ),
-                    pick: Pick::Mode(m.xid),
+                    pick: Pick::Mode(m.id),
                 }
             })
             .collect();
@@ -1491,7 +1491,7 @@ impl App {
         }
         let selected = items
             .iter()
-            .position(|it| it.pick == Pick::Mode(current.xid))
+            .position(|it| it.pick == Pick::Mode(current.id))
             .unwrap_or(0);
         self.mode = UiMode::Picker(Picker {
             output: f,
@@ -1520,7 +1520,7 @@ impl App {
                 self.mode = UiMode::Normal;
                 match pick {
                     Pick::Resolution(w, h) => self.simple_edit(|l, s| l.set_resolution(s, i, w, h)),
-                    Pick::Mode(xid) => self.simple_edit(|l, s| l.set_mode(s, i, xid)),
+                    Pick::Mode(id) => self.simple_edit(|l, s| l.set_mode(s, i, id)),
                 };
             }
             Action::Cancel => self.mode = UiMode::Normal,
@@ -1774,8 +1774,8 @@ impl App {
                 h,
                 rate: Some(r),
             } => match nearest_rate(&self.snap, f, w, h, r) {
-                Some(xid) => {
-                    self.simple_edit(|l, s| l.set_mode(s, f, xid));
+                Some(id) => {
+                    self.simple_edit(|l, s| l.set_mode(s, f, id));
                 }
                 None => {
                     let text = format!("{} has no {w}x{h} mode.", self.layout.label(f));
@@ -1785,8 +1785,8 @@ impl App {
             Cmd::Rate(r) => {
                 let size = self.layout.outputs[f].mode.as_ref().map(Mode::size);
                 match size.and_then(|s| nearest_rate(&self.snap, f, s.w, s.h, r)) {
-                    Some(xid) => {
-                        self.simple_edit(|l, s| l.set_mode(s, f, xid));
+                    Some(id) => {
+                        self.simple_edit(|l, s| l.set_mode(s, f, id));
                     }
                     None => {
                         let text = format!("{} has no mode to change.", self.layout.label(f));
@@ -1895,7 +1895,9 @@ impl Plugs {
             .iter()
             .filter(|o| {
                 o.is_connected()
-                    && find(old, &o.name).is_none_or(|p| !p.is_connected() || p.edid != o.edid)
+                    && find(old, &o.name).is_none_or(|p| {
+                        !p.is_connected() || p.edid != o.edid || p.identity != o.identity
+                    })
             })
             .map(|o| o.name.clone())
             .collect();
@@ -1929,7 +1931,7 @@ fn listing(names: &[String]) -> String {
 }
 
 /// The mode of output `i` at `w`x`h` whose refresh is nearest to `rate`, as xrandr picks it.
-fn nearest_rate(snap: &Snapshot, i: usize, w: i32, h: i32, rate: f64) -> Option<u32> {
+fn nearest_rate(snap: &Snapshot, i: usize, w: i32, h: i32, rate: f64) -> Option<ModeId> {
     snap.outputs[i]
         .rates(w, h)
         .into_iter()
@@ -1938,7 +1940,7 @@ fn nearest_rate(snap: &Snapshot, i: usize, w: i32, h: i32, rate: f64) -> Option<
                 .abs()
                 .total_cmp(&(b.refresh - rate).abs())
         })
-        .map(|m| m.xid)
+        .map(|m| m.id)
 }
 
 fn capitalise(text: &str) -> String {

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use super::geometry::{Dir, Point, Rect, Size, bbox, effective_size};
 use super::links::{Align, Link, Restore, Side};
-use super::{Mode, Output, Reflection, Rotation, Snapshot, Transform};
+use super::{Caps, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot};
 
 /// The pending configuration of one output.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,15 +20,15 @@ pub struct OutputState {
     pub pos: Point,
     pub rotation: Rotation,
     pub reflection: Reflection,
-    pub transform: Transform,
+    pub scaling: Scaling,
     pub primary: bool,
 }
 
 impl OutputState {
-    /// The effective size: the mode rotated and transformed.
+    /// The effective size: the mode rotated and scaled.
     pub fn size(&self) -> Size {
         self.mode.as_ref().map_or(Size::default(), |m| {
-            effective_size(m.size(), self.rotation, &self.transform)
+            effective_size(m.size(), self.rotation, &self.scaling)
         })
     }
 }
@@ -46,6 +46,8 @@ pub struct Layout {
     pub numbers: Vec<Option<usize>>,
     /// Outputs with panning, which outlay v0.1 leaves untouched.
     pub locked: Vec<bool>,
+    /// What the display server can do, copied from the snapshot.
+    pub caps: Caps,
 }
 
 /// What an edit did besides the edit itself.
@@ -99,7 +101,11 @@ impl Layout {
     /// when a position is negative, so a layout starting at 16,0 has no phantom pending change.
     pub fn inferred(snap: &Snapshot) -> Self {
         let n = snap.outputs.len();
-        let outputs = snap.outputs.iter().map(state_from_output).collect();
+        let outputs = snap
+            .outputs
+            .iter()
+            .map(|o| state_from_output(o, snap.caps))
+            .collect();
         let mut layout = Layout {
             outputs,
             links: vec![None; n],
@@ -107,6 +113,7 @@ impl Layout {
             names: snap.outputs.iter().map(|o| o.name.clone()).collect(),
             numbers: (0..n).map(|i| snap.number_of(i)).collect(),
             locked: snap.outputs.iter().map(Output::has_panning).collect(),
+            caps: snap.caps,
         };
         layout.infer_links();
         let min = layout.min_corner();
@@ -196,13 +203,14 @@ impl Layout {
             names: new.outputs.iter().map(|o| o.name.clone()).collect(),
             numbers: vec![None; n],
             locked: new.outputs.iter().map(Output::has_panning).collect(),
+            caps: new.caps,
         };
         for (j, out) in new.outputs.iter().enumerate() {
             // An output that was not relevant cannot have been edited: when it is on now, it
             // follows the live state.
             let kept = from[j].filter(|&i| old.outputs[i].is_relevant() || out.active.is_none());
             let Some(i) = kept else {
-                layout.outputs.push(state_from_output(out));
+                layout.outputs.push(state_from_output(out, new.caps));
                 continue;
             };
             layout.outputs.push(self.outputs[i].clone());
@@ -366,15 +374,15 @@ impl Layout {
         Ok(self.commit(&before, EditKind::Resize))
     }
 
-    /// Switches output `i` to the mode with this XID.
+    /// Switches output `i` to the mode with this id.
     pub fn set_mode(
         &mut self,
         snap: &Snapshot,
         i: usize,
-        xid: u32,
+        id: ModeId,
     ) -> Result<CommitReport, EditError> {
-        let mode = snap.outputs[i].mode(xid).cloned().ok_or_else(|| {
-            EditError::Refused(format!("{} has no mode 0x{xid:x}.", self.names[i]))
+        let mode = snap.outputs[i].mode(id).cloned().ok_or_else(|| {
+            EditError::Refused(format!("{} has no mode 0x{id:x}.", self.names[i]))
         })?;
         self.reshape(i, |o| o.mode = Some(mode))
     }
@@ -461,7 +469,7 @@ impl Layout {
                 .total_cmp(&b.refresh)
                 .then(b.is_progressive().cmp(&a.is_progressive()))
         });
-        let at = rates.iter().position(|m| m.xid == current.xid);
+        let at = rates.iter().position(|m| m.id == current.id);
         let next = match (at, higher) {
             (Some(k), true) => rates.get(k + 1),
             (Some(k), false) => k.checked_sub(1).and_then(|k| rates.get(k)),
@@ -474,8 +482,8 @@ impl Layout {
                 self.names[i]
             )));
         };
-        let xid = next.xid;
-        self.set_mode(snap, i, xid)
+        let id = next.id;
+        self.set_mode(snap, i, id)
     }
 
     pub fn set_rotation(
@@ -506,9 +514,10 @@ impl Layout {
         self.reshape(i, |o| o.reflection = reflection)
     }
 
-    /// `:scale 1`: drops the output's transform.
+    /// `:scale 1`: drops the output's scaling.
     pub fn reset_scale(&mut self, i: usize) -> Result<CommitReport, EditError> {
-        self.reshape(i, |o| o.transform = Transform::identity())
+        let unit = Scaling::unit(self.caps.kind);
+        self.reshape(i, |o| o.scaling = unit)
     }
 
     pub fn set_primary(&mut self, i: usize) -> Result<CommitReport, EditError> {
@@ -570,9 +579,9 @@ impl Layout {
                 )),
                 (Some(_), false) => changes.push(Change::Off),
                 (Some(live), true) => {
-                    let live_mode = out.mode(live.xid);
+                    let live_mode = out.mode(live.mode);
                     if let Some(mode) = &st.mode
-                        && mode.xid != live.xid
+                        && mode.id != live.mode
                     {
                         match live_mode {
                             Some(old) if old.size() == mode.size() => {
@@ -594,10 +603,10 @@ impl Layout {
                     if st.reflection != live.reflection {
                         changes.push(Change::Reflection(live.reflection, st.reflection));
                     }
-                    if st.transform.is_identity() != live.transform.is_identity() {
+                    if st.scaling.is_identity() != live.scaling.is_identity() {
                         changes.push(Change::Scale(
-                            scale_text(&live.transform),
-                            scale_text(&st.transform),
+                            scale_text(&live.scaling),
+                            scale_text(&st.scaling),
                         ));
                     }
                 }
@@ -652,12 +661,12 @@ impl Layout {
                 (Some(_), false) => found.push(format!("{name} is still on.")),
                 (Some(live), true) => {
                     if let Some(mode) = &st.mode
-                        && live.xid != mode.xid
+                        && live.mode != mode.id
                     {
                         found.push(format!(
                             "{name} runs mode 0x{:x} instead of 0x{:x} ({}).",
-                            live.xid,
-                            mode.xid,
+                            live.mode,
+                            mode.id,
                             mode.summary()
                         ));
                     }
@@ -680,7 +689,7 @@ impl Layout {
     }
 }
 
-fn scale_text(t: &Transform) -> String {
+fn scale_text(t: &Scaling) -> String {
     match t.scale_factors() {
         Some((sx, sy)) if (sx - sy).abs() < 1e-6 => format!("×{sx}"),
         Some((sx, sy)) => format!("×{sx}x{sy}"),
@@ -688,7 +697,7 @@ fn scale_text(t: &Transform) -> String {
     }
 }
 
-fn state_from_output(out: &Output) -> OutputState {
+fn state_from_output(out: &Output, caps: Caps) -> OutputState {
     let Some(active) = &out.active else {
         return OutputState {
             enabled: false,
@@ -696,24 +705,24 @@ fn state_from_output(out: &Output) -> OutputState {
             pos: Point::default(),
             rotation: Rotation::Normal,
             reflection: Reflection::Normal,
-            transform: Transform::identity(),
+            scaling: Scaling::unit(caps.kind),
             primary: false,
         };
     };
-    let mode = out.mode(active.xid).cloned().unwrap_or_else(|| {
+    let mode = out.mode(active.mode).cloned().unwrap_or_else(|| {
         // A stale output's mode is no longer listed: rebuild its size from the header.
         let mut size = active.size;
         if active.rotation.swaps_axes() {
             size = Size::new(size.h, size.w);
         }
-        if let Some((sx, sy)) = active.transform.scale_factors() {
+        if let Some((sx, sy)) = active.scaling.scale_factors() {
             size = Size::new(
                 (f64::from(size.w) / sx).round() as i32,
                 (f64::from(size.h) / sy).round() as i32,
             );
         }
         Mode {
-            xid: active.xid,
+            id: active.mode,
             name: format!("{}x{}", size.w, size.h),
             width: size.w,
             height: size.h,
@@ -721,6 +730,7 @@ fn state_from_output(out: &Output) -> OutputState {
             interlaced: false,
             double_scan: false,
             preferred: false,
+            custom: false,
         }
     });
     OutputState {
@@ -729,7 +739,7 @@ fn state_from_output(out: &Output) -> OutputState {
         pos: active.pos,
         rotation: active.rotation,
         reflection: active.reflection,
-        transform: active.transform.clone(),
+        scaling: active.scaling.clone(),
         primary: out.primary,
     }
 }
