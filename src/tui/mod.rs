@@ -32,7 +32,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::{DefaultTerminal, Terminal};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::xrandr::Backend;
+use crate::backend::Backend;
 use app::{App, Options};
 use session::{Input, Session, Settings};
 
@@ -118,7 +118,7 @@ pub fn confine(
     mut options: Options,
     mut settings: Settings,
 ) -> (Options, Settings) {
-    if !backend.touches_x() {
+    if !backend.is_live() {
         options.watch = None;
         settings.revert_file = None;
         settings.hooks.clear();
@@ -233,7 +233,7 @@ fn event_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xrandr::FixtureBackend;
+    use crate::backend::FixtureBackend;
 
     #[test]
     fn a_simulated_backend_gets_no_revert_file_no_hooks_and_no_watch() {
@@ -249,7 +249,7 @@ mod tests {
             ..Settings::default()
         };
         let backend = FixtureBackend::demo();
-        assert!(!backend.touches_x());
+        assert!(!backend.is_live());
         let (opts, confined) = confine(&backend, options(), settings);
         assert_eq!(confined.revert_file, None);
         assert!(confined.hooks.is_empty());

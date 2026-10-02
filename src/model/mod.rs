@@ -52,6 +52,16 @@ pub enum Kind {
     Wayland,
 }
 
+impl Kind {
+    /// What carries out an apply, as the editor names it.
+    pub fn tool(self) -> &'static str {
+        match self {
+            Kind::X11 => "xrandr",
+            Kind::Wayland => "compositor",
+        }
+    }
+}
+
 /// What the display server can do with its outputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Caps {
@@ -166,6 +176,36 @@ impl Output {
 
     pub fn current_mode(&self) -> Option<&Mode> {
         self.active.as_ref().and_then(|a| self.mode(a.mode))
+    }
+
+    /// The mode the output runs, for an active output. A stale output's mode is no longer
+    /// listed, so its size is rebuilt from the header.
+    pub fn live_mode(&self) -> Option<Mode> {
+        let active = self.active.as_ref()?;
+        if let Some(mode) = self.current_mode() {
+            return Some(mode.clone());
+        }
+        let mut size = active.size;
+        if active.rotation.swaps_axes() {
+            size = Size::new(size.h, size.w);
+        }
+        if let Some((sx, sy)) = active.scaling.scale_factors() {
+            size = Size::new(
+                (f64::from(size.w) / sx).round() as i32,
+                (f64::from(size.h) / sy).round() as i32,
+            );
+        }
+        Some(Mode {
+            id: active.mode,
+            name: format!("{}x{}", size.w, size.h),
+            width: size.w,
+            height: size.h,
+            refresh: 0.0,
+            interlaced: false,
+            double_scan: false,
+            preferred: false,
+            custom: false,
+        })
     }
 
     /// The `+preferred` mode, else the first listed one.

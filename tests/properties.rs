@@ -296,7 +296,7 @@ proptest! {
         // Scripts do not store links; loading infers them from the positions.
         layout.infer_links();
         layout.restore = vec![None; layout.len()];
-        let text = command::script(&layout, &snap);
+        let text = command::script(&layout);
         let profile = Profile::parse(&text);
         prop_assert!(profile.warnings.is_empty(), "{:?}", profile.warnings);
         let (mut loaded, notes) = profile.layout(&snap, &Vec::new());

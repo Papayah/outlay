@@ -709,33 +709,9 @@ fn state_from_output(out: &Output, caps: Caps) -> OutputState {
             primary: false,
         };
     };
-    let mode = out.mode(active.mode).cloned().unwrap_or_else(|| {
-        // A stale output's mode is no longer listed: rebuild its size from the header.
-        let mut size = active.size;
-        if active.rotation.swaps_axes() {
-            size = Size::new(size.h, size.w);
-        }
-        if let Some((sx, sy)) = active.scaling.scale_factors() {
-            size = Size::new(
-                (f64::from(size.w) / sx).round() as i32,
-                (f64::from(size.h) / sy).round() as i32,
-            );
-        }
-        Mode {
-            id: active.mode,
-            name: format!("{}x{}", size.w, size.h),
-            width: size.w,
-            height: size.h,
-            refresh: 0.0,
-            interlaced: false,
-            double_scan: false,
-            preferred: false,
-            custom: false,
-        }
-    });
     OutputState {
         enabled: true,
-        mode: Some(mode),
+        mode: out.live_mode(),
         pos: active.pos,
         rotation: active.rotation,
         reflection: active.reflection,

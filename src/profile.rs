@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
+use crate::backend::{Backend, Plan};
 use crate::cli::Cli;
 use crate::config::Config;
 use crate::model::layout::Layout;
@@ -17,8 +18,8 @@ use crate::model::validate::{Severity, validate};
 use crate::tui::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, UiMode};
 use crate::tui::confine;
 use crate::tui::session::{Input, Session, tilde};
+use crate::xrandr::command;
 use crate::xrandr::script::{line_diff, profile_path, save_text, write_atomic};
-use crate::xrandr::{Backend, command};
 
 /// Writes a line to stderr. After a SIGHUP there is no terminal, and `eprintln!` would panic.
 fn say(text: impl AsRef<str>) {
@@ -61,9 +62,9 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
     if !errors.is_empty() {
         bail!("{} cannot be applied: {}", item.name, errors.join(" "));
     }
-    let argv = command::apply_args(&layout, &snap);
+    let plan = Plan::pending(&layout, &snap);
     if cli.dry_run {
-        println!("{}", command::command_line(&argv));
+        println!("{}", command::command_line(&command::argv(&plan)));
         return Ok(());
     }
     let changes = layout.diff(&snap);
@@ -91,7 +92,7 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
     }
     let mut session = Session::new(app, backend, settings, signal);
     let layout = session.app.layout.clone();
-    session.push(Effect::Apply(ApplyRequest { argv, layout }));
+    session.push(Effect::Apply(ApplyRequest { plan, layout }));
     session.perform(&mut Lines);
     if let UiMode::Message(message) = &session.app.mode {
         for line in &message.lines {
@@ -183,7 +184,7 @@ pub fn save(
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err).with_context(|| format!("could not read {}", path.display())),
     };
-    let text = save_text(old.as_deref(), &command::script_command(&layout, &snap));
+    let text = save_text(old.as_deref(), &command::script_command(&layout));
     if cli.dry_run {
         print!("{text}");
         return Ok(());

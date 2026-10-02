@@ -6,11 +6,12 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::backend::{Backend, DryRun, FixtureBackend};
 use crate::config::Config;
 use crate::tui::app::{Options, WATCH_INTERVAL};
 use crate::tui::session::{Settings, default_revert_file};
 use crate::tui::theme::Theme;
-use crate::xrandr::{Backend, DryRun, FixtureBackend, XrandrCli, check_session};
+use crate::xrandr::{XrandrCli, check_session};
 
 #[derive(Debug, Parser)]
 #[command(

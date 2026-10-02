@@ -278,7 +278,7 @@ pub const TABLE: &[Binding] = &[
     bind(C::Normal, &[ch('a')], act(A::Apply), Some("apply"),
         "Apply, with an automatic revert unless you keep it"),
     bind(C::Normal, &[ch('y')], act(A::Copy), None,
-        "Copy the pending xrandr command to the clipboard (OSC 52)"),
+        "Copy the pending command to the clipboard (OSC 52)"),
     bind(C::Normal, &[code(KeyCode::Tab)], act(A::FocusNext), None, "Focus the next display"),
     bind(C::Normal, &[code(KeyCode::BackTab)], act(A::FocusPrev), None,
         "Focus the previous display"),

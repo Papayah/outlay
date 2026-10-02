@@ -71,8 +71,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let clamped = popups::help(app, *scroll, area, buf);
             app.mode = UiMode::Help { scroll: clamped };
         }
-        UiMode::ConfirmApply(plan) => popups::confirm_apply(app, plan, main, buf),
-        UiMode::Applying => popups::applying(main, buf),
+        UiMode::ConfirmApply(preview) => popups::confirm_apply(app, preview, main, buf),
+        UiMode::Applying => popups::applying(app, main, buf),
         UiMode::Countdown(c) => popups::countdown(app, c, main, buf),
         UiMode::Message(m) => popups::message(app, m, main, buf),
         UiMode::Profiles(picker) => popups::profiles(app, picker, main, buf),

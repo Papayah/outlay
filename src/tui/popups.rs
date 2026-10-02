@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Clear, LineGauge, Padding, Paragraph, Widget, Wrap
 use crate::model::validate::Severity;
 
 use super::app::{
-    App, ApplyPlan, Countdown, Message, Picker, ProfilePicker, Question, RemapDialog, SavePlan,
+    App, ApplyPreview, Countdown, Message, Picker, ProfilePicker, Question, RemapDialog, SavePlan,
 };
 use super::canvas::{self, Scene, Viewport, truncate};
 use super::keys::Context;
@@ -186,32 +186,34 @@ fn heading(text: &str) -> Line<'static> {
 
 /// The apply confirmation: what changes, what blocks the apply, what to watch for, and the
 /// exact command.
-pub fn confirm_apply(app: &App, plan: &ApplyPlan, area: Rect, buf: &mut Buffer) {
+pub fn confirm_apply(app: &App, preview: &ApplyPreview, area: Rect, buf: &mut Buffer) {
     let mut lines = vec![heading("Changes")];
-    lines.extend(plan.changes.iter().map(|c| Line::from(format!("  {c}"))));
-    if !plan.errors.is_empty() {
+    lines.extend(preview.changes.iter().map(|c| Line::from(format!("  {c}"))));
+    if !preview.errors.is_empty() {
         lines.push(Line::default());
         lines.push(heading("Errors (these block the apply)"));
         let style = app.theme.severity(Severity::Error);
         lines.extend(
-            plan.errors
+            preview
+                .errors
                 .iter()
                 .map(|e| Line::styled(format!("  {e}"), style)),
         );
     }
-    if !plan.warnings.is_empty() {
+    if !preview.warnings.is_empty() {
         lines.push(Line::default());
         lines.push(heading("Warnings"));
         let style = app.theme.severity(Severity::Warning);
         lines.extend(
-            plan.warnings
+            preview
+                .warnings
                 .iter()
                 .map(|w| Line::styled(format!("  {w}"), style)),
         );
     }
     lines.push(Line::default());
     lines.push(heading("Command"));
-    lines.push(Line::styled(plan.command.clone(), app.theme.dim()));
+    lines.push(Line::styled(preview.command.clone(), app.theme.dim()));
     text_popup(
         app,
         "Apply".to_owned(),
@@ -222,11 +224,11 @@ pub fn confirm_apply(app: &App, plan: &ApplyPlan, area: Rect, buf: &mut Buffer) 
     );
 }
 
-/// While xrandr runs.
-pub fn applying(area: Rect, buf: &mut Buffer) {
+/// While the apply runs; the title names the tool.
+pub fn applying(app: &App, area: Rect, buf: &mut Buffer) {
     let text = "Applying… the screens may go dark for a moment.";
     let rect = centred(area, text.chars().count() as u16 + 4, 3);
-    let inner = frame("xrandr".to_owned(), rect, buf);
+    let inner = frame(app.snap.caps.kind.tool().to_owned(), rect, buf);
     Paragraph::new(text).render(inner, buf);
 }
 
