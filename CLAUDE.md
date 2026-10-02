@@ -2,6 +2,8 @@
 
 Keyboard-driven xrandr layout editor (Rust 2024, ratatui). `docs/PLAN.md` is the design brief and
 the source of truth for behaviour; read `MISTAKES.md` before starting work.
+`docs/PLAN-wayland.md` plans the Wayland work (neutral backend, wlroots, kanshi, scale editing)
+phase by phase; where the two differ, it wins.
 
 ## Commands
 
