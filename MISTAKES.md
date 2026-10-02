@@ -372,3 +372,53 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** run the wait in the background (`gh pr checks N --watch --interval 30` with
   `run_in_background`); the harness reports when it exits. `gh pr checks` exits 8 while checks
   are pending.
+
+## A live pty run misses the countdown that a `--demo` run sees
+
+- **Symptom:** `tools/pty_drive.py` on the live X server reports `countdown: False` and
+  `reverted: False`, yet outlay exits 0 and the screens are back as they were.
+- **Cause:** a live backend runs the `post_apply` hooks (feh here) after the apply, before the
+  countdown starts, and again after the revert, before the status line changes. Each run takes
+  about a second. `--demo` has no hooks, so the short sleeps that suit it are too short live.
+- **Fix:** the `scale` scenario reads for 4 s after Enter and 12 s for a 10 s countdown, and
+  checks the raw output as well as the screen. Run it with `PTY_DUMP=1` to see both screens.
+
+## Proving a refactor keeps every xrandr command byte-identical
+
+- **Symptom:** the goldens in `tests/commands.rs` cover a few layouts, and a refactor of the
+  command path can change an untested case (stale output, panning, a profile with `--scale`).
+- **Fix:** before the change, write a throwaway `tests/zz_golden_dump.rs`. For every fixture ×
+  edit (toggle, rotate, reset scale, primary, rate, resolution, move, no primary) × screenlayout
+  profile, it writes the apply, copy, script and revert text, the simulator outcome, the state
+  afterwards, `mismatches` and the revert result to a file. Run it once on the old API and once
+  on the new one, then `diff` the two files. In W2 this gave 236 cases, all identical. Delete the
+  file before committing.
+- **Note:** the Plan → argv → Plan round trip fails for the stale output in
+  `active-disconnected.txt`, as it should: xrandr no longer lists the output's mode, and
+  `argv_to_plan` refuses the mode, just as xrandr does.
+
+## Binding a new key breaks the "unbound key" tests
+
+- **Symptom:** after `x` became the scale picker, `another_key_ends_the_hold_and_the_run`
+  (`tests/tui.rs`) failed, and `src/tui/keys.rs` asserted that `x` was unbound.
+- **Cause:** both tests use a letter that happened to be free as "some unbound key".
+- **Fix:** use another free key (`v` now) and update the keymap assertion. Before you bind a key,
+  grep `tests/` and `keys.rs` for `char('<key>')` and `"<key>`.
+
+## Growing a display that is centred below another moves it sideways
+
+- **Symptom:** an expected rectangle after `set_scale` or a mode change is off by half the
+  growth in x.
+- **Cause:** in the demo, eDP-1 is stuck `below DP-1-2, centre`. When it grows from 1920 to
+  2400 wide, it stays centred on DP-1-2 (centre x = 3200), so x goes from 2240 to 2000.
+- **Fix:** work the expected position out from the link (`layout.link_text(i)`), not from the
+  old x.
+
+## An insta `.snap.new` changes `assertion_line`
+
+- **Symptom:** accepting a `.snap.new` by renaming it also changes the header's
+  `assertion_line`, which adds noise to a review whose point is a one-line change.
+- **Cause:** insta writes the current line of the assertion. It ignores the header when it
+  compares, so the old value still passes.
+- **Fix:** diff the two files, then copy only the content lines into the old `.snap` (or set
+  the header line back to the old value before renaming).
