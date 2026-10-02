@@ -360,9 +360,89 @@ fn another_key_ends_the_hold_and_the_run() {
     let mut app = demo();
     press(&mut app, "3");
     hold(&mut app, "<A-l>", 15, Duration::from_millis(40));
-    let after = hold(&mut app, "x<A-l>", 1, Duration::from_millis(40));
+    let after = hold(&mut app, "v<A-l>", 1, Duration::from_millis(40));
     assert_eq!(after, [10]);
     assert_eq!(app.history.undo_len(), 1);
+}
+
+#[test]
+fn the_scale_picker_and_the_scale_steps() {
+    let mut app = demo();
+    press(&mut app, "3x");
+    let UiMode::Picker(picker) = &app.mode else {
+        panic!("no picker")
+    };
+    assert_eq!(picker.title, "3 eDP-1 scale");
+    let labels: Vec<&str> = picker.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "   ×0.5 → 960x540 desktop",
+            "  ×0.75 → 1440x810 desktop",
+            "•    ×1 → 1920x1080 desktop",
+            "  ×1.25 → 2400x1350 desktop",
+            "   ×1.5 → 2880x1620 desktop",
+            "  ×1.75 → 3360x1890 desktop",
+            "     ×2 → 3840x2160 desktop",
+            "   ×2.5 → 4800x2700 desktop",
+            "     ×3 → 5760x3240 desktop",
+        ]
+    );
+    assert_eq!(picker.selected, 2, "the current scale");
+    press(&mut app, "j<Enter>");
+    assert_eq!(app.mode, UiMode::Normal);
+    let edp = ix(&app.layout, "eDP-1");
+    assert_eq!(app.layout.outputs[edp].scaling.factor(), Some(1.25));
+    assert_eq!(
+        rect(&app.layout, "eDP-1"),
+        Rect::new(2000, 1440, 2400, 1350)
+    );
+    assert_eq!(app.history.undo_len(), 1);
+    let pending: Vec<String> = app.pending().iter().map(ToString::to_string).collect();
+    assert_eq!(
+        pending,
+        ["eDP-1  pos 2240,1440 → 2000,1440, scale ×1 → ×1.25"]
+    );
+    let text = screen(&mut app, 100, 30).backend().to_string();
+    assert!(text.contains("│ scale ×1 → ×1.25"), "{text}");
+    assert!(text.contains("1920x1080@165.01 ×1.25"), "{text}");
+
+    // > > < steps along the list: 1.25 → 1.5 → 1.75 → 1.5, one undo step each.
+    press(&mut app, ">>");
+    assert_eq!(app.layout.outputs[edp].scaling.factor(), Some(1.75));
+    press(&mut app, "<lt>");
+    assert_eq!(app.layout.outputs[edp].scaling.factor(), Some(1.5));
+    assert_eq!(app.history.undo_len(), 4);
+    press(&mut app, "u");
+    assert_eq!(app.layout.outputs[edp].scaling.factor(), Some(1.75));
+
+    // A scale off the list joins it, marked as the current one.
+    press(&mut app, ":scale 1.1<Enter>x");
+    let UiMode::Picker(picker) = &app.mode else {
+        panic!("no picker")
+    };
+    assert_eq!(picker.items.len(), 10);
+    assert_eq!(
+        picker.items[picker.selected].label,
+        "•  ×1.1 → 2112x1188 desktop"
+    );
+    press(&mut app, "<Esc>:scale 150%<Enter>");
+    assert_eq!(
+        status(&app),
+        "On X11 a scale is a factor, such as :scale 1.5; percentages are for Wayland."
+    );
+    press(&mut app, ":scale 1<Enter>");
+    assert!(app.pending().is_empty(), "{:?}", app.pending());
+
+    // A size that is not whole gets ~.
+    let snap = common::desk(&[common::on("A", 1366, 768, 0, 0)]);
+    let mut app = App::new(snap, Options::default());
+    press(&mut app, "x");
+    let UiMode::Picker(picker) = &app.mode else {
+        panic!("no picker")
+    };
+    assert_eq!(picker.items[3].label, "  ×1.25 → ~1708x960 desktop");
+    assert_eq!(picker.items[1].label, "  ×0.75 → ~1025x576 desktop");
 }
 
 #[test]
@@ -901,6 +981,13 @@ fn snapshot_stick_ghost() {
 fn snapshot_mode_picker() {
     let mut app = demo();
     press(&mut app, "m");
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
+}
+
+#[test]
+fn snapshot_scale_picker() {
+    let mut app = demo();
+    press(&mut app, "3x");
     insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
 }
 

@@ -207,7 +207,8 @@ impl Scene<'_> {
         title
     }
 
-    /// `1920x1080@165.01`, with a rotation marker and a scale badge: `1080x1920@60.00 ↺ ×1.5`.
+    /// `1920x1080@165.01`, with a rotation marker and a scale badge: `1080x1920@60.00 ↺ ×1.5`,
+    /// or `150%` on Wayland.
     fn mode_line(&self, i: usize) -> String {
         let st = &self.layout.outputs[i];
         let Some(mode) = &st.mode else {
@@ -225,15 +226,9 @@ impl Scene<'_> {
             crate::model::Rotation::Inverted => " ⇅",
         };
         line.push_str(marker);
-        match st.scaling.scale_factors() {
-            Some((sx, sy)) if (sx - sy).abs() < 1e-6 && (sx - 1.0).abs() > 1e-6 => {
-                line.push_str(&format!(" ×{}", trim_float(sx)));
-            }
-            Some((sx, sy)) if (sx - sy).abs() >= 1e-6 => {
-                line.push_str(&format!(" ×{}x{}", trim_float(sx), trim_float(sy)));
-            }
-            Some(_) => {}
-            None => line.push_str(" ×?"),
+        if !st.scaling.is_identity() {
+            line.push(' ');
+            line.push_str(&st.scaling.badge().unwrap_or_else(|| "×?".to_owned()));
         }
         line
     }
@@ -241,12 +236,6 @@ impl Scene<'_> {
     fn colour(&self, i: usize) -> Style {
         self.theme.output(self.layout.numbers[i])
     }
-}
-
-/// `1.5`, `2`, `1.25`
-fn trim_float(v: f64) -> String {
-    let s = format!("{v:.3}");
-    s.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// Cuts `text` to `width` characters, ending in `…` when it had to cut.
@@ -634,7 +623,5 @@ mod tests {
         assert_eq!(truncate("DP-1-2", 10), "DP-1-2");
         assert_eq!(truncate("HDMI-1-0 Philips", 8), "HDMI-1-…");
         assert_eq!(truncate("abc", 0), "");
-        assert_eq!(trim_float(1.5), "1.5");
-        assert_eq!(trim_float(2.0), "2");
     }
 }

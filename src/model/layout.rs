@@ -11,6 +11,14 @@ use super::geometry::{Dir, Point, Rect, Size, bbox, effective_size};
 use super::links::{Align, Link, Restore, Side};
 use super::{Caps, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot};
 
+/// The scales the picker and `<`/`>` offer. Each is exact in X11's 16.16 and Wayland's 24.8
+/// fixed point.
+pub const SCALES: [f64; 9] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
+/// The range `:scale` accepts.
+pub const MIN_SCALE: f64 = 0.25;
+pub const MAX_SCALE: f64 = 8.0;
+
 /// The pending configuration of one output.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputState {
@@ -516,8 +524,55 @@ impl Layout {
 
     /// `:scale 1`: drops the output's scaling.
     pub fn reset_scale(&mut self, i: usize) -> Result<CommitReport, EditError> {
-        let unit = Scaling::unit(self.caps.kind);
-        self.reshape(i, |o| o.scaling = unit)
+        self.set_scale(i, 1.0)
+    }
+
+    /// Scales output `i` uniformly by `factor`; its neighbours re-flow. On X11 this replaces
+    /// whatever transform the output had, with a note when that was more than a plain scale.
+    pub fn set_scale(&mut self, i: usize, factor: f64) -> Result<CommitReport, EditError> {
+        self.check_enabled(i)?;
+        if !(MIN_SCALE..=MAX_SCALE).contains(&factor) {
+            return Err(EditError::Refused(format!(
+                "A scale must be between {MIN_SCALE} and {MAX_SCALE}."
+            )));
+        }
+        let target = Scaling::uniform(self.caps.kind, factor);
+        let current = &self.outputs[i].scaling;
+        let badge = target.badge().unwrap_or_default();
+        if current.factor().is_some() && current.approx_eq(&target) {
+            return Err(EditError::NoChange(format!(
+                "{} is at {badge} already.",
+                self.names[i]
+            )));
+        }
+        let mut notes = Vec::new();
+        if current.factor().is_none() {
+            notes.push(format!(
+                "{}'s transform was not a uniform scale; {badge} replaces it.",
+                self.names[i]
+            ));
+        }
+        Ok(self.reshape(i, |o| o.scaling = target)?.with_notes(notes))
+    }
+
+    /// The next larger (`larger`) or smaller scale of [`SCALES`].
+    pub fn step_scale(&mut self, i: usize, larger: bool) -> Result<CommitReport, EditError> {
+        self.check_enabled(i)?;
+        let current = self.outputs[i].scaling.factor().unwrap_or(1.0);
+        const EPSILON: f64 = 1e-3;
+        let next = if larger {
+            SCALES.iter().find(|&&s| s > current + EPSILON)
+        } else {
+            SCALES.iter().rev().find(|&&s| s < current - EPSILON)
+        };
+        let Some(&next) = next else {
+            let which = if larger { "largest" } else { "smallest" };
+            return Err(EditError::NoChange(format!(
+                "{} is at its {which} scale.",
+                self.names[i]
+            )));
+        };
+        self.set_scale(i, next)
     }
 
     pub fn set_primary(&mut self, i: usize) -> Result<CommitReport, EditError> {
@@ -603,7 +658,7 @@ impl Layout {
                     if st.reflection != live.reflection {
                         changes.push(Change::Reflection(live.reflection, st.reflection));
                     }
-                    if st.scaling.is_identity() != live.scaling.is_identity() {
+                    if !st.scaling.approx_eq(&live.scaling) {
                         changes.push(Change::Scale(
                             scale_text(&live.scaling),
                             scale_text(&st.scaling),
@@ -690,11 +745,7 @@ impl Layout {
 }
 
 fn scale_text(t: &Scaling) -> String {
-    match t.scale_factors() {
-        Some((sx, sy)) if (sx - sy).abs() < 1e-6 => format!("×{sx}"),
-        Some((sx, sy)) => format!("×{sx}x{sy}"),
-        None => "custom".to_owned(),
-    }
+    t.badge().unwrap_or_else(|| "custom".to_owned())
 }
 
 fn state_from_output(out: &Output, caps: Caps) -> OutputState {

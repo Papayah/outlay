@@ -188,6 +188,47 @@ fn a_resize_in_a_grid_pushes_the_display_below() {
 }
 
 #[test]
+fn a_display_right_of_a_scaled_one_follows_it() {
+    let (_, mut layout) = load(&[
+        on("A", 1920, 1080, 0, 0).primary(),
+        on("B", 1920, 1080, 1920, 0),
+    ]);
+    let original = layout.clone();
+    let a = ix(&layout, "A");
+    layout.set_scale(a, 1.5).unwrap();
+    assert_eq!(rect(&layout, "A"), Rect::new(0, 0, 2880, 1620));
+    assert_eq!(rect(&layout, "B"), Rect::new(2880, 0, 1920, 1080));
+    assert_eq!(
+        link(&layout, "B"),
+        stuck("A", Side::RightOf, Align::Start, 0)
+    );
+    layout.step_scale(a, false).unwrap();
+    assert_eq!(rect(&layout, "A"), Rect::new(0, 0, 2400, 1350));
+    assert_eq!(rect(&layout, "B"), Rect::new(2400, 0, 1920, 1080));
+    layout.reset_scale(a).unwrap();
+    assert_eq!(layout, original);
+}
+
+#[test]
+fn scaling_up_in_a_grid_pushes_the_display_below() {
+    let (_, mut layout) = load(&[
+        on("A", 1920, 1080, 0, 0),
+        on("B", 1920, 1080, 1920, 0),
+        on("C", 1920, 1080, 0, 1080),
+        on("D", 1920, 1080, 1920, 1080),
+    ]);
+    let report = layout.set_scale(ix(&layout, "B"), 1.5).unwrap();
+    assert_eq!(report.pushed, vec![ix(&layout, "D")]);
+    assert_eq!(rect(&layout, "B"), Rect::new(1920, 0, 2880, 1620));
+    assert_eq!(
+        rect(&layout, "D"),
+        Rect::new(1920, 1620, 1920, 1080),
+        "pushed down 540 px"
+    );
+    assert!(layout.overlapping_pairs().is_empty());
+}
+
+#[test]
 fn sticking_inserts_into_a_row() {
     // B is the root, so A must be re-rooted before F can go between them.
     let (snap, mut layout) = load(&[

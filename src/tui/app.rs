@@ -9,13 +9,15 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
 use crate::backend::Plan;
+use crate::model::geometry::effective_size;
 use crate::model::geometry::{Dir, Point, Rect};
 use crate::model::history::History;
+use crate::model::layout::SCALES;
 use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
 use crate::model::links::{Align, Side, best_align};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
-use crate::model::{Mode, ModeId, Output, Snapshot};
+use crate::model::{Kind, Mode, ModeId, Output, Scaling, Snapshot};
 use crate::xrandr::command;
 use crate::xrandr::script::{Profile, Remap};
 
@@ -240,6 +242,7 @@ pub struct StickFlow {
 pub enum Pick {
     Resolution(i32, i32),
     Mode(ModeId),
+    Scale(f64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,7 +251,7 @@ pub struct PickItem {
     pub pick: Pick,
 }
 
-/// The resolution picker (`m`) or the rate picker (`r`).
+/// The resolution picker (`m`), the rate picker (`r`) or the scale picker (`x`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picker {
     pub output: usize,
@@ -929,6 +932,11 @@ impl App {
                 let higher = action == Action::FasterRate;
                 self.simple_edit(|l, s| l.step_rate(s, f, higher));
             }
+            Action::ScalePicker => self.open_scales(),
+            Action::SmallerScale | Action::LargerScale => {
+                let larger = action == Action::LargerScale;
+                self.simple_edit(|l, _| l.step_scale(f, larger));
+            }
             Action::RotateCw | Action::RotateCcw => {
                 let cw = action == Action::RotateCw;
                 self.simple_edit(|l, _| l.rotate(f, cw));
@@ -1508,6 +1516,69 @@ impl App {
         });
     }
 
+    /// Each row shows what the scale makes of the mode: on X11 a larger scale gives a larger
+    /// desktop, so things look smaller; on Wayland it gives fewer logical pixels, so things look
+    /// larger. A size that is not a whole number gets `~`.
+    fn open_scales(&mut self) {
+        let Some(mode) = self.picker_mode() else {
+            return;
+        };
+        let f = self.focus;
+        let st = &self.layout.outputs[f];
+        let kind = self.layout.caps.kind;
+        let current = st.scaling.factor();
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-3;
+        let mut factors = SCALES.to_vec();
+        if let Some(c) = current
+            && !factors.iter().any(|&s| near(s, c))
+        {
+            factors.push(c);
+            factors.sort_by(f64::total_cmp);
+        }
+        let rotated = if st.rotation.swaps_axes() {
+            (mode.height, mode.width)
+        } else {
+            (mode.width, mode.height)
+        };
+        let items: Vec<PickItem> = factors
+            .iter()
+            .map(|&s| {
+                let scaling = Scaling::uniform(kind, s);
+                let size = effective_size(mode.size(), st.rotation, &scaling);
+                let (exact, noun) = match kind {
+                    Kind::X11 => (whole(rotated, |v| v * s), "desktop"),
+                    Kind::Wayland => (whole(rotated, |v| v / s), "logical"),
+                };
+                let mark = if current.is_some_and(|c| near(c, s)) {
+                    '•'
+                } else {
+                    ' '
+                };
+                PickItem {
+                    label: format!(
+                        "{mark} {:>5} → {}{}x{} {noun}",
+                        scaling.badge().unwrap_or_default(),
+                        if exact { "" } else { "~" },
+                        size.w,
+                        size.h
+                    ),
+                    pick: Pick::Scale(s),
+                }
+            })
+            .collect();
+        let at = current.unwrap_or(1.0);
+        let selected = items
+            .iter()
+            .position(|it| matches!(it.pick, Pick::Scale(s) if near(s, at)))
+            .unwrap_or(0);
+        self.mode = UiMode::Picker(Picker {
+            output: f,
+            title: format!("{} scale", self.layout.label(f)),
+            items,
+            selected,
+        });
+    }
+
     fn picker_key(&mut self, action: Action) {
         let UiMode::Picker(picker) = &mut self.mode else {
             return;
@@ -1523,6 +1594,7 @@ impl App {
                 match pick {
                     Pick::Resolution(w, h) => self.simple_edit(|l, s| l.set_resolution(s, i, w, h)),
                     Pick::Mode(id) => self.simple_edit(|l, s| l.set_mode(s, i, id)),
+                    Pick::Scale(s) => self.simple_edit(|l, _| l.set_scale(i, s)),
                 };
             }
             Action::Cancel => self.mode = UiMode::Normal,
@@ -1802,8 +1874,14 @@ impl App {
             Cmd::Reflect(r) => {
                 self.simple_edit(|l, _| l.set_reflection(f, r));
             }
-            Cmd::ResetScale => {
-                self.simple_edit(|l, _| l.reset_scale(f));
+            Cmd::Scale { percent: true, .. } if self.layout.caps.kind == Kind::X11 => {
+                self.say(
+                    Severity::Warning,
+                    "On X11 a scale is a factor, such as :scale 1.5; percentages are for Wayland.",
+                );
+            }
+            Cmd::Scale { factor, .. } => {
+                self.simple_edit(|l, _| l.set_scale(f, factor));
             }
             Cmd::Stick {
                 child,
@@ -1921,6 +1999,11 @@ impl Plugs {
             outside,
         }
     }
+}
+
+/// Whether a `(w, h)` size stays whole through `f`.
+fn whole((w, h): (i32, i32), f: impl Fn(f64) -> f64) -> bool {
+    [w, h].iter().all(|&v| f(f64::from(v)).fract().abs() < 1e-9)
 }
 
 /// `A`, `A and B`, `A, B and C`.

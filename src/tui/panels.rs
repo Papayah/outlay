@@ -7,7 +7,7 @@ use ratatui::symbols::merge::MergeStrategy;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Widget, Wrap};
 
-use crate::model::Reflection;
+use crate::model::{Kind, Reflection, Scaling};
 
 use super::app::{App, UiMode};
 use super::canvas::truncate;
@@ -80,6 +80,29 @@ fn mode_lines(app: &App, i: usize) -> Vec<String> {
     }
 }
 
+/// `scale ×1.5`, `scale ×1.25 → ×1.5`, or on Wayland `scale 150% · 1280x720 logical`. Left out
+/// on X11 while the display has no scale and none is pending.
+fn scale_line(app: &App, i: usize) -> Option<String> {
+    let st = &app.layout.outputs[i];
+    let live = app.snap.outputs[i].active.as_ref().map(|a| &a.scaling);
+    let wayland = app.layout.caps.kind == Kind::Wayland;
+    if !wayland && st.scaling.is_identity() && live.is_none_or(Scaling::is_identity) {
+        return None;
+    }
+    let text = |s: &Scaling| s.badge().unwrap_or_else(|| "custom".to_owned());
+    let mut line = match live {
+        Some(l) if !l.approx_eq(&st.scaling) => {
+            format!("scale {} → {}", text(l), text(&st.scaling))
+        }
+        _ => format!("scale {}", text(&st.scaling)),
+    };
+    if wayland {
+        let size = app.layout.size(i);
+        line.push_str(&format!(" · {}x{} logical", size.w, size.h));
+    }
+    Some(line)
+}
+
 /// The focused display's details, and below them the tray of connected displays that are off.
 pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
     let i = app.focus;
@@ -135,15 +158,10 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
         if st.reflection != Reflection::Normal {
             rot.push_str(&format!(" · reflect {}", st.reflection));
         }
-        if let Some((sx, sy)) = st.scaling.scale_factors()
-            && ((sx - 1.0).abs() > 1e-6 || (sy - 1.0).abs() > 1e-6)
-        {
-            rot.push_str(&format!(" · ×{sx}"));
-            if (sx - sy).abs() > 1e-6 {
-                rot.push_str(&format!("x{sy}"));
-            }
-        }
         lines.push(Line::from(rot));
+        if let Some(scale) = scale_line(app, i) {
+            lines.push(Line::from(scale));
+        }
         lines.push(Line::from(format!("link  {}", layout.link_text(i))));
     } else {
         let toggle = app

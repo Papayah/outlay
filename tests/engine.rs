@@ -207,6 +207,72 @@ fn panning_outputs_are_read_only() {
 }
 
 #[test]
+fn scale_steps_stop_at_the_ends_and_refuse_nonsense() {
+    let (_, mut layout) = load(&[on("A", 1920, 1080, 0, 0), off("B", 1920, 1080)]);
+    let (a, b) = (ix(&layout, "A"), ix(&layout, "B"));
+    assert_eq!(
+        layout.set_scale(a, 1.0).unwrap_err(),
+        EditError::NoChange("A is at ×1 already.".to_owned())
+    );
+    assert_eq!(
+        layout.set_scale(a, 9.0).unwrap_err(),
+        EditError::Refused("A scale must be between 0.25 and 8.".to_owned())
+    );
+    assert_eq!(
+        layout.set_scale(b, 1.5).unwrap_err(),
+        EditError::Refused("B is off.".to_owned())
+    );
+    for _ in 0..6 {
+        layout.step_scale(a, true).unwrap();
+    }
+    assert_eq!(layout.outputs[a].scaling.factor(), Some(3.0));
+    assert_eq!(
+        layout.step_scale(a, true).unwrap_err(),
+        EditError::NoChange("A is at its largest scale.".to_owned())
+    );
+    // A scale off the list steps to its neighbours on the list.
+    layout.set_scale(a, 1.1).unwrap();
+    layout.step_scale(a, true).unwrap();
+    assert_eq!(layout.outputs[a].scaling.factor(), Some(1.25));
+    layout.set_scale(a, 1.1).unwrap();
+    layout.step_scale(a, false).unwrap();
+    assert_eq!(layout.outputs[a].scaling.factor(), Some(1.0));
+    layout.set_scale(a, 0.5).unwrap();
+    assert_eq!(
+        layout.step_scale(a, false).unwrap_err(),
+        EditError::NoChange("A is at its smallest scale.".to_owned())
+    );
+}
+
+#[test]
+fn a_transform_that_is_more_than_a_scale_survives_until_a_scale_replaces_it() {
+    use outlay::backend::Plan;
+    use outlay::model::{Scaling, Transform};
+    let mut snap = fixture("scaled");
+    let edp = snap.find("eDP-1").unwrap();
+    let mut keystone = Transform::scale(1.5, 1.5);
+    keystone.matrix[0][1] = 0.1;
+    snap.outputs[edp].active.as_mut().unwrap().scaling = Scaling::X11(keystone);
+    let (mut layout, _) = Layout::from_snapshot(&snap);
+    let plan = Plan::pending(&layout, &snap);
+    let args = outlay::xrandr::command::argv(&plan);
+    assert!(
+        !args.iter().any(|a| a == "--transform" || a == "--scale"),
+        "an unchanged output writes nothing: {args:?}"
+    );
+    let report = layout.set_scale(edp, 1.5).unwrap();
+    assert_eq!(
+        report.notes,
+        ["eDP-1's transform was not a uniform scale; ×1.5 replaces it."]
+    );
+    let args = outlay::xrandr::command::argv(&Plan::pending(&layout, &snap));
+    assert!(
+        args.windows(2).any(|w| w == ["--scale", "1.5x1.5"]),
+        "{args:?}"
+    );
+}
+
+#[test]
 fn stick_refuses_nonsense() {
     let (snap, mut layout) = load(&[
         on("A", 1920, 1080, 0, 0),
