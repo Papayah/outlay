@@ -1,5 +1,6 @@
 //! outlay: a keyboard-driven xrandr layout editor.
 
+pub mod backend;
 pub mod cli;
 pub mod config;
 pub mod model;

@@ -11,11 +11,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use common::{ix, keys, unplugged};
+use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan};
 use outlay::model::Rotation;
 use outlay::model::Snapshot;
 use outlay::tui::app::{App, Options, UiMode, WATCH_INTERVAL};
 use outlay::tui::session::{Input, Session, Settings};
-use outlay::xrandr::{ApplyOutcome, Backend, FixtureBackend, command};
+use outlay::xrandr::command;
 use ratatui::crossterm::event::Event;
 
 /// What the fake does with the next apply.
@@ -25,18 +26,18 @@ enum Next {
     Works,
     /// Exits non-zero, optionally after changing the screens anyway.
     Fails { stderr: &'static str, changes: bool },
-    /// Exits 0 but skips one output, as xrandr does for an output it cannot find.
+    /// Succeeds but skips one planned output, as xrandr does for an output it cannot find.
     Skips(&'static str),
     /// Cannot even run.
     Breaks,
 }
 
-/// A backend that records every argv, counts full probes and re-queries, and misbehaves on
+/// A backend that records every plan, counts full probes and re-queries, and misbehaves on
 /// request.
 struct Fake {
     inner: FixtureBackend,
     next: Mutex<VecDeque<Next>>,
-    calls: Mutex<Vec<Vec<String>>>,
+    calls: Mutex<Vec<Plan>>,
     probes: Mutex<usize>,
     requeries: Mutex<usize>,
 }
@@ -69,8 +70,13 @@ impl Fake {
         self
     }
 
-    fn calls(&self) -> Vec<Vec<String>> {
+    fn calls(&self) -> Vec<Plan> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// The plans as the xrandr arguments that carry them out.
+    fn calls_argv(&self) -> Vec<Vec<String>> {
+        self.calls().iter().map(command::argv).collect()
     }
 }
 
@@ -85,14 +91,14 @@ impl Backend for Fake {
         self.inner.requery()
     }
 
-    fn apply(&self, argv: &[String]) -> Result<ApplyOutcome> {
-        self.calls.lock().unwrap().push(argv.to_vec());
+    fn apply(&self, plan: &Plan) -> Result<ApplyOutcome> {
+        self.calls.lock().unwrap().push(plan.clone());
         let next = self.next.lock().unwrap().pop_front().unwrap_or(Next::Works);
         match next {
-            Next::Works => self.inner.apply(argv),
+            Next::Works => self.inner.apply(plan),
             Next::Fails { stderr, changes } => {
                 if changes {
-                    self.inner.apply(argv)?;
+                    self.inner.apply(plan)?;
                 }
                 Ok(ApplyOutcome {
                     success: false,
@@ -101,24 +107,18 @@ impl Backend for Fake {
                 })
             }
             Next::Skips(name) => {
-                // Drop the output's group: everything from its --output to the next one.
-                let mut kept = Vec::new();
-                let mut skipping = false;
-                let mut args = argv.iter().peekable();
-                while let Some(a) = args.next() {
-                    if a == "--output" {
-                        skipping = args.peek().is_some_and(|n| *n == name);
-                    }
-                    if !skipping {
-                        kept.push(a.clone());
-                    }
-                }
+                let mut kept = plan.clone();
+                kept.outputs.retain(|p| p.name != name);
                 let mut outcome = self.inner.apply(&kept)?;
                 outcome.stderr = format!("warning: output {name} not found; ignoring\n");
                 Ok(outcome)
             }
             Next::Breaks => Err(anyhow!("xrandr crashed")),
         }
+    }
+
+    fn dump(&self) -> Result<String> {
+        self.inner.dump()
     }
 }
 
@@ -229,13 +229,18 @@ fn a_kept_layout_stays() {
         panic!("no confirmation")
     };
     assert_eq!(plan.changes, ["eDP-1  pos 2240,1440 → 2250,1440"]);
-    let expected = command::apply_args(&rig.app().layout, &rig.app().snap);
-    assert_eq!(plan.argv, expected);
+    let expected = Plan::pending(&rig.app().layout, &rig.app().snap);
+    assert_eq!(plan.plan, expected);
+    assert_eq!(
+        plan.command,
+        command::command_line(&command::argv(&expected))
+    );
 
     rig.press("<Enter>");
     let c = rig.countdown();
     assert_eq!(c.deadline - c.started, Duration::from_secs(15));
-    assert_eq!(backend.calls(), [expected]);
+    assert_eq!(backend.calls(), std::slice::from_ref(&expected));
+    assert_eq!(backend.calls_argv(), [command::argv(&expected)]);
     assert_eq!(edp_x(&backend), 2250);
 
     rig.press_at("y", c.blocked_until);
@@ -266,7 +271,14 @@ fn no_answer_reverts_and_keeps_the_edits_pending() {
     rig.session.perform(&mut rig.input);
     let calls = backend.calls();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[1], command::revert_args(&before));
+    assert_eq!(calls[1], Plan::restore(&before));
+    assert_eq!(
+        command::command_line(&backend.calls_argv()[1]),
+        "xrandr --output HDMI-1-0 --mode 0x1c3 --pos 0x360 --rotate normal --reflect normal --transform none \
+         --output DP-1-2 --primary --mode 0x1cb --pos 1920x0 --rotate normal --reflect normal --transform none \
+         --output eDP-1 --mode 0x1cf --pos 2240x1440 --rotate normal --reflect normal --transform none \
+         --output DP-1-3 --off"
+    );
     assert_eq!(backend.query().unwrap(), before, "the screens are back");
     assert_eq!(rig.app().mode, UiMode::Normal);
     assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
@@ -436,11 +448,14 @@ fn revert_sh_is_written_before_applying() {
     rig.press("3<A-l>a<Enter>");
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("#!/bin/sh\n"), "{text}");
+    assert_eq!(text, command::revert_script(&Plan::restore(&before)));
     assert!(
-        text.ends_with(&format!(
-            "{}\n",
-            command::command_line(&command::revert_args(&before))
-        )),
+        text.ends_with(
+            "\nxrandr --output HDMI-1-0 --mode 0x1c3 --pos 0x360 --rotate normal --reflect normal --transform none \
+             --output DP-1-2 --primary --mode 0x1cb --pos 1920x0 --rotate normal --reflect normal --transform none \
+             --output eDP-1 --mode 0x1cf --pos 2240x1440 --rotate normal --reflect normal --transform none \
+             --output DP-1-3 --off\n"
+        ),
         "{text}"
     );
     let mode = std::fs::metadata(&path).unwrap().permissions().mode();
@@ -512,7 +527,7 @@ fn hooks_run_once_the_apply_checks_out_and_not_again_on_keep() {
     // The fake is simulated, which the status says first.
     assert_eq!(
         rig.status(),
-        format!("Simulated: nothing was sent to the X server. {BROKEN_TEXT}"),
+        format!("Simulated: nothing was sent to the displays. {BROKEN_TEXT}"),
         "shown during the countdown"
     );
 
@@ -619,7 +634,7 @@ fn the_countdown_starts_once_the_hooks_are_done() {
         "{:?}",
         c.started - before
     );
-    assert_eq!(rig.status(), "Simulated: nothing was sent to the X server.");
+    assert_eq!(rig.status(), "Simulated: nothing was sent to the displays.");
 }
 
 #[test]
@@ -664,8 +679,10 @@ fn y_copies_the_portable_command() {
     let backend = Fake::demo();
     let mut rig = Rig::new(&backend, Settings::default());
     rig.press("3<A-l>y");
-    let expected =
-        command::command_line(&command::portable_args(&rig.app().layout, &rig.app().snap));
+    let expected = command::command_line(&command::portable_argv(&Plan::pending(
+        &rig.app().layout,
+        &rig.app().snap,
+    )));
     let out = String::from_utf8(rig.session.outbox.clone()).unwrap();
     assert_eq!(out, outlay::tui::session::osc52(&expected));
     assert!(

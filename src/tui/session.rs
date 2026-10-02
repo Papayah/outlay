@@ -1,6 +1,6 @@
 //! Carries out the effects the editor asks for: apply → verify → countdown → keep or revert,
-//! refresh, copy. Everything that talks to xrandr, the file system or the terminal's clipboard
-//! happens here, behind the [`Backend`] and [`Input`] traits, so tests run the whole flow with
+//! refresh, copy. Everything that talks to the display server, the file system or the terminal's
+//! clipboard happens here, behind the [`Backend`] and [`Input`] traits, so tests run the whole flow with
 //! a fake backend, a scripted clock and an injected signal flag.
 
 use std::collections::VecDeque;
@@ -16,14 +16,15 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ratatui::crossterm::event::Event;
 
+use crate::backend::{Backend, Plan};
 use crate::model::Snapshot;
 use crate::model::validate::Severity;
+use crate::xrandr::command;
 use crate::xrandr::script::{self, line_diff, profile_path, save_text};
-use crate::xrandr::{Backend, command};
 
 use super::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, SavePlan};
 
-/// Where input comes from, as far as the session cares: after xrandr returns, keys pressed
+/// Where input comes from, as far as the session cares: after an apply returns, keys pressed
 /// while the screens were dark are thrown away.
 pub trait Input {
     fn drain(&mut self);
@@ -34,7 +35,7 @@ pub trait Input {
 pub struct Settings {
     /// Seconds to keep an applied layout before it reverts; 0 keeps it at once.
     pub revert_seconds: u64,
-    /// Where to write `revert.sh` before applying. Only set for a backend that touches X.
+    /// Where to write `revert.sh` before applying. Only set for a live backend.
     pub revert_file: Option<PathBuf>,
     /// Shell commands run after every change outlay makes to the screens: once an apply checks
     /// out (before the countdown), and after every revert. Never set for a simulated backend.
@@ -134,7 +135,7 @@ impl<'a> Session<'a> {
     }
 
     /// Whether effects are waiting. The loop draws once before performing them, so "applying…"
-    /// is on screen while xrandr runs.
+    /// is on screen while the apply runs.
     pub fn has_work(&self) -> bool {
         !self.queue.is_empty() || self.signalled()
     }
@@ -185,7 +186,7 @@ impl<'a> Session<'a> {
                     self.outbox.extend(osc52(&text).into_bytes());
                     self.app.say(
                         Severity::Info,
-                        "Copied the xrandr command to the clipboard (OSC 52).",
+                        "Copied the command to the clipboard (OSC 52).",
                     );
                 }
                 Effect::ListProfiles => self.list_profiles(),
@@ -260,7 +261,7 @@ impl<'a> Session<'a> {
                 return;
             }
         };
-        let command = command::script_command(&self.app.layout, &self.app.snap);
+        let command = command::script_command(&self.app.layout);
         let text = save_text(old.as_deref(), &command);
         match old {
             Some(old) if old == text => {
@@ -311,11 +312,9 @@ impl<'a> Session<'a> {
                 return;
             }
         };
-        let revert_args = command::revert_args(&before);
+        let restore = Plan::restore(&before);
         if let Some(path) = &self.settings.revert_file {
-            if let Err(err) =
-                script::write_atomic(path, &command::revert_script(&revert_args), 0o755)
-            {
+            if let Err(err) = script::write_atomic(path, &command::revert_script(&restore), 0o755) {
                 self.app.report(
                     "Apply failed",
                     vec![format!(
@@ -328,7 +327,7 @@ impl<'a> Session<'a> {
             super::arm_panic_revert(Some(path.clone()));
         }
 
-        let outcome = self.backend.apply(&request.argv);
+        let outcome = self.backend.apply(&request.plan);
         // Keys pressed while the screens were dark must not answer the countdown.
         input.drain();
         let after = self.backend.requery();
@@ -392,10 +391,10 @@ impl<'a> Session<'a> {
             self.keep();
         } else {
             self.app.countdown(now, self.settings.revert_seconds);
-            if !self.backend.touches_x() {
+            if !self.backend.is_live() {
                 self.app.say(
                     Severity::Info,
-                    "Simulated: nothing was sent to the X server.",
+                    "Simulated: nothing was sent to the displays.",
                 );
             }
         }
@@ -436,14 +435,13 @@ impl<'a> Session<'a> {
         self.app.say(Severity::Warning, text);
     }
 
-    /// Runs the revert command and reads the state back. On failure the message says how to
-    /// restore by hand.
+    /// Restores the state from before the apply and reads it back. On failure the message says
+    /// how to restore by hand.
     fn revert_quietly(&mut self) -> Result<Option<Snapshot>, String> {
         let Some(applied) = self.applied.take() else {
             return Ok(None);
         };
-        let args = command::revert_args(&applied.before);
-        let outcome = self.backend.apply(&args);
+        let outcome = self.backend.apply(&Plan::restore(&applied.before));
         super::arm_panic_revert(None);
         let snap = self.backend.requery().ok();
         match outcome {

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
+use crate::backend::Plan;
 use crate::model::geometry::{Dir, Point, Rect};
 use crate::model::history::History;
 use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
@@ -105,10 +106,10 @@ pub struct SavePlan {
     pub diff: Vec<String>,
 }
 
-/// What to apply: the arguments, and the layout they should produce, for verification.
+/// What to apply: the plan, and the layout it should produce, for verification.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApplyRequest {
-    pub argv: Vec<String>,
+    pub plan: Plan,
     pub layout: Layout,
 }
 
@@ -122,15 +123,15 @@ pub enum RevertReason {
     Signal,
 }
 
-/// The apply confirmation: the per-output diff, what blocks the apply, what to watch for, and
-/// the exact command.
+/// The apply confirmation: the per-output diff, what blocks the apply, what to watch for, the
+/// equivalent command, and the plan to carry out.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ApplyPlan {
+pub struct ApplyPreview {
     pub changes: Vec<String>,
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
     pub command: String,
-    pub argv: Vec<String>,
+    pub plan: Plan,
 }
 
 /// The "keep this layout?" countdown after an apply.
@@ -271,8 +272,8 @@ pub enum UiMode {
     Help {
         scroll: u16,
     },
-    ConfirmApply(ApplyPlan),
-    /// xrandr is running.
+    ConfirmApply(ApplyPreview),
+    /// The apply is running.
     Applying,
     Countdown(Countdown),
     Message(Message),
@@ -968,7 +969,8 @@ impl App {
             Action::Quit => return self.quit(false),
             Action::Apply => self.open_apply(),
             Action::Copy => {
-                let args = command::portable_args(&self.layout, &self.snap);
+                let plan = Plan::pending(&self.layout, &self.snap);
+                let args = command::portable_argv(&plan);
                 return vec![Effect::Copy(command::command_line(&args))];
             }
             Action::Save => {
@@ -1063,13 +1065,13 @@ impl App {
             .filter(|i| i.severity != Severity::Error)
             .map(text)
             .collect();
-        let argv = command::apply_args(&self.layout, &self.snap);
-        self.mode = UiMode::ConfirmApply(ApplyPlan {
+        let plan = Plan::pending(&self.layout, &self.snap);
+        self.mode = UiMode::ConfirmApply(ApplyPreview {
             changes,
             errors,
             warnings,
-            command: command::command_line(&argv),
-            argv,
+            command: command::command_line(&command::argv(&plan)),
+            plan,
         });
     }
 
@@ -1161,17 +1163,17 @@ impl App {
                 }
             };
         }
-        if let UiMode::ConfirmApply(plan) = &self.mode {
+        if let UiMode::ConfirmApply(preview) = &self.mode {
             return match action {
-                Action::Accept if !plan.errors.is_empty() => {
+                Action::Accept if !preview.errors.is_empty() => {
                     self.say(Severity::Error, "Fix the errors before applying.");
                     Vec::new()
                 }
                 Action::Accept => {
-                    let argv = plan.argv.clone();
+                    let plan = preview.plan.clone();
                     self.mode = UiMode::Applying;
                     vec![Effect::Apply(ApplyRequest {
-                        argv,
+                        plan,
                         layout: self.layout.clone(),
                     })]
                 }

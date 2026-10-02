@@ -147,7 +147,7 @@ global: --from-file <xrandr-verbose.txt>   read state from a capture; never touc
 | `Space` | Turn the output on or off. Refuses to turn off the last enabled display. |
 | `u` / `Ctrl-r` | Undo / redo. A failed or no-op action adds no history step. |
 | `a` | Apply (confirm popup). |
-| `y` | Copy the pending xrandr command via OSC 52. |
+| `y` | Copy the pending command via OSC 52. |
 | `R` | Refresh: re-probe the outputs and merge the result as the hotplug watch does (see Event loop), keeping pending edits and undo. No confirm. |
 | `w` / `e` | Save a profile / open a profile (picker with mini previews). |
 | `:` | Command line. |

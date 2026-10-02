@@ -10,14 +10,15 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use common::{ix, keys, link, rect, stuck};
+use outlay::backend::{Backend, FixtureBackend};
 use outlay::model::Snapshot;
 use outlay::model::geometry::{Dir, Rect};
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Side};
 use outlay::tui::app::{App, Options, UiMode};
 use outlay::tui::session::{Input, Session, Settings};
+use outlay::xrandr::command;
 use outlay::xrandr::script::{Profile, Remap};
-use outlay::xrandr::{Backend, FixtureBackend, command};
 use ratatui::crossterm::event::Event;
 
 fn capture(name: &str) -> Snapshot {
@@ -317,7 +318,7 @@ fn a_saved_layout_loads_back_the_same() {
     for (what, snap, mut layout) in edited_layouts() {
         // Links are not stored in scripts; loading infers them from the positions.
         layout.infer_links();
-        let text = command::script(&layout, &snap);
+        let text = command::script(&layout);
         let p = Profile::parse(&text);
         assert!(p.warnings.is_empty(), "{what}: {:?}", p.warnings);
         assert!(p.unmatched(&snap).is_empty(), "{what}");

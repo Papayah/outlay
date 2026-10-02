@@ -4,6 +4,7 @@
 mod common;
 
 use common::{ix, keys, link, rect, stuck, unplugged};
+use outlay::backend::{Backend, FixtureBackend};
 use outlay::model::Snapshot;
 use outlay::model::geometry::Rect;
 use outlay::model::links::{Align, Side};
@@ -11,7 +12,6 @@ use outlay::model::validate::Severity;
 use outlay::tui::app::{App, Effect, Options, StickStep, UiMode, WATCH_INTERVAL};
 use outlay::tui::theme::Theme;
 use outlay::tui::ui;
-use outlay::xrandr::{Backend, FixtureBackend};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;

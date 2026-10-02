@@ -3,13 +3,14 @@
 mod common;
 
 use common::{ix, link, load, off, on, rect, stuck};
+use outlay::backend::{Backend, FixtureBackend, Plan};
 use outlay::model::geometry::{Dir, Rect};
 use outlay::model::history::History;
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Side};
 use outlay::model::snap::SnapKind;
 use outlay::model::validate::validate;
-use outlay::xrandr::{FixtureBackend, command, parse_verbose};
+use outlay::xrandr::{command, parse_verbose};
 
 #[test]
 fn laptop_stays_centred_under_a_monitor_through_a_nudge_and_a_mode_change() {
@@ -267,7 +268,7 @@ fn a_mirror_pair() {
     layout.turn_on(&snap, edp).unwrap();
     assert_eq!(layout, before);
 
-    let script = command::script(&layout, &snap);
+    let script = command::script(&layout);
     assert_eq!(
         script.matches("--pos 0x0").count(),
         3,
@@ -363,8 +364,7 @@ fn stale_outputs_are_turned_off_in_the_initial_layout() {
 
     // The command that applies it round-trips through the fixture backend.
     let backend = FixtureBackend::new(snap.clone());
-    use outlay::xrandr::Backend;
-    let outcome = backend.apply(&command::apply_args(&layout, &snap)).unwrap();
+    let outcome = backend.apply(&Plan::pending(&layout, &snap)).unwrap();
     assert!(outcome.success, "{}", outcome.stderr);
     let after = backend.query().unwrap();
     assert!(after.outputs[ix(&layout, "DP-1")].active.is_none());
