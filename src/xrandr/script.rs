@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::model::geometry::{Point, Rect};
 use crate::model::layout::{Layout, OutputState};
 use crate::model::links::{Align, Link, Side, place};
-use crate::model::{Mode, Reflection, Rotation, Snapshot, Transform};
+use crate::model::{Mode, ModeId, Reflection, Rotation, Scaling, Snapshot, Transform};
 
 use super::command;
 
@@ -474,12 +474,12 @@ impl Profile {
             }
             let out = &snap.outputs[i];
             let was_on = st.enabled;
-            let keep = st.mode.clone().filter(|m| out.mode(m.xid).is_some());
+            let keep = st.mode.clone().filter(|m| out.mode(m.id).is_some());
             let mode: Option<Mode> = match &e.mode {
                 Some(m) => m
                     .strip_prefix("0x")
                     .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                    .and_then(|xid| out.mode(xid))
+                    .and_then(|xid| out.mode(ModeId::from_xid(xid)))
                     .or_else(|| out.find_mode(m, e.rate))
                     .cloned(),
                 None if e.auto => out.preferred_mode().cloned(),
@@ -532,12 +532,12 @@ impl Profile {
                 st.reflection = r;
             }
             if let Some(t) = &e.transform {
-                st.transform = t.clone();
+                st.scaling = Scaling::X11(t.clone());
             }
-            if let Some(f) = &e.filter
-                && !st.transform.is_identity()
+            if let (Some(f), Scaling::X11(t)) = (&e.filter, &mut st.scaling)
+                && !t.is_identity()
             {
-                st.transform.filter = f.clone();
+                t.filter = f.clone();
             }
         }
 

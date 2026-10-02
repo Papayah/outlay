@@ -85,14 +85,14 @@ pub fn list(snap: &Snapshot) -> String {
         }
         text.push_str(&header);
         text.push('\n');
-        let current = out.active.as_ref().map(|a| a.xid);
+        let current = out.active.as_ref().map(|a| a.mode);
         let rows: Vec<Vec<String>> = out
             .resolutions()
             .iter()
             .map(|r| {
                 let rates = out.rates(r.width, r.height).into_iter().map(|m| {
                     let mut token = m.rate_label();
-                    if Some(m.xid) == current {
+                    if Some(m.id) == current {
                         token.push('*');
                     }
                     if m.preferred {
@@ -130,7 +130,7 @@ fn orientation(st: &OutputState) -> String {
     if st.reflection != Reflection::Normal {
         text.push_str(&format!(", reflect {}", st.reflection));
     }
-    match st.transform.scale_factors() {
+    match st.scaling.scale_factors() {
         Some((sx, sy)) if (sx - sy).abs() < 1e-6 && (sx - 1.0).abs() > 1e-6 => {
             text.push_str(&format!(" ×{sx}"))
         }
@@ -298,15 +298,17 @@ fn summary(snap: &Snapshot) -> String {
     let layout = Layout::inferred(snap);
     let numbered = snap.numbered();
     let on = numbered.iter().filter(|&&i| layout.is_enabled(i)).count();
-    let s = snap.screen;
-    format!(
-        "outlay · {on} on · {} off · screen {}x{} of max {}x{}\n",
-        numbered.len() - on,
-        s.current.w,
-        s.current.h,
-        s.max.w,
-        s.max.h
-    )
+    let room = match snap.screen {
+        Some(s) => format!(
+            "screen {}x{} of max {}x{}",
+            s.current.w, s.current.h, s.max.w, s.max.h
+        ),
+        None => {
+            let b = layout.bounds().unwrap_or_default();
+            format!("layout {}x{}", b.right(), b.bottom())
+        }
+    };
+    format!("outlay · {on} on · {} off · {room}\n", numbered.len() - on)
 }
 
 /// The summary line, one row per numbered output with its inferred link, then the validation
@@ -336,7 +338,7 @@ fn table_rows(snap: &Snapshot) -> String {
         };
         let row = match (&st.mode, st.enabled) {
             (Some(mode), true) => {
-                let mode = if out.mode(mode.xid).is_some() {
+                let mode = if out.mode(mode.id).is_some() {
                     format!("{}x{} @ {:.2}", mode.width, mode.height, mode.refresh)
                 } else {
                     format!("{}x{}", mode.width, mode.height)

@@ -213,7 +213,7 @@ impl Scene<'_> {
         let Some(mode) = &st.mode else {
             return String::new();
         };
-        let mut line = if self.snap.outputs[i].mode(mode.xid).is_some() {
+        let mut line = if self.snap.outputs[i].mode(mode.id).is_some() {
             mode.summary()
         } else {
             format!("{}x{}", mode.width, mode.height)
@@ -225,7 +225,7 @@ impl Scene<'_> {
             crate::model::Rotation::Inverted => " ⇅",
         };
         line.push_str(marker);
-        match st.transform.scale_factors() {
+        match st.scaling.scale_factors() {
             Some((sx, sy)) if (sx - sy).abs() < 1e-6 && (sx - 1.0).abs() > 1e-6 => {
                 line.push_str(&format!(" ×{}", trim_float(sx)));
             }

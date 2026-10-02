@@ -1,6 +1,6 @@
 //! EDID decoding: vendor, model, serial and physical size from the base block.
 
-use crate::model::geometry::Size;
+use super::geometry::Size;
 
 const HEADER: [u8; 8] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
 const DESCRIPTORS: [usize; 4] = [54, 72, 90, 108];
@@ -111,6 +111,30 @@ impl Edid {
             .clone()
             .or_else(|| (self.serial != 0).then(|| self.serial.to_string()))
     }
+
+    /// What the display says it is, in the form both backends share.
+    pub fn identity(&self) -> Identity {
+        Identity {
+            make: Some(
+                self.vendor()
+                    .map_or_else(|| self.pnp.clone(), str::to_owned),
+            ),
+            model: Some(self.model()),
+            serial: self.serial_string(),
+            label: self.display_name(),
+        }
+    }
+}
+
+/// Who made a display and which one it is. On X11 it comes from the EDID; a Wayland compositor
+/// reports it directly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+    /// The name the panels show: `Philips FTV`, `AUO B156HAN12.H`.
+    pub label: String,
 }
 
 /// Image size in mm from a detailed timing descriptor: bytes 12 and 13 hold the low eight bits,
@@ -188,6 +212,15 @@ mod tests {
         assert_eq!(edid.model(), "B156HAN12.H");
         assert_eq!(edid.display_name(), "AUO B156HAN12.H");
         assert_eq!(edid.serial_string(), None);
+        assert_eq!(
+            edid.identity(),
+            Identity {
+                make: Some("AUO".to_owned()),
+                model: Some("B156HAN12.H".to_owned()),
+                serial: None,
+                label: "AUO B156HAN12.H".to_owned(),
+            }
+        );
     }
 
     #[test]

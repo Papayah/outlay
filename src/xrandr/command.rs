@@ -4,7 +4,7 @@
 //! the copied command name them the portable way (`--mode 1920x1080 --rate 165.01`).
 
 use crate::model::layout::Layout;
-use crate::model::{Reflection, Snapshot};
+use crate::model::{Reflection, Scaling, Snapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Form {
@@ -36,7 +36,7 @@ fn output_args(layout: &Layout, snap: &Snapshot, i: usize, form: Form, args: &mu
         push(args, &["--primary"]);
     }
     match form {
-        Form::Xid => push(args, &["--mode", &format!("0x{:x}", mode.xid)]),
+        Form::Xid => push(args, &["--mode", &format!("0x{:x}", mode.id)]),
         Form::NameRate | Form::Script => push(
             args,
             &[
@@ -62,26 +62,34 @@ fn output_args(layout: &Layout, snap: &Snapshot, i: usize, form: Form, args: &mu
     let live_scaled = snap.outputs[i]
         .active
         .as_ref()
-        .is_some_and(|a| !a.transform.is_identity());
+        .is_some_and(|a| !a.scaling.is_identity());
     match form {
         Form::Xid | Form::NameRate => {
-            if live_scaled && st.transform.is_identity() {
+            if live_scaled && st.scaling.is_identity() {
                 push(args, &["--transform", "none"]);
             }
         }
         Form::Script => {
-            if !st.transform.is_identity() {
-                match st.transform.scale_factors() {
+            if !st.scaling.is_identity() {
+                match st.scaling.scale_factors() {
                     Some((sx, sy)) => push(args, &["--scale", &format!("{sx}x{sy}")]),
-                    None => {
-                        push(args, &["--transform", &st.transform.xrandr_arg()]);
-                        if !st.transform.filter.is_empty() {
-                            push(args, &["--filter", &st.transform.filter]);
-                        }
-                    }
+                    None => transform_args(&st.scaling, args),
                 }
             }
         }
+    }
+}
+
+/// `--transform` with the matrix, then `--filter` when the transform has one.
+fn transform_args(scaling: &Scaling, args: &mut Vec<String>) {
+    match scaling {
+        Scaling::X11(t) => {
+            push(args, &["--transform", &t.xrandr_arg()]);
+            if !t.filter.is_empty() {
+                push(args, &["--filter", &t.filter]);
+            }
+        }
+        Scaling::Logical(s) => push(args, &["--scale", &format!("{s}x{s}")]),
     }
 }
 
@@ -132,7 +140,7 @@ pub fn revert_args(live: &Snapshot) -> Vec<String> {
             &mut args,
             &[
                 "--mode",
-                &format!("0x{:x}", a.xid),
+                &format!("0x{:x}", a.mode),
                 "--pos",
                 &format!("{}x{}", a.pos.x, a.pos.y),
                 "--rotate",
@@ -141,13 +149,10 @@ pub fn revert_args(live: &Snapshot) -> Vec<String> {
                 a.reflection.as_str(),
             ],
         );
-        if a.transform.is_identity() {
+        if a.scaling.is_identity() {
             push(&mut args, &["--transform", "none"]);
         } else {
-            push(&mut args, &["--transform", &a.transform.xrandr_arg()]);
-            if !a.transform.filter.is_empty() {
-                push(&mut args, &["--filter", &a.transform.filter]);
-            }
+            transform_args(&a.scaling, &mut args);
         }
     }
     if !live.outputs.iter().any(|o| o.primary && o.active.is_some()) {

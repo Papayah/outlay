@@ -1,7 +1,7 @@
 //! Every captured and synthetic `xrandr --verbose` fixture parses into the values it contains.
 
 use outlay::model::geometry::{Point, Rect, Size, effective_size};
-use outlay::model::{Connection, Output, Reflection, Rotation, Snapshot};
+use outlay::model::{Connection, ModeId, Output, Reflection, Rotation, Snapshot};
 use outlay::xrandr::parse_verbose;
 
 const FIXTURES: &[&str] = &[
@@ -40,7 +40,7 @@ fn every_header_size_matches_mode_rotation_and_transform() {
             let (Some(active), Some(mode)) = (&out.active, out.current_mode()) else {
                 continue;
             };
-            let size = effective_size(mode.size(), active.rotation, &active.transform);
+            let size = effective_size(mode.size(), active.rotation, &active.scaling);
             assert_eq!(size, active.size, "{name} {}", out.name);
         }
     }
@@ -49,8 +49,8 @@ fn every_header_size_matches_mode_rotation_and_transform() {
 #[test]
 fn live_capture_of_the_laptop() {
     let snap = load("laptop-edp-hdmi");
-    assert_eq!(snap.screen.max, Size::new(16384, 16384));
-    assert_eq!(snap.screen.current, Size::new(3840, 1080));
+    assert_eq!(snap.screen.unwrap().max, Size::new(16384, 16384));
+    assert_eq!(snap.screen.unwrap().current, Size::new(3840, 1080));
     // 7 outputs on modesetting and 6 on NVIDIA-G0; only eDP-1 and HDMI-1-0 are connected.
     assert_eq!(snap.outputs.len(), 13);
     assert_eq!(
@@ -71,7 +71,7 @@ fn live_capture_of_the_laptop() {
     assert_eq!(edp.crtcs, vec![0, 1, 2, 3]);
     let active = edp.active.as_ref().unwrap();
     assert_eq!(active.rect(), Rect::new(1920, 0, 1920, 1080));
-    assert_eq!(active.xid, 0x4a);
+    assert_eq!(active.mode, ModeId(0x4a));
     assert_eq!(edp.current_mode().unwrap().refresh, 165.01);
     assert!(edp.modes.iter().any(|m| m.double_scan));
     assert!(
@@ -166,7 +166,7 @@ fn disconnected_but_active() {
     let dp1 = output(&snap, "DP-1");
     assert!(dp1.is_stale() && dp1.is_relevant());
     assert!(dp1.modes.is_empty());
-    assert_eq!(dp1.active.as_ref().unwrap().xid, 0x1f3);
+    assert_eq!(dp1.active.as_ref().unwrap().mode, ModeId(0x1f3));
     assert_eq!(dp1.active.as_ref().unwrap().size, Size::new(2560, 1440));
     assert_eq!(dp1.physical_mm, None);
     assert!(dp1.current_mode().is_none());
@@ -175,7 +175,7 @@ fn disconnected_but_active() {
 #[test]
 fn outputs_without_edid() {
     let snap = load("no-edid");
-    assert_eq!(snap.screen.max, Size::new(8192, 8192));
+    assert_eq!(snap.screen.unwrap().max, Size::new(8192, 8192));
     let v1 = output(&snap, "Virtual-1");
     assert!(v1.edid.is_none());
     assert_eq!(v1.label(), "");
@@ -187,15 +187,15 @@ fn outputs_without_edid() {
 fn scaled_output() {
     let snap = load("scaled");
     let active = output(&snap, "eDP-1").active.clone().unwrap();
-    assert_eq!(active.transform.scale_factors(), Some((1.5, 1.5)));
-    assert_eq!(active.transform.filter, "bilinear");
+    assert_eq!(active.scaling.scale_factors(), Some((1.5, 1.5)));
+    assert_eq!(active.scaling.transform().unwrap().filter, "bilinear");
     assert_eq!(active.size, Size::new(2880, 1620));
     assert!(
         output(&snap, "HDMI-1")
             .active
             .as_ref()
             .unwrap()
-            .transform
+            .scaling
             .is_identity()
     );
 }

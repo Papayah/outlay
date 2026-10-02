@@ -1,5 +1,6 @@
-//! What the X server reports about its screen and outputs, as read from `xrandr --verbose`.
+//! What the display server reports about its outputs: for X11, as read from `xrandr --verbose`.
 
+pub mod edid;
 pub mod geometry;
 pub mod history;
 pub mod layout;
@@ -9,15 +10,17 @@ pub mod validate;
 
 use std::fmt;
 
-use crate::xrandr::edid::Edid;
+pub use edid::{Edid, Identity};
 use geometry::{Point, Rect, Size};
 
-/// One `xrandr --verbose` reading of the screen.
+/// One reading of the outputs, such as `xrandr --verbose`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
-    pub screen: ScreenLimits,
+    /// The framebuffer limits; `None` where the display server has none (Wayland).
+    pub screen: Option<ScreenLimits>,
     /// Outputs in xrandr order, connected or not.
     pub outputs: Vec<Output>,
+    pub caps: Caps,
 }
 
 impl Snapshot {
@@ -39,6 +42,58 @@ impl Snapshot {
             .iter()
             .position(|&i| i == index)
             .map(|p| p + 1)
+    }
+}
+
+/// Which kind of display server a snapshot describes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    X11,
+    Wayland,
+}
+
+/// What the display server can do with its outputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Caps {
+    pub kind: Kind,
+    /// One output can be the primary one.
+    pub primary: bool,
+    /// Outputs can show the same picture (`--same-as`).
+    pub mirror: bool,
+    /// Reflections in `y` and `xy`, not only `x`.
+    pub all_reflections: bool,
+}
+
+impl Caps {
+    /// Everything xrandr offers.
+    pub const fn x11() -> Self {
+        Self {
+            kind: Kind::X11,
+            primary: true,
+            mirror: true,
+            all_reflections: true,
+        }
+    }
+}
+
+/// Names one mode of one output. On X11 it is the mode's XID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModeId(pub u64);
+
+impl ModeId {
+    pub const fn from_xid(xid: u32) -> Self {
+        Self(xid as u64)
+    }
+
+    /// The X11 XID, when the id is one.
+    pub fn xid(self) -> Option<u32> {
+        u32::try_from(self.0).ok()
+    }
+}
+
+impl fmt::LowerHex for ModeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
     }
 }
 
@@ -73,7 +128,10 @@ pub struct Output {
     pub connection: Connection,
     pub primary: bool,
     pub modes: Vec<Mode>,
+    /// The raw EDID, decoded; X11 only.
     pub edid: Option<Edid>,
+    /// Make, model and serial, from the EDID on X11.
+    pub identity: Option<Identity>,
     /// Physical size, from the header for active outputs, else from the EDID.
     pub physical_mm: Option<Size>,
     /// The CRTC driving this output, if active.
@@ -102,12 +160,12 @@ impl Output {
         self.active.is_some() && self.connection == Connection::Disconnected
     }
 
-    pub fn mode(&self, xid: u32) -> Option<&Mode> {
-        self.modes.iter().find(|m| m.xid == xid)
+    pub fn mode(&self, id: ModeId) -> Option<&Mode> {
+        self.modes.iter().find(|m| m.id == id)
     }
 
     pub fn current_mode(&self) -> Option<&Mode> {
-        self.active.as_ref().and_then(|a| self.mode(a.xid))
+        self.active.as_ref().and_then(|a| self.mode(a.mode))
     }
 
     /// The `+preferred` mode, else the first listed one.
@@ -132,7 +190,7 @@ impl Output {
     pub fn resolutions(&self) -> Vec<Resolution> {
         let mut out: Vec<Resolution> = Vec::new();
         for m in &self.modes {
-            let current = self.active.as_ref().is_some_and(|a| a.xid == m.xid);
+            let current = self.active.as_ref().is_some_and(|a| a.mode == m.id);
             match out
                 .iter_mut()
                 .find(|r| r.width == m.width && r.height == m.height)
@@ -174,11 +232,11 @@ impl Output {
         self.active.as_ref().is_some_and(|a| a.panning.is_some())
     }
 
-    /// The EDID-derived name ("Philips FTV", "AUO B156HAN12.H"), or an empty string.
+    /// The display's own name ("Philips FTV", "AUO B156HAN12.H"), or an empty string.
     pub fn label(&self) -> String {
-        self.edid
+        self.identity
             .as_ref()
-            .map(Edid::display_name)
+            .map(|id| id.label.clone())
             .unwrap_or_default()
     }
 }
@@ -186,15 +244,15 @@ impl Output {
 /// How an active output is configured.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActiveConfig {
-    /// XID of the current mode. It may be missing from the output's mode list when the output
-    /// is disconnected but still active.
-    pub xid: u32,
+    /// The current mode. It may be missing from the output's mode list when the output is
+    /// disconnected but still active.
+    pub mode: ModeId,
     pub pos: Point,
-    /// The size in the header: the effective size, after rotation and transform.
+    /// The size in the header: the effective size, after rotation and scaling.
     pub size: Size,
     pub rotation: Rotation,
     pub reflection: Reflection,
-    pub transform: Transform,
+    pub scaling: Scaling,
     /// Set only when the panning area differs from the output's own rectangle.
     pub panning: Option<Rect>,
 }
@@ -207,7 +265,7 @@ impl ActiveConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mode {
-    pub xid: u32,
+    pub id: ModeId,
     /// The mode name. Not necessarily a size: `1024x768i`, `1920x1080_60.00`.
     pub name: String,
     pub width: i32,
@@ -216,6 +274,8 @@ pub struct Mode {
     pub interlaced: bool,
     pub double_scan: bool,
     pub preferred: bool,
+    /// A mode the output does not advertise, set by size and rate.
+    pub custom: bool,
 }
 
 impl Mode {
@@ -350,6 +410,61 @@ impl Reflection {
 impl fmt::Display for Reflection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// How an output's picture is scaled after rotation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Scaling {
+    /// The X11 output transform (`--scale`, `--transform`): a larger scale makes a larger desktop.
+    X11(Transform),
+    /// The Wayland scale: the output covers its rotated mode divided by this many logical pixels.
+    Logical(f64),
+}
+
+impl Scaling {
+    /// No scaling, in the form `kind` uses.
+    pub fn unit(kind: Kind) -> Self {
+        match kind {
+            Kind::X11 => Self::X11(Transform::identity()),
+            Kind::Wayland => Self::Logical(1.0),
+        }
+    }
+
+    pub fn is_identity(&self) -> bool {
+        match self {
+            Self::X11(t) => t.is_identity(),
+            Self::Logical(s) => (s - 1.0).abs() < Transform::EPSILON,
+        }
+    }
+
+    /// The X11 transform, if this is one.
+    pub fn transform(&self) -> Option<&Transform> {
+        match self {
+            Self::X11(t) => Some(t),
+            Self::Logical(_) => None,
+        }
+    }
+
+    /// The horizontal and vertical factors of a pure scale.
+    pub fn scale_factors(&self) -> Option<(f64, f64)> {
+        match self {
+            Self::X11(t) => t.scale_factors(),
+            Self::Logical(s) => Some((*s, *s)),
+        }
+    }
+
+    /// The size a `size` rectangle covers after this scaling. A logical size is truncated, as
+    /// wlroots' `wlr_output_effective_resolution` does.
+    pub fn bounds(&self, size: Size) -> Size {
+        match self {
+            Self::X11(t) => t.bounds(size),
+            Self::Logical(s) if *s > 0.0 => Size::new(
+                (f64::from(size.w) / s) as i32,
+                (f64::from(size.h) / s) as i32,
+            ),
+            Self::Logical(_) => size,
+        }
     }
 }
 

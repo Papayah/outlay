@@ -1,7 +1,6 @@
 //! Talking to xrandr: the [`Backend`] trait and its implementations.
 
 pub mod command;
-pub mod edid;
 pub mod parse;
 pub mod script;
 
@@ -13,7 +12,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 
 use crate::model::geometry::{Point, Size, effective_size};
-use crate::model::{ActiveConfig, Reflection, Rotation, Snapshot, Transform};
+use crate::model::{ActiveConfig, ModeId, Reflection, Rotation, Scaling, Snapshot, Transform};
 pub use parse::{ParseError, parse_verbose};
 
 /// The built-in fixture behind `--demo`.
@@ -401,7 +400,7 @@ fn simulate(snapshot: &mut Snapshot, argv: &[String]) -> ApplyOutcome {
                 .strip_prefix("0x")
                 .and_then(|hex| u32::from_str_radix(hex, 16).ok())
             {
-                Some(xid) => out.mode(xid),
+                Some(xid) => out.mode(ModeId::from_xid(xid)),
                 None => out.find_mode(m, req.rate),
             },
             (None, true) => out.preferred_mode(),
@@ -425,7 +424,7 @@ fn simulate(snapshot: &mut Snapshot, argv: &[String]) -> ApplyOutcome {
             .unwrap_or_default();
         let mut transform = req
             .transform
-            .or(old.as_ref().map(|a| a.transform.clone()))
+            .or(old.as_ref().and_then(|a| a.scaling.transform().cloned()))
             .unwrap_or_default();
         if let Some(filter) = req.filter {
             transform.filter = filter;
@@ -434,14 +433,15 @@ fn simulate(snapshot: &mut Snapshot, argv: &[String]) -> ApplyOutcome {
             transform = Transform::identity();
         }
         let pos = req.pos.or(old.as_ref().map(|a| a.pos)).unwrap_or_default();
-        let size: Size = effective_size(mode.size(), rotation, &transform);
+        let scaling = Scaling::X11(transform);
+        let size: Size = effective_size(mode.size(), rotation, &scaling);
         out.active = Some(ActiveConfig {
-            xid: mode.xid,
+            mode: mode.id,
             pos,
             size,
             rotation,
             reflection,
-            transform,
+            scaling,
             panning: old.and_then(|a| a.panning),
         });
     }
@@ -481,13 +481,15 @@ fn simulate(snapshot: &mut Snapshot, argv: &[String]) -> ApplyOutcome {
         .fold((0, 0), |(w, h), a| {
             (w.max(a.pos.x + a.size.w), h.max(a.pos.y + a.size.h))
         });
-    if w > next.screen.max.w || h > next.screen.max.h {
-        return failure(format!(
-            "xrandr: screen cannot be larger than {}x{} (desired size {w}x{h})\n",
-            next.screen.max.w, next.screen.max.h
-        ));
+    if let Some(screen) = &mut next.screen {
+        if w > screen.max.w || h > screen.max.h {
+            return failure(format!(
+                "xrandr: screen cannot be larger than {}x{} (desired size {w}x{h})\n",
+                screen.max.w, screen.max.h
+            ));
+        }
+        screen.current = Size::new(w.max(screen.min.w), h.max(screen.min.h));
     }
-    next.screen.current = Size::new(w.max(next.screen.min.w), h.max(next.screen.min.h));
     *snapshot = next;
     ApplyOutcome {
         success: true,
@@ -590,7 +592,7 @@ mod tests {
         let edp_xid = demo.outputs[demo.find("eDP-1").unwrap()]
             .preferred_mode()
             .unwrap()
-            .xid;
+            .id;
         let argv = args(&format!(
             "--output HDMI-1-0 --off --output DP-1-3 --mode 3840x2160 --rate 60 --pos 4480x0 --rotate left \
              --output eDP-1 --primary --mode 0x{edp_xid:x} --pos 2240x1440"
@@ -614,7 +616,7 @@ mod tests {
         );
         assert!(out("eDP-1").primary);
         assert!(!out("DP-1-2").primary);
-        assert_eq!(snap.screen.current, Size::new(6640, 3840));
+        assert_eq!(snap.screen.unwrap().current, Size::new(6640, 3840));
     }
 
     #[test]
@@ -650,7 +652,7 @@ mod tests {
             .clone()
             .unwrap();
         assert_eq!(edp.size, Size::new(2880, 1620));
-        assert_eq!(edp.transform.filter, "bilinear");
+        assert_eq!(edp.scaling.transform().unwrap().filter, "bilinear");
         backend
             .apply(&args("--output eDP-1 --transform none"))
             .unwrap();
@@ -660,6 +662,6 @@ mod tests {
             .clone()
             .unwrap();
         assert_eq!(edp.size, Size::new(1920, 1080));
-        assert!(edp.transform.is_identity());
+        assert!(edp.scaling.is_identity());
     }
 }

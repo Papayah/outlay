@@ -268,8 +268,8 @@ impl Layout {
     }
 
     /// Rebuilds every link from the current positions:
-    /// 1. displays with identical rectangles become `Same` children of the primary among them,
-    ///    else of the lowest index;
+    /// 1. where the display server can mirror, displays with identical rectangles become `Same`
+    ///    children of the primary among them, else of the lowest index;
     /// 2. the rest form components of displays whose edges touch;
     /// 3. each component is walked breadth-first from its root (the primary, else the largest,
     ///    then the lowest index), visiting neighbours by longest shared edge, then index.
@@ -287,7 +287,10 @@ impl Layout {
 
         let mut reps: Vec<usize> = Vec::new();
         for &i in &on {
-            match reps.iter().position(|&r| rects[r] == rects[i]) {
+            match reps
+                .iter()
+                .position(|&r| self.caps.mirror && rects[r] == rects[i])
+            {
                 None => reps.push(i),
                 Some(k) => {
                     // A locked or primary display is the one others mirror.

@@ -281,7 +281,7 @@ proptest! {
         let live = snap.outputs[k].active.as_ref();
         prop_assert_eq!(back.outputs[k].enabled, live.is_some());
         prop_assert_eq!(back.outputs[k].pos, live.map_or_else(Default::default, |a| a.pos));
-        prop_assert_eq!(back.outputs[k].mode.as_ref().map(|m| m.xid), live.map(|a| a.xid));
+        prop_assert_eq!(back.outputs[k].mode.as_ref().map(|m| m.id), live.map(|a| a.mode));
         prop_assert_eq!(back.links[k], None);
         prop_assert_eq!(back.numbers[k], layout.numbers[k], "its number is free again");
     }

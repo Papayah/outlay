@@ -65,15 +65,15 @@ fn mode_lines(app: &App, i: usize) -> Vec<String> {
         .current_mode()
         .filter(|_| app.snap.outputs[i].active.is_some());
     match live {
-        Some(old) if old.xid != mode.xid && old.size() == mode.size() => vec![
+        Some(old) if old.id != mode.id && old.size() == mode.size() => vec![
             format!("mode  {}x{}", mode.width, mode.height),
             format!("rate  {:.2} → {:.2}", old.refresh, mode.refresh),
         ],
-        Some(old) if old.xid != mode.xid => vec![
+        Some(old) if old.id != mode.id => vec![
             format!("mode  {}", old.summary()),
             format!("   →  {}", mode.summary()),
         ],
-        _ if app.snap.outputs[i].mode(mode.xid).is_none() => {
+        _ if app.snap.outputs[i].mode(mode.id).is_none() => {
             vec![format!("mode  {}x{}", mode.width, mode.height)]
         }
         _ => vec![format!("mode  {}", mode.summary())],
@@ -112,10 +112,10 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
     }
     title.push(' ');
     let mut lines: Vec<Line> = Vec::new();
-    match &out.edid {
-        Some(edid) => {
-            lines.push(Line::from(edid.display_name()));
-            if let Some(serial) = edid.serial_string() {
+    match &out.identity {
+        Some(id) => {
+            lines.push(Line::from(id.label.clone()));
+            if let Some(serial) = &id.serial {
                 lines.push(Line::from(format!("serial {serial}")));
             }
         }
@@ -135,7 +135,7 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
         if st.reflection != Reflection::Normal {
             rot.push_str(&format!(" · reflect {}", st.reflection));
         }
-        if let Some((sx, sy)) = st.transform.scale_factors()
+        if let Some((sx, sy)) = st.scaling.scale_factors()
             && ((sx - 1.0).abs() > 1e-6 || (sy - 1.0).abs() > 1e-6)
         {
             rot.push_str(&format!(" · ×{sx}"));
