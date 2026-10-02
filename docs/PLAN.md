@@ -387,7 +387,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   - Arch: `xorg-xrandr`
   - Debian/Ubuntu: `x11-xserver-utils`
   - Fedora, openSUSE, Void and Alpine: `xrandr`
-- **Backend trait.** `trait Backend { fn query(&self) -> Result<Snapshot>; fn apply(&self, argv: &[String]) -> Result<ApplyOutcome>; }`, implemented by `XrandrCli`, `FixtureBackend` and `DryRun`. A Wayland backend would be a future implementation of this trait and is out of scope.
+- **Backend trait.** `trait Backend { fn query(&self) -> Result<Snapshot>; fn apply(&self, argv: &[String]) -> Result<ApplyOutcome>; }`, implemented by `XrandrCli`, `FixtureBackend` and `DryRun`. Wayland support (a wlroots backend behind this trait, kanshi profiles, scale editing) is planned in `docs/PLAN-wayland.md`, which wins where the two differ.
 - **Config.** `$XDG_CONFIG_HOME/outlay/config.toml` is optional, and every key has a default:
   ```toml
   revert_seconds = 15
