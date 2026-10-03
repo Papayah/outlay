@@ -629,3 +629,15 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** since session F the panic hook calls `wayland::client::hang_up()` (a socket shutdown,
   never a close) before `revert.sh`. `hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on`
   in `tests/wayland_live.rs` reproduces the abort on sway 1.12 if you remove its `hang_up()` line.
+
+## The kanshi live test cannot run in CI on Ubuntu 24.04
+
+- **Symptom:** adding `kanshi` to the `wayland` job's `apt-get install` and setting
+  `OUTLAY_TEST_KANSHI` makes `kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload` fail at
+  `kanshictl reload`, instead of running or skipping.
+- **Cause:** noble ships kanshi 1.5.1 (universe), built without IPC: the package holds only
+  `/usr/bin/kanshi`, no `kanshictl`
+  (https://packages.ubuntu.com/noble/amd64/kanshi/filelist). The test needs `kanshictl`, and
+  it was verified on kanshi 1.9.0.
+- **Fix:** none. On 2026-10-03 the user chose to keep kanshi out of CI, so the test runs locally
+  only. Check a newer runner image's file list before you try again.
