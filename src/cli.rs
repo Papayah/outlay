@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::backend::{Backend, DryRun, FixtureBackend};
 use crate::config::Config;
@@ -23,18 +23,21 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Read state from an `xrandr --verbose` capture; never touches X
+    /// Read state from a capture (`xrandr --verbose`, or `wlr-randr --json` and `outlay dump` on
+    /// Wayland); never touches the displays
+    #[arg(long, global = true, value_name = "CAPTURE", conflicts_with = "demo")]
+    pub from_file: Option<PathBuf>,
+
+    /// Use a built-in four-output fixture, X11 unless =wayland; never touches the displays
     #[arg(
         long,
         global = true,
-        value_name = "XRANDR-VERBOSE.TXT",
-        conflicts_with = "demo"
+        value_name = "KIND",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "x11"
     )]
-    pub from_file: Option<PathBuf>,
-
-    /// Use the built-in four-output fixture; never touches X
-    #[arg(long, global = true)]
-    pub demo: bool,
+    pub demo: Option<Demo>,
 
     /// Read the live state, but only simulate applies and show their commands
     #[arg(short = 'n', long, global = true)]
@@ -76,16 +79,28 @@ pub enum Command {
     },
     /// Print the keymap and the commands
     Keys,
+    /// Print the state as the backend reads it (`xrandr --verbose`, or JSON on Wayland), for bug
+    /// reports and --from-file
+    Dump,
     /// Print a shell completion script
     Completions { shell: clap_complete::Shell },
+}
+
+/// Which built-in fixture `--demo` uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Demo {
+    X11,
+    Wayland,
 }
 
 impl Cli {
     /// The backend the global flags select: a fixture for `--demo` and `--from-file`, else the
     /// real `xrandr` (simulated with `--dry-run`). Refuses live X where xrandr cannot work.
     pub fn backend(&self) -> Result<Box<dyn Backend>> {
-        if self.demo {
-            return Ok(Box::new(FixtureBackend::demo()));
+        match self.demo {
+            Some(Demo::X11) => return Ok(Box::new(FixtureBackend::demo())),
+            Some(Demo::Wayland) => return Ok(Box::new(FixtureBackend::demo_wayland())),
+            None => {}
         }
         if let Some(path) = &self.from_file {
             return Ok(Box::new(FixtureBackend::from_file(path)?));
@@ -100,8 +115,11 @@ impl Cli {
 
     /// Editor settings from the config file and the flags.
     pub fn tui_options(&self, config: &Config) -> Result<(Options, Settings)> {
-        let source = if self.demo {
-            Some("demo".to_owned())
+        let source = if let Some(demo) = self.demo {
+            Some(match demo {
+                Demo::X11 => "demo".to_owned(),
+                Demo::Wayland => "wayland demo".to_owned(),
+            })
         } else if let Some(p) = &self.from_file {
             Some(p.file_name().map_or_else(
                 || p.display().to_string(),
@@ -154,8 +172,30 @@ mod tests {
     fn global_flags_work_after_the_subcommand() {
         let cli = Cli::try_parse_from(["outlay", "list", "--demo"]).unwrap();
         assert_eq!(cli.command, Some(Command::List));
-        assert!(cli.demo);
+        assert_eq!(cli.demo, Some(Demo::X11));
         assert!(Cli::try_parse_from(["outlay", "--demo", "--from-file", "x.txt"]).is_err());
+    }
+
+    #[test]
+    fn the_demo_takes_its_kind_after_an_equals_sign() {
+        let demo = |args: &[&str]| Cli::try_parse_from(args).map(|c| (c.demo, c.command));
+        assert_eq!(
+            demo(&["outlay", "--demo=wayland", "show"]).unwrap(),
+            (Some(Demo::Wayland), Some(Command::Show))
+        );
+        assert_eq!(
+            demo(&["outlay", "--demo", "list"]).unwrap(),
+            (Some(Demo::X11), Some(Command::List)),
+            "a word after --demo is the subcommand, not its value"
+        );
+        assert_eq!(
+            demo(&["outlay", "--demo=x11"]).unwrap(),
+            (Some(Demo::X11), None)
+        );
+        assert!(demo(&["outlay", "--demo=gnome"]).is_err());
+        let cli = Cli::try_parse_from(["outlay", "--demo=wayland"]).unwrap();
+        let (options, _) = cli.tui_options(&Config::default()).unwrap();
+        assert_eq!(options.source.as_deref(), Some("wayland demo"));
     }
 
     #[test]

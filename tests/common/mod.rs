@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use outlay::model::geometry::{Point, Rect, Size};
+use outlay::model::geometry::{Point, Rect, Size, effective_size};
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Link, Side};
 use outlay::model::{
@@ -29,6 +29,8 @@ pub struct Out {
     pub size: (i32, i32),
     pub pos: Option<(i32, i32)>,
     pub primary: bool,
+    /// The Wayland scale; [`desk`] ignores it.
+    pub scale: f64,
 }
 
 /// An enabled output of `w`x`h` at `x`,`y`.
@@ -38,6 +40,7 @@ pub fn on(name: &str, w: i32, h: i32, x: i32, y: i32) -> Out {
         size: (w, h),
         pos: Some((x, y)),
         primary: false,
+        scale: 1.0,
     }
 }
 
@@ -48,12 +51,20 @@ pub fn off(name: &str, w: i32, h: i32) -> Out {
         size: (w, h),
         pos: None,
         primary: false,
+        scale: 1.0,
     }
 }
 
 impl Out {
     pub fn primary(mut self) -> Self {
         self.primary = true;
+        self
+    }
+
+    /// On Wayland, at this scale: the position is in logical pixels, and the mode is still
+    /// `size`.
+    pub fn scaled(mut self, scale: f64) -> Self {
+        self.scale = scale;
         self
     }
 }
@@ -111,6 +122,8 @@ pub fn desk(outs: &[Out]) -> Snapshot {
             crtc: spec.pos.map(|_| k as u32),
             crtcs: (0..8).collect(),
             active,
+            description: None,
+            adaptive_sync: None,
         });
     }
     let current = outputs
@@ -128,6 +141,68 @@ pub fn desk(outs: &[Out]) -> Snapshot {
         outputs,
         caps: Caps::x11(),
     }
+}
+
+/// A Wayland snapshot with these heads, in this order: the same modes as [`desk`] with Wayland
+/// ids, logical scaling, no CRTCs, no screen limits and no primary.
+pub fn desk_wl(outs: &[Out]) -> Snapshot {
+    let mut outputs = Vec::new();
+    for spec in outs {
+        let (w, h) = spec.size;
+        let wl = |(w, h, refresh): (i32, i32, f64), preferred: bool| {
+            outlay::wayland::capture::mode(
+                w as u16,
+                h as u16,
+                (refresh * 1000.0).round() as u32,
+                preferred,
+                false,
+            )
+        };
+        let mut modes: Vec<Mode> = MODES.iter().map(|&t| wl(t, false)).collect();
+        if !modes.iter().any(|m| m.width == w && m.height == h) {
+            modes.insert(0, wl((w, h, 60.0), false));
+        }
+        let native = modes
+            .iter()
+            .position(|m| m.width == w && m.height == h)
+            .expect("native mode");
+        modes[native].preferred = true;
+        let scaling = Scaling::Logical(spec.scale);
+        let active = spec.pos.map(|(x, y)| ActiveConfig {
+            mode: modes[native].id,
+            pos: Point::new(x, y),
+            size: effective_size(Size::new(w, h), Rotation::Normal, &scaling),
+            rotation: Rotation::Normal,
+            reflection: Reflection::Normal,
+            scaling,
+            panning: None,
+        });
+        outputs.push(Output {
+            name: spec.name.clone(),
+            connection: Connection::Connected,
+            primary: false,
+            modes,
+            edid: None,
+            identity: None,
+            physical_mm: None,
+            crtc: None,
+            crtcs: Vec::new(),
+            active,
+            description: None,
+            adaptive_sync: None,
+        });
+    }
+    Snapshot {
+        screen: None,
+        outputs,
+        caps: Caps::wayland(),
+    }
+}
+
+pub fn load_wl(outs: &[Out]) -> (Snapshot, Layout) {
+    let snap = desk_wl(outs);
+    let layout = Layout::inferred(&snap);
+    (snap, layout)
 }
 
 /// `snap` with output `name` unplugged: disconnected, with no modes and no EDID. An output that

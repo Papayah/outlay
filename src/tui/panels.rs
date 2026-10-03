@@ -142,7 +142,13 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
                 lines.push(Line::from(format!("serial {serial}")));
             }
         }
-        None => lines.push(Line::styled("no EDID", app.theme.dim())),
+        None => match &out.description {
+            Some(description) => lines.push(Line::from(description.clone())),
+            None if app.layout.caps.kind == Kind::Wayland => {
+                lines.push(Line::styled("unknown display", app.theme.dim()))
+            }
+            None => lines.push(Line::styled("no EDID", app.theme.dim())),
+        },
     }
     if st.enabled {
         lines.extend(mode_lines(app, i).into_iter().map(Line::from));
@@ -161,6 +167,13 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
         lines.push(Line::from(rot));
         if let Some(scale) = scale_line(app, i) {
             lines.push(Line::from(scale));
+        }
+        // Shown, never changed: outlay leaves variable refresh as the compositor has it.
+        if let Some(sync) = out.adaptive_sync.filter(|_| out.active.is_some()) {
+            lines.push(Line::from(format!(
+                "vrr   {}",
+                if sync { "on" } else { "off" }
+            )));
         }
         lines.push(Line::from(format!("link  {}", layout.link_text(i))));
     } else {
@@ -266,6 +279,7 @@ pub fn status_line(app: &App, area: Rect, buf: &mut Buffer) {
 pub fn hint_line(app: &App, area: Rect, buf: &mut Buffer) {
     let context = app.context();
     let hints = app.keymap.hints(context, |b| match b.does {
+        _ if !b.available(&app.layout.caps) => false,
         super::keys::Does::Act(Action::Undo) => app.history.can_undo(),
         _ => true,
     });
@@ -308,7 +322,7 @@ pub fn command_line(
 ) {
     let hints: Vec<String> = app
         .keymap
-        .hints(context, |_| true)
+        .hints(context, |b| b.available(&app.layout.caps))
         .into_iter()
         .map(|(k, h)| format!("{k} {h}"))
         .collect();

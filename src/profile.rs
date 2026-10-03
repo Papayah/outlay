@@ -10,12 +10,15 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
-use crate::backend::{Backend, Plan};
+use crate::backend::{Backend, Plan, command_text};
 use crate::cli::Cli;
 use crate::config::Config;
 use crate::model::layout::Layout;
 use crate::model::validate::{Severity, validate};
-use crate::tui::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, UiMode};
+use crate::model::{Kind, Snapshot};
+use crate::tui::app::{
+    App, ApplyRequest, Effect, NO_WAYLAND_PROFILES, ProfileItem, RevertReason, UiMode,
+};
 use crate::tui::confine;
 use crate::tui::session::{Input, Session, tilde};
 use crate::xrandr::command;
@@ -34,12 +37,21 @@ impl Input for Lines {
     fn drain(&mut self) {}
 }
 
+/// Profiles are screenlayout scripts, which only X11 runs.
+fn refuse_wayland(snap: &Snapshot) -> Result<()> {
+    if snap.caps.kind == Kind::Wayland {
+        bail!("{}", NO_WAYLAND_PROFILES.trim_end_matches('.'));
+    }
+    Ok(())
+}
+
 /// `outlay apply PROFILE`
 pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> Result<()> {
+    let snap = backend.query()?;
+    refuse_wayland(&snap)?;
     let path = profile_path(&cli.layouts_dir(config), name);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("could not read {}", path.display()))?;
-    let snap = backend.query()?;
     let item = ProfileItem::new(&snap, path, &text);
     let remap = item.profile.default_remap(&snap);
     for (from, to) in &remap {
@@ -64,7 +76,7 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
     }
     let plan = Plan::pending(&layout, &snap);
     if cli.dry_run {
-        println!("{}", command::command_line(&command::argv(&plan)));
+        println!("{}", command_text(snap.caps.kind, &plan));
         return Ok(());
     }
     let changes = layout.diff(&snap);
@@ -177,6 +189,7 @@ pub fn save(
     force: bool,
 ) -> Result<()> {
     let snap = backend.query()?;
+    refuse_wayland(&snap)?;
     let layout = Layout::inferred(&snap);
     let path = profile_path(&cli.layouts_dir(config), name);
     let old = match std::fs::read_to_string(&path) {

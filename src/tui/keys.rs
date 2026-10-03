@@ -4,8 +4,9 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::model::geometry::Dir;
+use crate::model::{Cap, Caps};
 
-use super::cmdline::USAGE;
+use super::cmdline;
 
 /// A key after [`normalise`]: letters carry their case instead of SHIFT, and Shift-Tab is always
 /// `BackTab`.
@@ -215,6 +216,23 @@ pub struct Binding {
     /// The label in the hint line; bindings without one appear only in help.
     pub hint: Option<&'static str>,
     pub help: &'static str,
+    /// What the display server must be able to do for the binding to work.
+    pub needs: Option<Cap>,
+}
+
+impl Binding {
+    /// The binding, working only where the display server has `cap`.
+    pub const fn needs(self, cap: Cap) -> Self {
+        Self {
+            needs: Some(cap),
+            ..self
+        }
+    }
+
+    /// Whether the binding works with these abilities.
+    pub fn available(&self, caps: &Caps) -> bool {
+        self.needs.is_none_or(|cap| caps.has(cap))
+    }
 }
 
 const NONE: KeyModifiers = KeyModifiers::NONE;
@@ -243,6 +261,7 @@ const fn bind(
         does,
         hint,
         help,
+        needs: None,
     }
 }
 
@@ -277,7 +296,7 @@ pub const TABLE: &[Binding] = &[
     bind(C::Normal, &[ch('>')], act(A::LargerScale), None, "Next larger scale"),
     bind(C::Normal, &[ch('o')], act(A::RotateCw), Some("rotate"), "Rotate clockwise"),
     bind(C::Normal, &[ch('O')], act(A::RotateCcw), None, "Rotate counter-clockwise"),
-    bind(C::Normal, &[ch('p')], act(A::Primary), None, "Make primary"),
+    bind(C::Normal, &[ch('p')], act(A::Primary), None, "Make primary").needs(Cap::Primary),
     bind(C::Normal, &[ch(' ')], act(A::Toggle), Some("on/off"), "Turn the display on or off"),
     bind(C::Normal, &[ch('u')], act(A::Undo), Some("undo"), "Undo"),
     bind(C::Normal, &[Keys::One(KeyCode::Char('r'), CTRL)], act(A::Redo), None, "Redo"),
@@ -316,7 +335,8 @@ pub const TABLE: &[Binding] = &[
 
     bind(C::StickSide, &[Keys::Letters(NONE), Keys::Arrows(NONE)], Does::Dir(A::Side),
         Some("side"), "Left of, below, above or right of the target"),
-    bind(C::StickSide, &[ch('=')], act(A::Mirror), Some("mirror"), "Mirror the target (same-as)"),
+    bind(C::StickSide, &[ch('=')], act(A::Mirror), Some("mirror"), "Mirror the target (same-as)")
+        .needs(Cap::Mirror),
     bind(C::StickSide, &[code(KeyCode::Tab)], act(A::AlignNext), Some("align"),
         "Next alignment along the shared edge"),
     bind(C::StickSide, &[code(KeyCode::BackTab)], act(A::AlignPrev), None,
@@ -475,17 +495,18 @@ impl Keymap {
         }
     }
 
-    /// The action `key` triggers in `context`.
-    pub fn lookup(&self, context: Context, key: Key) -> Option<Action> {
+    /// The action `key` triggers in `context`, and what the display server needs for it.
+    pub fn lookup(&self, context: Context, key: Key) -> Option<(Action, Option<Cap>)> {
         TABLE.iter().filter(|b| b.context == context).find_map(|b| {
             b.keys.iter().find_map(|keys| {
                 let (_, arg) = self.expand(keys).into_iter().find(|(k, _)| *k == key)?;
-                Some(match (b.does, arg) {
+                let action = match (b.does, arg) {
                     (Does::Act(a), _) => a,
                     (Does::Dir(f), Arg::Dir(d)) => f(d),
                     (Does::Num(f), Arg::Num(n)) => f(n),
                     _ => return None,
-                })
+                };
+                Some((action, b.needs))
             })
         })
     }
@@ -536,28 +557,34 @@ impl Keymap {
             .collect()
     }
 
-    /// Help rows of `context`: every key set of a binding, then what it does.
-    pub fn help(&self, context: Context) -> Vec<(String, &'static str)> {
+    /// Help rows of `context`: every key set of a binding, then what it does. With `caps`, only
+    /// the bindings that work there; without, every binding, and the ones that need an ability
+    /// say "(X11)".
+    pub fn help(&self, context: Context, caps: Option<&Caps>) -> Vec<(String, String)> {
         TABLE
             .iter()
-            .filter(|b| b.context == context)
+            .filter(|b| b.context == context && caps.is_none_or(|c| b.available(c)))
             .map(|b| {
                 let keys: Vec<String> = b.keys.iter().map(|k| self.long(k)).collect();
-                (keys.join(" / "), b.help)
+                let help = match (b.needs, caps) {
+                    (Some(_), None) => format!("{} (X11)", b.help),
+                    _ => b.help.to_owned(),
+                };
+                (keys.join(" / "), help)
             })
             .collect()
     }
 
-    /// Every section of the key reference: each mode's bindings, then the commands. `?` help and
-    /// `outlay keys` both show this.
-    pub fn reference(&self) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    /// Every section of the key reference: each mode's bindings, then the commands. `?` help
+    /// shows what works with the display server's `caps`; `outlay keys` passes `None`.
+    pub fn reference(&self, caps: Option<&Caps>) -> Vec<(&'static str, Vec<(String, String)>)> {
         Context::ALL
             .iter()
-            .map(|&ctx| (ctx.title(), self.help(ctx)))
+            .map(|&ctx| (ctx.title(), self.help(ctx, caps)))
             .filter(|(_, rows)| !rows.is_empty())
             .chain(std::iter::once((
                 "Commands (after :)",
-                USAGE.iter().map(|&(c, h)| (c.to_owned(), h)).collect(),
+                cmdline::usage(caps),
             )))
             .collect()
     }
@@ -565,7 +592,7 @@ impl Keymap {
     /// The key reference as plain text, for `outlay keys`.
     pub fn reference_text(&self) -> String {
         let mut out = String::new();
-        for (title, rows) in self.reference() {
+        for (title, rows) in self.reference(None) {
             if !out.is_empty() {
                 out.push('\n');
             }
@@ -723,7 +750,7 @@ mod tests {
     #[test]
     fn lookup_expands_letters_arrows_and_digits() {
         let map = Keymap::default();
-        let look = |ctx, key| map.lookup(ctx, key);
+        let look = |ctx, key| map.lookup(ctx, key).map(|(a, _)| a);
         assert_eq!(
             look(C::Normal, Key::char('h')),
             Some(Action::Focus(Dir::Left))
@@ -788,15 +815,10 @@ mod tests {
     #[test]
     fn direction_letters_can_change() {
         let map = Keymap::new("fgnt").unwrap();
-        assert_eq!(
-            map.lookup(C::Normal, Key::char('n')),
-            Some(Action::Focus(Dir::Up))
-        );
-        assert_eq!(
-            map.lookup(C::Normal, Key::char('F')),
-            Some(Action::Snap(Dir::Left))
-        );
-        assert_eq!(map.lookup(C::Normal, Key::char('h')), None);
+        let look = |key| map.lookup(C::Normal, key).map(|(a, _)| a);
+        assert_eq!(look(Key::char('n')), Some(Action::Focus(Dir::Up)));
+        assert_eq!(look(Key::char('F')), Some(Action::Snap(Dir::Left)));
+        assert_eq!(look(Key::char('h')), None);
         assert_eq!(map.short(&Keys::Letters(NONE)), "fgnt");
         assert!(Keymap::new("hjk").unwrap_err().contains("four letters"));
         assert!(Keymap::new("hjkh").unwrap_err().contains("repeats"));
@@ -815,7 +837,7 @@ mod tests {
         assert!(text.starts_with("Layout\n  h j k l / arrows  "), "{text}");
         let bindings: usize = TABLE.len();
         let rows = text.lines().filter(|l| l.starts_with("  ")).count();
-        assert_eq!(rows, bindings + USAGE.len());
+        assert_eq!(rows, bindings + cmdline::USAGE.len());
         assert!(text.contains("\nCommands (after :)\n  :pos X Y "), "{text}");
         assert!(
             text.ends_with("Quit; :q! drops pending changes\n"),
@@ -832,12 +854,12 @@ mod tests {
             line.join(" · "),
             "hjkl focus · HJKL move · s stick · m mode · r rate · o rotate · ␣ on/off · u undo · a apply · ? help"
         );
-        let help = map.help(C::Normal);
+        let help = map.help(C::Normal, None);
         assert_eq!(
             help[0],
             (
                 "h j k l / arrows".to_owned(),
-                "Focus the nearest display in that direction"
+                "Focus the nearest display in that direction".to_owned()
             )
         );
         assert_eq!(help[2].0, "Alt-h j k l / Alt-arrows");
@@ -846,5 +868,40 @@ mod tests {
             map.key_for(C::Normal, Action::Nudge(Dir::Right)).as_deref(),
             Some("Alt-l")
         );
+    }
+
+    #[test]
+    fn bindings_that_need_an_ability_say_so() {
+        let map = Keymap::default();
+        assert_eq!(
+            map.lookup(C::Normal, Key::char('p')),
+            Some((Action::Primary, Some(Cap::Primary)))
+        );
+        assert_eq!(
+            map.lookup(C::StickSide, Key::char('=')),
+            Some((Action::Mirror, Some(Cap::Mirror)))
+        );
+        assert_eq!(
+            map.lookup(C::Normal, Key::char('s')),
+            Some((Action::Stick, None))
+        );
+
+        let wayland = Caps::wayland();
+        let has = |ctx, caps: Option<&Caps>, text: &str| {
+            map.help(ctx, caps)
+                .iter()
+                .any(|(_, help)| help.contains(text))
+        };
+        assert!(has(C::Normal, Some(&Caps::x11()), "Make primary"));
+        assert!(!has(C::Normal, Some(&wayland), "Make primary"));
+        assert!(!has(C::StickSide, Some(&wayland), "Mirror the target"));
+        assert!(has(C::Normal, None, "Make primary (X11)"));
+        assert!(has(C::StickSide, None, "Mirror the target (same-as) (X11)"));
+        let hints: Vec<&str> = map
+            .hints(C::StickSide, |b| b.available(&wayland))
+            .into_iter()
+            .map(|(_, h)| h)
+            .collect();
+        assert_eq!(hints, ["side", "align", "stick", "back", "cancel"]);
     }
 }

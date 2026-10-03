@@ -47,6 +47,7 @@ fn run(cli: Cli) -> Result<()> {
             &show::DiagramOptions::for_stdout(config.cell_aspect),
         ),
         Command::List => show::list(&backend.query()?),
+        Command::Dump => backend.dump()?,
         Command::Keys | Command::Completions { .. } => unreachable!("handled above"),
     };
     print_stdout(&text)

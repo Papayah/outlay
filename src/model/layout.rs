@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use super::geometry::{Dir, Point, Rect, Size, bbox, effective_size};
 use super::links::{Align, Link, Restore, Side};
-use super::{Caps, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot};
+use super::{Cap, Caps, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot, x_only};
 
 /// The scales the picker and `<`/`>` offer. Each is exact in X11's 16.16 and Wayland's 24.8
 /// fixed point.
@@ -514,12 +514,34 @@ impl Layout {
         )
     }
 
+    /// Where the display server reflects only in `x` (Wayland), a reflection in `y` becomes one
+    /// in `x` turned upside down, which is the same picture.
     pub fn set_reflection(
         &mut self,
         i: usize,
         reflection: Reflection,
     ) -> Result<CommitReport, EditError> {
-        self.reshape(i, |o| o.reflection = reflection)
+        if self.caps.all_reflections || matches!(reflection, Reflection::Normal | Reflection::X) {
+            return self.reshape(i, |o| o.reflection = reflection);
+        }
+        let (rotation, x) = x_only(self.outputs[i].rotation, reflection);
+        let note = format!(
+            "{} reflects only in x: reflect {reflection} is the same picture as rotate {rotation}{}.",
+            match self.caps.kind {
+                super::Kind::Wayland => "Wayland",
+                super::Kind::X11 => "This display server",
+            },
+            if x == Reflection::X {
+                ", reflect x"
+            } else {
+                ""
+            }
+        );
+        let report = self.reshape(i, |o| {
+            o.rotation = rotation;
+            o.reflection = x;
+        })?;
+        Ok(report.with_notes(vec![note]))
     }
 
     /// `:scale 1`: drops the output's scaling.
@@ -576,6 +598,9 @@ impl Layout {
     }
 
     pub fn set_primary(&mut self, i: usize) -> Result<CommitReport, EditError> {
+        if !self.caps.primary {
+            return Err(EditError::Refused(Cap::Primary.missing().to_owned()));
+        }
         self.check_enabled(i)?;
         if self.outputs[i].primary {
             return Err(EditError::NoChange(format!(
@@ -692,7 +717,8 @@ fn rect_text(r: Rect) -> String {
 
 impl Layout {
     /// How `snap`, the state re-read after applying this layout, differs from it: the enabled
-    /// set, mode XIDs, rectangles and the primary. Empty when the apply came out as asked.
+    /// set, mode ids, rectangles and, where there is one, the primary. Empty when the apply came
+    /// out as asked.
     /// xrandr exits 0 even when it ignores an output, so the exit code alone proves nothing.
     pub fn mismatches(&self, snap: &Snapshot) -> Vec<String> {
         let same_outputs = snap.outputs.len() == self.len()
@@ -733,7 +759,7 @@ impl Layout {
                             rect_text(want)
                         ));
                     }
-                    if st.primary != out.primary {
+                    if self.caps.primary && st.primary != out.primary {
                         let not = if st.primary { "not " } else { "" };
                         found.push(format!("{name} is {not}primary."));
                     }

@@ -3,7 +3,7 @@
 //! The live apply and the revert name modes by XID (`--mode 0x4a`), which is exact. Scripts and
 //! the copied command name them the portable way (`--mode 1920x1080 --rate 165.01`).
 
-use crate::backend::{On, Plan, PlanForm, Planned, PrimaryRule, ScalingChange};
+use crate::backend::{On, Plan, PlanForm, Planned, PrimaryRule, ScalingChange, shell_words};
 use crate::model::geometry::Point;
 use crate::model::layout::Layout;
 use crate::model::{ModeId, Reflection, Rotation, Scaling, Snapshot, Transform};
@@ -332,7 +332,7 @@ pub fn script_command(layout: &Layout) -> String {
     let mut text = String::new();
     for (k, group) in groups.iter().enumerate() {
         text.push_str(if k == 0 { "xrandr " } else { "       " });
-        text.push_str(&join(group));
+        text.push_str(&shell_words(group));
         if k + 1 < groups.len() {
             text.push_str(" \\\n");
         }
@@ -353,33 +353,5 @@ pub fn revert_script(restore: &Plan) -> String {
 
 /// `xrandr` followed by the arguments, quoted for a POSIX shell.
 pub fn command_line(args: &[String]) -> String {
-    format!("xrandr {}", join(args))
-}
-
-fn join(args: &[String]) -> String {
-    args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
-}
-
-/// Quotes an argument for `sh` when it contains anything beyond a safe set.
-fn quote(arg: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "-_.,:/=+@%".contains(c);
-    if !arg.is_empty() && arg.chars().all(safe) {
-        arg.to_owned()
-    } else {
-        format!("'{}'", arg.replace('\'', r"'\''"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quoting() {
-        assert_eq!(quote("1920x1080_60.00"), "1920x1080_60.00");
-        assert_eq!(quote("DP-1-2.1"), "DP-1-2.1");
-        assert_eq!(quote("my mode"), "'my mode'");
-        assert_eq!(quote("it's"), r"'it'\''s'");
-        assert_eq!(quote(""), "''");
-    }
+    format!("xrandr {}", shell_words(args))
 }

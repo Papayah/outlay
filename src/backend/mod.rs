@@ -6,7 +6,8 @@ pub mod plan;
 
 use anyhow::Result;
 
-use crate::model::Snapshot;
+use crate::model::{Kind, Snapshot};
+use crate::{wayland, xrandr};
 pub use fixture::{DryRun, FixtureBackend};
 pub use plan::{On, Plan, PlanForm, Planned, PrimaryRule, ScalingChange};
 
@@ -27,6 +28,38 @@ pub enum Verdict {
     Accepted,
     /// Why the plan would fail.
     Rejected(String),
+}
+
+/// Arguments joined for a POSIX shell, each quoted when it holds anything beyond a safe set.
+pub fn shell_words(args: &[String]) -> String {
+    args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
+}
+
+fn quote(arg: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-_.,:/=+@%".contains(c);
+    if !arg.is_empty() && arg.chars().all(safe) {
+        arg.to_owned()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+/// The command that carries out `plan`, as the confirm popup and `apply -n` show it: xrandr with
+/// modes by XID on X11, the equivalent `wlr-randr` call on Wayland.
+pub fn command_text(kind: Kind, plan: &Plan) -> String {
+    match kind {
+        Kind::X11 => xrandr::command::command_line(&xrandr::command::argv(plan)),
+        Kind::Wayland => wayland::command::command_line(plan),
+    }
+}
+
+/// The same command with modes by name and rate, which other machines understand: what `y`
+/// copies.
+pub fn portable_command_text(kind: Kind, plan: &Plan) -> String {
+    match kind {
+        Kind::X11 => xrandr::command::command_line(&xrandr::command::portable_argv(plan)),
+        Kind::Wayland => wayland::command::command_line(plan),
+    }
 }
 
 pub trait Backend {
@@ -54,5 +87,19 @@ pub trait Backend {
     /// the panic hook may run, and run the `post_apply` hooks.
     fn is_live(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoting() {
+        assert_eq!(quote("1920x1080_60.00"), "1920x1080_60.00");
+        assert_eq!(quote("DP-1-2.1"), "DP-1-2.1");
+        assert_eq!(quote("my mode"), "'my mode'");
+        assert_eq!(quote("it's"), r"'it'\''s'");
+        assert_eq!(quote(""), "''");
     }
 }

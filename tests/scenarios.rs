@@ -2,18 +2,44 @@
 
 mod common;
 
-use common::{ix, link, load, off, on, rect, stuck};
+use common::{Out, ix, link, load, load_wl, off, on, rect, stuck};
 use outlay::backend::{Backend, FixtureBackend, Plan};
 use outlay::model::geometry::{Dir, Rect};
 use outlay::model::history::History;
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Side};
 use outlay::model::snap::SnapKind;
-use outlay::model::validate::validate;
+use outlay::model::validate::{Severity, validate};
+use outlay::model::{Reflection, Rotation, Snapshot};
 use outlay::xrandr::{command, parse_verbose};
 
-#[test]
-fn laptop_stays_centred_under_a_monitor_through_a_nudge_and_a_mode_change() {
+/// Builds a desk: [`load`] for X11, [`load_wl`] for Wayland. The scenarios that run on both use
+/// no primary display except the largest one, which is the root of its links either way, and
+/// no mirrors.
+type Loader = fn(&[Out]) -> (Snapshot, Layout);
+
+/// Runs a scenario on an X11 desk and on a Wayland one.
+macro_rules! on_both {
+    ($scenario:ident, $x11:ident, $wayland:ident) => {
+        #[test]
+        fn $x11() {
+            $scenario(load);
+        }
+
+        #[test]
+        fn $wayland() {
+            $scenario(load_wl);
+        }
+    };
+}
+
+on_both!(
+    laptop_centred,
+    laptop_stays_centred_under_a_monitor_through_a_nudge_and_a_mode_change,
+    laptop_stays_centred_on_wayland
+);
+
+fn laptop_centred(load: Loader) {
     let (snap, mut layout) = load(&[
         on("M", 2560, 1440, 0, 0).primary(),
         on("L", 1920, 1080, 320, 1440),
@@ -45,8 +71,13 @@ fn laptop_stays_centred_under_a_monitor_through_a_nudge_and_a_mode_change() {
     );
 }
 
-#[test]
-fn a_row_is_reordered_by_swapping() {
+on_both!(
+    row_reordered,
+    a_row_is_reordered_by_swapping,
+    a_row_is_reordered_by_swapping_on_wayland
+);
+
+fn row_reordered(load: Loader) {
     let (_, mut layout) = load(&[
         on("A", 1920, 1080, 0, 0),
         on("B", 1920, 1080, 1920, 0),
@@ -80,8 +111,13 @@ fn a_row_is_reordered_by_swapping() {
     assert_eq!(err.to_string(), "no snap spot further right");
 }
 
-#[test]
-fn moving_the_root_display() {
+on_both!(
+    root_moved,
+    moving_the_root_display,
+    moving_the_root_display_on_wayland
+);
+
+fn root_moved(load: Loader) {
     // The demo desk: HDMI bottom-aligned left of the primary DP, the laptop centred below it.
     let (_, mut layout) = load(&[
         on("HDMI", 1920, 1080, 0, 360),
@@ -129,8 +165,13 @@ fn moving_the_root_display() {
     assert_eq!(link(&layout, "eDP"), None);
 }
 
-#[test]
-fn rotating_a_side_monitor_to_portrait_and_back() {
+on_both!(
+    side_rotated,
+    rotating_a_side_monitor_to_portrait_and_back,
+    rotating_a_side_monitor_on_wayland
+);
+
+fn side_rotated(load: Loader) {
     let (_, mut layout) = load(&[
         on("A", 2560, 1440, 0, 0).primary(),
         on("B", 1920, 1080, 2560, 0),
@@ -149,8 +190,13 @@ fn rotating_a_side_monitor_to_portrait_and_back() {
     assert_eq!(layout, original);
 }
 
-#[test]
-fn a_resize_in_a_grid_pushes_the_display_below() {
+on_both!(
+    grid_resized,
+    a_resize_in_a_grid_pushes_the_display_below,
+    a_resize_in_a_grid_pushes_on_wayland
+);
+
+fn grid_resized(load: Loader) {
     let (snap, mut layout) = load(&[
         on("A", 1920, 1080, 0, 0),
         on("B", 1920, 1080, 1920, 0),
@@ -357,8 +403,13 @@ fn turning_a_display_off_and_back_on_restores_it() {
     );
 }
 
-#[test]
-fn undo_and_redo_restore_whole_layouts() {
+on_both!(
+    undo_redo,
+    undo_and_redo_restore_whole_layouts,
+    undo_and_redo_on_wayland
+);
+
+fn undo_redo(load: Loader) {
     let (snap, mut layout) = load(&[on("A", 1920, 1080, 0, 0), on("B", 1920, 1080, 1920, 0)]);
     let mut history = History::default();
     let start = layout.clone();
@@ -412,5 +463,175 @@ fn stale_outputs_are_turned_off_in_the_initial_layout() {
     assert_eq!(
         Layout::inferred(&after).rect(ix(&layout, "eDP-1")),
         Rect::new(0, 0, 1920, 1080)
+    );
+}
+
+#[test]
+fn a_wayland_scale_shrinks_the_display_and_its_neighbour_follows() {
+    let (_, mut layout) = load_wl(&[on("A", 1920, 1080, 0, 0), on("B", 1920, 1080, 1920, 0)]);
+    let original = layout.clone();
+    let a = ix(&layout, "A");
+    layout.set_scale(a, 1.5).unwrap();
+    assert_eq!(
+        rect(&layout, "A"),
+        Rect::new(0, 0, 1280, 720),
+        "150 % is fewer pixels"
+    );
+    assert_eq!(rect(&layout, "B"), Rect::new(1280, 0, 1920, 1080));
+    assert_eq!(
+        link(&layout, "B"),
+        stuck("A", Side::RightOf, Align::Start, 0)
+    );
+    layout.step_scale(a, false).unwrap();
+    assert_eq!(rect(&layout, "A"), Rect::new(0, 0, 1536, 864));
+    assert_eq!(rect(&layout, "B"), Rect::new(1536, 0, 1920, 1080));
+    layout.reset_scale(a).unwrap();
+    assert_eq!(layout, original);
+}
+
+#[test]
+fn a_wayland_scale_below_one_grows_the_display_and_pushes() {
+    let (_, mut layout) = load_wl(&[
+        on("A", 1920, 1080, 0, 0),
+        on("B", 1920, 1080, 1920, 0),
+        on("C", 1920, 1080, 0, 1080),
+        on("D", 1920, 1080, 1920, 1080),
+    ]);
+    let report = layout.set_scale(ix(&layout, "B"), 0.75).unwrap();
+    assert_eq!(report.pushed, vec![ix(&layout, "D")]);
+    assert_eq!(rect(&layout, "B"), Rect::new(1920, 0, 2560, 1440));
+    assert_eq!(rect(&layout, "D"), Rect::new(1920, 1440, 1920, 1080));
+    assert!(layout.overlapping_pairs().is_empty());
+}
+
+#[test]
+fn scaled_wayland_heads_are_placed_by_their_logical_size() {
+    // A 4K monitor at 150 % right of a 2560x1600 laptop at 125 %, bottom-aligned.
+    let (_, layout) = load_wl(&[
+        on("eDP-1", 2560, 1600, 0, 160).scaled(1.25),
+        on("DP-1", 3840, 2160, 2048, 0).scaled(1.5),
+    ]);
+    assert_eq!(rect(&layout, "eDP-1"), Rect::new(0, 160, 2048, 1280));
+    assert_eq!(rect(&layout, "DP-1"), Rect::new(2048, 0, 2560, 1440));
+    assert_eq!(link(&layout, "DP-1"), None, "the largest is the root");
+    assert_eq!(
+        link(&layout, "eDP-1"),
+        stuck("DP-1", Side::LeftOf, Align::End, 0)
+    );
+}
+
+#[test]
+fn identical_rectangles_overlap_on_wayland() {
+    let (snap, mut layout) = load_wl(&[on("A", 1920, 1080, 0, 0), on("B", 1920, 1080, 0, 0)]);
+    assert_eq!(link(&layout, "B"), None, "no mirror without the ability");
+    assert_eq!(layout.overlapping_pairs(), vec![(0, 1)]);
+    let issues = validate(&layout, &snap);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == Severity::Warning && i.message == "A and B overlap."),
+        "{issues:?}"
+    );
+    let err = layout
+        .stick(&snap, 1, 0, Side::Same, Align::Start)
+        .unwrap_err();
+    assert_eq!(err.to_string(), "This compositor cannot mirror displays.");
+    assert_eq!(
+        layout.set_primary(0).unwrap_err().to_string(),
+        "Wayland compositors have no primary display."
+    );
+}
+
+#[test]
+fn wayland_has_no_screen_maximum_and_no_primary_to_miss() {
+    let (snap, layout) = load_wl(&[
+        on("A", 3840, 2160, 0, 0).scaled(0.25),
+        on("B", 3840, 2160, 15360, 0).scaled(0.25),
+    ]);
+    assert_eq!(layout.bounds().unwrap().w, 30720, "beyond any X screen");
+    let issues = validate(&layout, &snap);
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+#[test]
+fn a_fractional_logical_size_is_a_warning() {
+    let (snap, mut layout) = load_wl(&[on("eDP-1", 1920, 1080, 0, 0)]);
+    let edp = ix(&layout, "eDP-1");
+    layout.set_scale(edp, 1.75).unwrap();
+    assert_eq!(
+        rect(&layout, "eDP-1"),
+        Rect::new(0, 0, 1097, 617),
+        "truncated"
+    );
+    let messages: Vec<String> = validate(&layout, &snap)
+        .into_iter()
+        .map(|i| i.message)
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "eDP-1 at 175% is 1097.1x617.1 px; the compositor rounds it, which can leave a 1 px \
+             gap or overlap."
+        ]
+    );
+    layout.set_scale(edp, 1.25).unwrap();
+    assert!(validate(&layout, &snap).is_empty(), "1536x864 is whole");
+    layout.set_scale(edp, 1.5).unwrap();
+    assert!(validate(&layout, &snap).is_empty(), "1280x720 is whole");
+}
+
+#[test]
+fn wayland_reflects_in_y_by_turning_a_reflection_in_x_upside_down() {
+    let (_, mut layout) = load_wl(&[on("A", 1920, 1080, 0, 0)]);
+    layout.rotate(0, true).unwrap();
+    let report = layout.set_reflection(0, Reflection::Y).unwrap();
+    let st = &layout.outputs[0];
+    assert_eq!(
+        (st.rotation, st.reflection),
+        (Rotation::Left, Reflection::X)
+    );
+    assert_eq!(
+        report.notes,
+        ["Wayland reflects only in x: reflect y is the same picture as rotate left, reflect x."]
+    );
+    layout.set_reflection(0, Reflection::XY).unwrap();
+    let st = &layout.outputs[0];
+    assert_eq!(
+        (st.rotation, st.reflection),
+        (Rotation::Right, Reflection::Normal)
+    );
+
+    let (_, mut x11) = load(&[on("A", 1920, 1080, 0, 0)]);
+    let report = x11.set_reflection(0, Reflection::Y).unwrap();
+    assert!(report.notes.is_empty());
+    assert_eq!(x11.outputs[0].reflection, Reflection::Y);
+}
+
+#[test]
+fn turning_a_wayland_head_off_and_back_on_restores_it() {
+    let (snap, mut layout) = load_wl(&[
+        on("HDMI", 1920, 1080, 0, 360),
+        on("DP", 2560, 1440, 1920, 0),
+        on("eDP", 1920, 1080, 2240, 1440),
+        off("DP3", 3840, 2160),
+    ]);
+    let original = layout.clone();
+    let dp = ix(&layout, "DP");
+    let report = layout.turn_off(dp).unwrap();
+    assert!(report.notes.is_empty(), "no primary to hand on");
+    assert_eq!(rect(&layout, "HDMI"), Rect::new(0, 0, 1920, 1080));
+    assert_eq!(
+        link(&layout, "eDP"),
+        stuck("HDMI", Side::Below, Align::Center, 0)
+    );
+    layout.turn_on(&snap, dp).unwrap();
+    assert_eq!(layout, original);
+
+    let dp3 = ix(&layout, "DP3");
+    layout.turn_on(&snap, dp3).unwrap();
+    assert_eq!(rect(&layout, "DP3"), Rect::new(4480, 0, 3840, 2160));
+    assert!(
+        layout.outputs[dp3].scaling.is_identity(),
+        "a new head starts at 100 %"
     );
 }

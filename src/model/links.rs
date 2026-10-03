@@ -558,6 +558,11 @@ impl Layout {
                 "Both displays must be on to stick them.".to_owned(),
             ));
         }
+        if side == Side::Same && !self.caps.mirror {
+            return Err(EditError::Refused(
+                crate::model::Cap::Mirror.missing().to_owned(),
+            ));
+        }
         let before = self.clone();
         let mut notes = Vec::new();
 

@@ -1,0 +1,73 @@
+[
+  {
+    "name": "DP-1",
+    "description": "Dell Inc. DELL P2419H CVJ3H83 (DP-1)",
+    "make": "Dell Inc.",
+    "model": "DELL P2419H",
+    "serial": "CVJ3H83",
+    "physical_size": {
+      "width": 527,
+      "height": 296
+    },
+    "enabled": true,
+    "modes": [
+      {
+        "width": 1920,
+        "height": 1080,
+        "refresh": 60.000000,
+        "preferred": true,
+        "current": false
+      },
+      {
+        "width": 1280,
+        "height": 720,
+        "refresh": 60.000000,
+        "preferred": false,
+        "current": false
+      },
+      {
+        "width": 1600,
+        "height": 900,
+        "refresh": 59.978001,
+        "preferred": false,
+        "current": true,
+        "custom": true
+      }
+    ],
+    "position": {
+      "x": 0,
+      "y": 0
+    },
+    "transform": "normal",
+    "scale": 1.000000,
+    "adaptive_sync": false
+  },
+  {
+    "name": "HDMI-A-1",
+    "description": "Virtual output (HDMI-A-1)",
+    "make": null,
+    "model": null,
+    "serial": null,
+    "physical_size": {
+      "width": 0,
+      "height": 0
+    },
+    "enabled": true,
+    "modes": [
+      {
+        "width": 1366,
+        "height": 768,
+        "refresh": 0.000000,
+        "preferred": false,
+        "current": true
+      }
+    ],
+    "position": {
+      "x": 1600,
+      "y": 0
+    },
+    "transform": "normal",
+    "scale": 1.000000,
+    "adaptive_sync": false
+  }
+]

@@ -29,7 +29,13 @@ pub fn centred(area: Rect, width: u16, height: u16) -> Rect {
 /// `⏎ choose · Esc cancel`, from the keymap.
 fn hints(app: &App, context: Context) -> Line<'static> {
     let mut spans = Vec::new();
-    for (k, (keys, label)) in app.keymap.hints(context, |_| true).into_iter().enumerate() {
+    let caps = app.layout.caps;
+    for (k, (keys, label)) in app
+        .keymap
+        .hints(context, |b| b.available(&caps))
+        .into_iter()
+        .enumerate()
+    {
         if k > 0 {
             spans.push(Span::styled(" · ", app.theme.dim()));
         }
@@ -110,7 +116,7 @@ pub fn help(app: &App, scroll: u16, area: Rect, buf: &mut Buffer) -> u16 {
     if inner.height < 2 {
         return 0;
     }
-    let sections = app.keymap.reference();
+    let sections = app.keymap.reference(Some(&app.layout.caps));
     let mut lines: Vec<Line> = Vec::new();
     for (title, rows) in sections {
         if !lines.is_empty() {

@@ -266,6 +266,8 @@ impl OutputBuilder {
                 crtc: None,
                 crtcs: Vec::new(),
                 active: None,
+                description: None,
+                adaptive_sync: None,
             },
             header,
             header_mm,

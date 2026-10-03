@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
-use crate::backend::Plan;
+use crate::backend::{Plan, command_text, portable_command_text};
 use crate::model::geometry::effective_size;
 use crate::model::geometry::{Dir, Point, Rect};
 use crate::model::history::History;
@@ -17,8 +17,7 @@ use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
 use crate::model::links::{Align, Side, best_align};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
-use crate::model::{Kind, Mode, ModeId, Output, Scaling, Snapshot};
-use crate::xrandr::command;
+use crate::model::{Cap, Kind, Mode, ModeId, Output, Scaling, Snapshot};
 use crate::xrandr::script::{Profile, Remap};
 
 use super::canvas::Viewport;
@@ -176,6 +175,10 @@ pub const ANIMATION: Duration = Duration::from_millis(120);
 
 /// How often the editor re-reads the live state, to pick up displays that were plugged in.
 pub const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Why `w`, `e`, `outlay apply` and `outlay save` do nothing on Wayland yet.
+pub const NO_WAYLAND_PROFILES: &str =
+    "Profiles on Wayland are kanshi profiles, which arrive in the next version of outlay.";
 
 /// Displays gliding from where they were drawn to where the edit put them.
 #[derive(Clone, Debug, PartialEq)]
@@ -689,7 +692,8 @@ impl App {
             return Vec::new();
         };
         let context = self.context();
-        let action = self.keymap.lookup(context, key);
+        let found = self.keymap.lookup(context, key);
+        let action = found.map(|(action, _)| action);
         // Any other key ends a held nudge; any other action ends a run of nudges.
         if !(context == Context::Normal && matches!(action, Some(Action::Nudge(_)))) {
             self.burst = None;
@@ -700,6 +704,12 @@ impl App {
         if let UiMode::Countdown(c) = self.mode
             && self.now < c.blocked_until
         {
+            return Vec::new();
+        }
+        if let Some((_, Some(cap))) = found
+            && !self.layout.caps.has(cap)
+        {
+            self.missing(cap);
             return Vec::new();
         }
         match action {
@@ -716,6 +726,15 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    /// A key or command needs what the display server cannot do: say so, and change nothing.
+    fn missing(&mut self, cap: Cap) {
+        if let UiMode::Stick(flow) = &mut self.mode {
+            // The stick flow's own line hides the status.
+            flow.problem = Some(cap.missing().trim_end_matches('.').to_owned());
+        }
+        self.say(Severity::Warning, cap.missing());
     }
 
     fn perform(&mut self, context: Context, action: Action) -> Vec<Effect> {
@@ -944,9 +963,7 @@ impl App {
             Action::Primary => {
                 self.simple_edit(|l, _| l.set_primary(f));
             }
-            Action::Toggle => {
-                self.simple_edit(|l, s| l.toggle(s, f));
-            }
+            Action::Toggle => self.toggle(f),
             Action::Undo | Action::Redo => {
                 let before = self.layout.clone();
                 let drawn = self.drawn_positions();
@@ -978,9 +995,10 @@ impl App {
             Action::Apply => self.open_apply(),
             Action::Copy => {
                 let plan = Plan::pending(&self.layout, &self.snap);
-                let args = command::portable_argv(&plan);
-                return vec![Effect::Copy(command::command_line(&args))];
+                let text = portable_command_text(self.layout.caps.kind, &plan);
+                return vec![Effect::Copy(text)];
             }
+            Action::Save | Action::Open if !self.has_profiles() => {}
             Action::Save => {
                 self.mode = UiMode::SavePrompt(self.profile.clone().unwrap_or_default())
             }
@@ -1078,7 +1096,7 @@ impl App {
             changes,
             errors,
             warnings,
-            command: command::command_line(&command::argv(&plan)),
+            command: command_text(self.layout.caps.kind, &plan),
             plan,
         });
     }
@@ -1884,6 +1902,9 @@ impl App {
                 self.simple_edit(|l, _| l.set_scale(f, factor));
             }
             Cmd::Stick {
+                side: Side::Same, ..
+            } if !self.layout.caps.mirror => self.missing(Cap::Mirror),
+            Cmd::Stick {
                 child,
                 side,
                 parent,
@@ -1907,6 +1928,7 @@ impl App {
                     self.simple_edit(|l, _| l.unstick(i));
                 }
             }
+            Cmd::Primary(_) if !self.layout.caps.primary => self.missing(Cap::Primary),
             Cmd::Primary(t) => {
                 if let Some(i) = self.named(t) {
                     self.simple_edit(|l, _| l.set_primary(i));
@@ -1915,6 +1937,7 @@ impl App {
             Cmd::On(t) => self.switch(t, true),
             Cmd::Off(t) => self.switch(t, false),
             Cmd::Quit { force } => return self.quit(force),
+            Cmd::Save(_) | Cmd::Open(_) if !self.has_profiles() => {}
             Cmd::Save(Some(name)) => return vec![Effect::SaveProfile(name)],
             Cmd::Save(None) => match self.profile.clone() {
                 Some(name) => return vec![Effect::SaveProfile(name)],
@@ -1949,8 +1972,40 @@ impl App {
             let text = format!("{} is already {state}.", self.layout.label(i));
             self.say(Severity::Info, text);
         } else {
-            self.simple_edit(|l, s| l.toggle(s, i));
+            self.toggle(i);
         }
+    }
+
+    /// Turns display `i` on or off. A Wayland head that has never been on starts at 100 %,
+    /// whatever the compositor used before, so the status says how to pick a scale.
+    fn toggle(&mut self, i: usize) {
+        let first_time = self.layout.outputs[i].mode.is_none();
+        if self.simple_edit(|l, s| l.toggle(s, i))
+            && first_time
+            && self.layout.caps.kind == Kind::Wayland
+        {
+            let key = self
+                .keymap
+                .key_for(Context::Normal, Action::ScalePicker)
+                .unwrap_or_default();
+            let mut text = format!(
+                "{} starts at 100%: {key} picks a scale.",
+                self.layout.label(i)
+            );
+            if let Some(status) = self.status.take() {
+                text = format!("{} {text}", status.text);
+            }
+            self.say(Severity::Info, text);
+        }
+    }
+
+    /// Whether this display server has profiles yet; says why not when it has none.
+    fn has_profiles(&mut self) -> bool {
+        if self.layout.caps.kind == Kind::Wayland {
+            self.say(Severity::Info, NO_WAYLAND_PROFILES);
+            return false;
+        }
+        true
     }
 }
 
