@@ -71,7 +71,10 @@ expect() {
     fi
 }
 
-# Display 1 is HEADLESS-1, right of HEADLESS-2; Alt-l nudges it 10 px to the right.
+# Display 1 is HEADLESS-1, right of HEADLESS-2 (pinned: sway 1.9 and 1.12 place them the other
+# way round); Alt-l nudges it 10 px to the right.
+"$swaymsg" output HEADLESS-2 pos 0 0 > /dev/null
+"$swaymsg" output HEADLESS-1 pos 1280 0 > /dev/null
 expect "HEADLESS-1 starts at" "$(x_of HEADLESS-1)" 1280
 python3 "$here/pty_drive.py" keep --display 1 -- || failed=1
 expect "kept at" "$(x_of HEADLESS-1)" 1290

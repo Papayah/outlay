@@ -260,7 +260,8 @@ pub fn identity(make: Option<&str>, model: Option<&str>, serial: Option<&str>) -
 }
 
 /// The output a head report describes. Modes are merged by size and rate; a duplicate the head
-/// runs keeps its own `custom`.
+/// runs keeps its own `custom`. A mode of no size is left out: wlroots 0.17 gives a client that
+/// binds while a custom-mode head is off a virtual mode whose size it never sends.
 pub fn output(head: HeadReport) -> Result<Output, CaptureError> {
     let name = head.name;
     let mut modes: Vec<Mode> = Vec::new();
@@ -269,6 +270,9 @@ pub fn output(head: HeadReport) -> Result<Output, CaptureError> {
         let (Ok(w), Ok(h)) = (u16::try_from(m.width), u16::try_from(m.height)) else {
             return Err(CaptureError::BadSize(name, m.width, m.height));
         };
+        if w == 0 && h == 0 {
+            continue;
+        }
         if w == 0 || h == 0 {
             return Err(CaptureError::BadSize(name, m.width, m.height));
         }
@@ -545,6 +549,13 @@ mod tests {
         assert_eq!(a.scaling, Scaling::Logical(1.0), "no scale means 1");
         assert_eq!(a.pos, Point::default());
         assert_eq!(mode_millihertz(&out.modes[0]), 60_000);
+
+        let off = r#"[{"name": "HEADLESS-2", "enabled": false,
+            "modes": [{"width": 0, "height": 0, "refresh": 0}]}]"#;
+        assert!(
+            parse(off).unwrap().outputs[0].modes.is_empty(),
+            "a mode wlroots 0.17 never sized"
+        );
     }
 
     #[test]
