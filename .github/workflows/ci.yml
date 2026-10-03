@@ -27,3 +27,20 @@ jobs:
       # CI's /bin/sh is dash, so the cargo test below also runs tests/install.rs under dash.
       - run: shellcheck -s sh install.sh
       - run: cargo test
+
+  wayland:
+    # The Wayland backend against a real compositor: headless sway, which needs no GPU, no seat
+    # and no window. Pinned to 24.04 (sway 1.9, wlroots 0.17): ubuntu-latest moves to 26.04
+    # between 2026-10-19 and 2026-11-19.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.1
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sway wlr-randr
+      - run: sway --version && wlr-randr --version || true
+      - run: OUTLAY_TEST_SWAY=/usr/bin/sway cargo test --test wayland_live -- --nocapture
+      # The binary in a pseudo-terminal: keep one apply, let another revert, check with swaymsg.
+      - run: cargo build
+      - run: OUTLAY_TEST_SWAY=/usr/bin/sway OUTLAY_BIN="$PWD/target/debug/outlay" tools/pty_wayland.sh

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Drive outlay inside a pseudo-terminal: no window on the user's display.
 
-usage: tools/pty_drive.py SCENARIO -- outlay args...     (build with cargo build --release)
+usage: tools/pty_drive.py SCENARIO [--display N] -- outlay args...
+       (build with cargo build --release, or point OUTLAY_BIN at another build)
+
+Every check prints "name: value"; the exit status is 1 when a check is False. keep and timeout
+nudge display N (default 3) to the right.
 
 Scenarios: keep, timeout (pass --revert-timeout 2), scale (> on the focused display, pass
 --revert-timeout 10), sigterm, sighup, keys, hold (a held Alt-l;
@@ -20,7 +24,18 @@ import sys
 import termios
 import time
 
-BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "outlay")
+BIN = os.environ.get("OUTLAY_BIN") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "outlay"
+)
+
+FAILED = []
+
+
+def check(name, value):
+    """Prints a check; a False one makes the exit status 1."""
+    print(name + ":", value)
+    if value is False or (name == "exit" and value != 0):
+        FAILED.append(name)
 
 
 def spawn(args, cols=110, rows=32, env=None):
@@ -122,78 +137,80 @@ def wait(pid, seconds=3.0):
 
 def main():
     scenario = sys.argv[1]
+    own = sys.argv[2:sys.argv.index("--")]
+    display = own[own.index("--display") + 1] if "--display" in own else "3"
     args = sys.argv[sys.argv.index("--") + 1:]
     pid, fd = spawn(args)
     screen = read_for(fd, 2.6)
-    print("started:", "layout" in screen and "outlay" in screen)
+    check("started", "layout" in screen and "outlay" in screen)
     if scenario == "keep":
-        send(fd, "3\x1bl")          # focus eDP-1, Alt-l nudge
+        send(fd, display + "\x1bl")  # focus the display (eDP-1 in the demo), Alt-l nudge
         out = send(fd, "a", 0.5)
-        print("confirm popup:", "Apply" in out and "Changes" in out)
+        check("confirm popup", "Apply" in out and "Changes" in out)
         send(fd, "\r", 0.3)
-        print("countdown:", "Keep this layout?" in SCREEN.text())
+        check("countdown", "Keep this layout?" in SCREEN.text())
         send(fd, "y", 0.3)          # ~0.6 s after xrandr returned: must be ignored
-        print("y ignored during the block:", "Keep this layout?" in SCREEN.text())
+        check("y ignored during the block", "Keep this layout?" in SCREEN.text())
         read_for(fd, 0.8)
         send(fd, "y", 0.5)
-        print("kept:", "Kept the new layout." in SCREEN.text())
+        check("kept", "Kept the new layout." in SCREEN.text())
         send(fd, "q", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "timeout":
-        send(fd, "3\x1bl")
+        send(fd, display + "\x1bl")
         send(fd, "a", 0.5)
         send(fd, "\r", 0.5)
         out = read_for(fd, 3.5)     # run with --revert-timeout 2
-        print("reverted:", "No answer in 2 s" in out)
+        check("reverted", "No answer in 2 s" in out)
         send(fd, "q", 0.5)
-        print("asks to quit with pending edits:", "Discard 1 pending change and quit?" in SCREEN.text())
+        check("asks to quit with pending edits", "Discard 1 pending change and quit?" in SCREEN.text())
         send(fd, "\r", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "scale":
         # run with --revert-timeout 10: > on the focused display, apply, let the countdown run out.
         send(fd, ">", 0.5)
-        print("scaled:", "×1.25" in SCREEN.text())
+        check("scaled", "×1.25" in SCREEN.text())
         send(fd, "a", 0.5)
-        print("confirm popup:", "1.25x1.25" in SCREEN.text())
+        check("confirm popup", "1.25x1.25" in SCREEN.text())
         send(fd, "\r", 0.3)
         # The post_apply hooks run before the countdown and again after the revert.
         seen = read_for(fd, 4.0)
-        print("countdown:", "Keep this layout?" in SCREEN.text() or "Keep this layout?" in seen)
+        check("countdown", "Keep this layout?" in SCREEN.text() or "Keep this layout?" in seen)
         if os.environ.get("PTY_DUMP"):
             print(SCREEN.text())
         seen = read_for(fd, 12.0)
-        print("reverted:", "No answer in 10 s" in SCREEN.text() or "No answer in 10 s" in seen)
+        check("reverted", "No answer in 10 s" in SCREEN.text() or "No answer in 10 s" in seen)
         if os.environ.get("PTY_DUMP"):
             print(SCREEN.text())
         send(fd, "q", 0.5)
         send(fd, "\r", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "sigterm":
         send(fd, "3\x1bl")
         send(fd, "a", 0.5)
         out = send(fd, "\r", 1.0)
-        print("countdown:", "Keep this layout?" in out)
+        check("countdown", "Keep this layout?" in out)
         os.kill(pid, signal.SIGTERM)
         out = read_for(fd, 1.0)
-        print("left the alternate screen:", "\x1b[?1049l" in out)
-        print("exit:", wait(pid))
+        check("left the alternate screen", "\x1b[?1049l" in out)
+        check("exit", wait(pid))
     elif scenario == "sighup":
         send(fd, "3\x1bl")
         send(fd, "a", 0.5)
         send(fd, "\r", 1.0)
         os.close(fd)                # the terminal goes away
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "keys":
         out = send(fd, "?", 0.5)
-        print("help:", "Layout" in out and "Snap-move" in out)
+        check("help", "Layout" in out and "Snap-move" in out)
         send(fd, "\x1b", 0.3)
         out = send(fd, "s", 0.5)
-        print("stick hints:", "target" in out or "side" in out)
+        check("stick hints", "target" in out or "side" in out)
         send(fd, "\x1b", 0.3)
         out = send(fd, "\x1b", 0.3)
-        print("Esc does not quit:", wait(pid, 0.3) is None)
+        check("Esc does not quit", wait(pid, 0.3) is None)
         send(fd, "q", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "hold":
         # Alt-l every 40 ms for 1.2 s, as a key held with a 25 Hz autorepeat sends it.
         send(fd, "3", 0.3)
@@ -205,47 +222,48 @@ def main():
         if os.environ.get("PTY_DUMP"):
             print(held)
         step = [l.strip() for l in held.splitlines() if "step 10px" in l]
-        print("step indicator:", step[0] if step else None)
+        check("step indicator", step[0] if step else None)
         pos = re.search(r"pos +([0-9,]+ → [0-9,]+)", held)
-        print("moved:", pos.group(1) if pos else None)
+        check("moved", pos.group(1) if pos else None)
         read_for(fd, 0.5)
-        print("multiplier gone after release:", "×" not in SCREEN.text())
+        check("multiplier gone after release", "×" not in SCREEN.text())
         send(fd, "u", 0.3)
-        print("one undo restores it:", "no changes" in SCREEN.text())
+        check("one undo restores it", "no changes" in SCREEN.text())
         send(fd, "q", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "profiles":
         send(fd, "e", 0.5)
-        print("picker:", "profiles · " in SCREEN.text())
+        check("picker", "profiles · " in SCREEN.text())
         send(fd, "j\r", 0.5)
-        print("opened:", "Opened tv-home" in SCREEN.text())
+        check("opened", "Opened tv-home" in SCREEN.text())
         send(fd, "w", 0.3)
-        print("save prompt:", "save as tv-home" in SCREEN.text())
+        check("save prompt", "save as tv-home" in SCREEN.text())
         send(fd, "\x7f" * 7 + "desk\r", 0.5)
-        print("saved:", "Saved " in SCREEN.text())
+        check("saved", "Saved " in SCREEN.text())
         send(fd, ":e home-setup\r", 0.5)
-        print("remap:", "Choose where each one goes" in SCREEN.text())
+        check("remap", "Choose where each one goes" in SCREEN.text())
         send(fd, "\r", 0.5)
-        print("opened after remap:", "Opened home-setup" in SCREEN.text())
+        check("opened after remap", "Opened home-setup" in SCREEN.text())
         if os.environ.get("PTY_DUMP"):
             print(SCREEN.text())
         send(fd, "q", 0.3)
         send(fd, "\r", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     elif scenario == "refresh":
         send(fd, "3\x1bl")
         send(fd, "R", 0.5)
         text = SCREEN.text()
-        print("no question:", "Discard" not in text)
-        print("nothing changed:", "No display changes." in text)
-        print("the edit stays:", "1 pending" in text)
+        check("no question", "Discard" not in text)
+        check("nothing changed", "No display changes." in text)
+        check("the edit stays", "1 pending" in text)
         send(fd, "u", 0.3)
-        print("the undo stays:", "no changes" in SCREEN.text())
+        check("the undo stays", "no changes" in SCREEN.text())
         send(fd, "q", 0.3)
-        print("exit:", wait(pid))
+        check("exit", wait(pid))
     else:
         print("unknown scenario")
         os.kill(pid, signal.SIGKILL)
 
 
 main()
+sys.exit(1 if FAILED else 0)
