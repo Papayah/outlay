@@ -9,7 +9,10 @@ use thiserror::Error;
 
 use super::geometry::{Dir, Point, Rect, Size, bbox, effective_size};
 use super::links::{Align, Link, Restore, Side};
-use super::{Cap, Caps, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot, x_only};
+use super::orientation;
+use super::{
+    Cap, Caps, Kind, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot, x_only,
+};
 
 /// The scales the picker and `<`/`>` offer. Each is exact in X11's 16.16 and Wayland's 24.8
 /// fixed point.
@@ -681,11 +684,21 @@ impl Layout {
                     if st.pos != live.pos {
                         changes.push(Change::Position(live.pos, st.pos));
                     }
-                    if st.rotation != live.rotation {
-                        changes.push(Change::Rotation(live.rotation, st.rotation));
-                    }
-                    if st.reflection != live.reflection {
-                        changes.push(Change::Reflection(live.reflection, st.reflection));
+                    let turned = st.rotation != live.rotation || st.reflection != live.reflection;
+                    if turned && self.caps.kind == Kind::Wayland {
+                        // One transform on Wayland, named as the compositor names it.
+                        let name = |r, f| orientation::label(Kind::Wayland, r, f);
+                        changes.push(Change::Transform(
+                            name(live.rotation, live.reflection),
+                            name(st.rotation, st.reflection),
+                        ));
+                    } else {
+                        if st.rotation != live.rotation {
+                            changes.push(Change::Rotation(live.rotation, st.rotation));
+                        }
+                        if st.reflection != live.reflection {
+                            changes.push(Change::Reflection(live.reflection, st.reflection));
+                        }
                     }
                     if !st.scaling.approx_eq(&live.scaling) {
                         changes.push(Change::Scale(
@@ -871,6 +884,8 @@ pub enum Change {
     Position(Point, Point),
     Rotation(Rotation, Rotation),
     Reflection(Reflection, Reflection),
+    /// A Wayland transform, as [`orientation::label`] names it.
+    Transform(String, String),
     Scale(String, String),
     Primary(bool),
 }
@@ -885,6 +900,7 @@ impl fmt::Display for Change {
             Change::Position(a, b) => write!(f, "pos {},{} → {},{}", a.x, a.y, b.x, b.y),
             Change::Rotation(a, b) => write!(f, "rotate {a} → {b}"),
             Change::Reflection(a, b) => write!(f, "reflect {a} → {b}"),
+            Change::Transform(a, b) => write!(f, "transform {a} → {b}"),
             Change::Scale(a, b) => write!(f, "scale {a} → {b}"),
             Change::Primary(true) => write!(f, "primary"),
             Change::Primary(false) => write!(f, "not primary"),

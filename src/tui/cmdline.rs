@@ -2,7 +2,8 @@
 
 use crate::model::layout::{Layout, MAX_SCALE, MIN_SCALE};
 use crate::model::links::{Align, Side};
-use crate::model::{Cap, Caps, Reflection, Rotation};
+use crate::model::orientation::parse_transform;
+use crate::model::{Cap, Caps, Kind, Reflection, Rotation};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -47,6 +48,8 @@ pub enum Cmd {
     /// `:apply`
     Apply,
 }
+
+const ROTATE_USAGE: &str = "usage: :rotate normal|left|right|inverted|90|180|270";
 
 /// The command words, with what the display server needs for them, for error messages and
 /// completion.
@@ -102,7 +105,10 @@ pub const USAGE: &[Usage] = &[
         "Set the resolution, and the rate nearest to R",
     ),
     usage_row(":rate R", "Set the rate nearest to R"),
-    usage_row(":rotate normal|left|right|inverted", "Rotate"),
+    usage_row(
+        ":rotate normal|left|right|inverted",
+        "Rotate; also 90, 180, 270 (90 is left)",
+    ),
     Usage {
         needs: Some(Cap::AllReflections),
         without: Some((":reflect normal|x", "Reflect")),
@@ -214,9 +220,14 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
         },
         "rotate" => match args {
             [r] => Rotation::parse(r)
+                .or_else(|| {
+                    parse_transform(r)
+                        .map(|(r, _)| r)
+                        .filter(|_| !r.contains("flip"))
+                })
                 .map(Cmd::Rotate)
-                .ok_or_else(|| "usage: :rotate normal|left|right|inverted".to_owned()),
-            _ => Err("usage: :rotate normal|left|right|inverted".to_owned()),
+                .ok_or_else(|| ROTATE_USAGE.to_owned()),
+            _ => Err(ROTATE_USAGE.to_owned()),
         },
         "reflect" => match args {
             [r] => Reflection::parse(r)
@@ -326,10 +337,16 @@ pub fn complete(line: &str, layout: &Layout) -> (String, Vec<String>) {
             }
             ("stick", 1) => owned(&["left-of", "right-of", "above", "below"]),
             ("stick", 3) => owned(&["start", "center", "end"]),
-            ("rotate", 0) => Rotation::ALL
-                .iter()
-                .map(|r| r.as_str().to_owned())
-                .collect(),
+            ("rotate", 0) => {
+                let mut words: Vec<String> = Rotation::ALL
+                    .iter()
+                    .map(|r| r.as_str().to_owned())
+                    .collect();
+                if caps.kind == Kind::Wayland {
+                    words.extend(["90", "180", "270"].map(str::to_owned));
+                }
+                words
+            }
             ("reflect", 0) => Reflection::ALL
                 .iter()
                 .filter(|r| caps.all_reflections || matches!(r, Reflection::Normal | Reflection::X))
