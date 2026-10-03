@@ -192,8 +192,13 @@ All are pure Rust with an MSRV of at most 1.91:
   - scfg: `#` starts a comment only at the start of a directive; `{` needs a space before it.
   - **kanshi keeps its current profile while it still matches** (`match_and_apply`): another
     client's apply, outlay's countdown included, stands. kanshi applies a profile again on a
-    hotplug that changes the set of heads and on `kanshictl reload`. This was read from the
-    source, not run: the live test (`OUTLAY_TEST_KANSHI`) was not run in session F.
+    hotplug that changes the set of heads and on `kanshictl reload`. Run live on 2026-10-03
+    (kanshi 1.9.0, sway 1.12, wlroots 0.20.2, headless; `OUTLAY_TEST_KANSHI`), and the source
+    reading held. kanshi applied `desk` once at start, although the heads already matched it.
+    It logged nothing for outlay's apply, which still stood 1 s later. It applied `desk` again
+    on `kanshictl reload`, on a hotplug (`no profile matched` while a third head was
+    connected), and on a reload of the block `outlay save` wrote, which gave exactly the state
+    outlay had saved.
 
 ## Design
 
