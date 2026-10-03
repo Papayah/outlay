@@ -44,7 +44,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pinned to the version Cargo.toml declares as rust-version, so CI cannot pass on a compiler
       # newer than the one the crate promises to build with.
       - uses: dtolnay/rust-toolchain@1.91.1
@@ -78,7 +78,7 @@ jobs:
           cp "target/$TARGET/release/outlay" README.md LICENSE "dist/$name/"
           tar -C dist --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
           tar -tvzf "dist/$name.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: outlay-${{ matrix.target }}
           path: dist/outlay-*.tar.gz
@@ -93,8 +93,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: outlay-*
           merge-multiple: true
