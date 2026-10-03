@@ -265,7 +265,14 @@ fn wlr_randr_and_outlay_dump_read_the_same() {
             return;
         }
     };
-    assert!(wlr.status.success());
+    if !wlr.status.success() {
+        // wlr-randr before 0.4 has no --json.
+        println!(
+            "skipped: wlr-randr --json: {}",
+            String::from_utf8_lossy(&wlr.stderr).trim()
+        );
+        return;
+    }
     let dump = sway
         .command(env!("CARGO_BIN_EXE_outlay"))
         .env("XDG_CONFIG_HOME", "/nonexistent/outlay-test-config")

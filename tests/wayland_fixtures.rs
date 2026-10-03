@@ -10,6 +10,7 @@ const FIXTURES: &[&str] = &[
     "custom-mode",
     "demo",
     "disabled-head",
+    "headless-sway",
     "laptop-scaled",
     "no-serial",
     "rotated",
@@ -195,4 +196,26 @@ fn heads_without_serial_or_maker() {
         "2560x1440@59.95",
         "not the preferred one"
     );
+}
+
+#[test]
+fn headless_sway_as_outlay_dump_wrote_it() {
+    let snap = load("headless-sway");
+    assert_eq!(names(&snap), ["HEADLESS-1", "HEADLESS-2"]);
+    for out in &snap.outputs {
+        assert_eq!(out.identity, None);
+        assert_eq!(out.modes.len(), 1, "a virtual mode only");
+        let mode = out.current_mode().unwrap();
+        assert!(mode.custom && !mode.preferred);
+        assert_eq!((mode.width, mode.height, mode.refresh), (1280, 720, 0.0));
+        assert_eq!(out.adaptive_sync, Some(false));
+    }
+    let pos = |name| output(&snap, name).active.as_ref().unwrap().pos;
+    assert_eq!(
+        pos("HEADLESS-2"),
+        Point::new(0, 0),
+        "sway puts the second one first"
+    );
+    assert_eq!(pos("HEADLESS-1"), Point::new(1280, 0));
+    assert_eq!(write(&snap), text("headless-sway"), "byte for byte");
 }
