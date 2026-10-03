@@ -4,7 +4,7 @@
 //! a fake backend, a scripted clock and an injected signal flag.
 
 use std::collections::VecDeque;
-use std::io::{self, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -17,11 +17,12 @@ use base64::engine::general_purpose::STANDARD;
 use ratatui::crossterm::event::Event;
 
 use crate::backend::{Backend, Plan, Verdict};
+use crate::files::{line_diff, write_atomic};
 use crate::model::validate::Severity;
 use crate::model::{Kind, Snapshot};
+use crate::profiles::ProfileStore;
 use crate::wayland;
 use crate::xrandr::command;
-use crate::xrandr::script::{self, line_diff, profile_path, save_text};
 
 use super::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, SavePlan};
 
@@ -43,7 +44,7 @@ pub struct Settings {
     pub hooks: Vec<String>,
     /// How long each hook may run before it is stopped.
     pub hook_timeout: Duration,
-    /// Where profiles live. Unset, `w` and `e` only report that.
+    /// Where screenlayout scripts live (X11). Unset, `w` and `e` only report that.
     pub layouts_dir: Option<PathBuf>,
     /// The program a Wayland `revert.sh` runs (`PROGRAM restore -`): outlay itself. Unset, it
     /// is `outlay` on `PATH`.
@@ -209,49 +210,49 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn layouts_dir(&mut self) -> Option<PathBuf> {
-        if self.settings.layouts_dir.is_none() {
-            self.app
-                .say(Severity::Warning, "No layouts directory is set.");
+    /// Where profiles live for the display server the editor shows; says why when there is no
+    /// such place.
+    fn store(&mut self) -> Option<ProfileStore> {
+        let kind = self.app.snap.caps.kind;
+        match ProfileStore::for_kind(kind, self.settings.layouts_dir.as_deref()) {
+            Ok(store) => Some(store),
+            Err(why) => {
+                self.app.say(Severity::Warning, why);
+                None
+            }
         }
-        self.settings.layouts_dir.clone()
     }
 
     fn list_profiles(&mut self) {
-        let Some(dir) = self.layouts_dir() else {
+        let Some(store) = self.store() else {
             return;
         };
-        let paths = match script::list_profiles(&dir) {
-            Ok(paths) => paths,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+        let stored = match store.list() {
+            Ok(stored) => stored,
             Err(err) => {
-                let text = format!("Could not read {}: {err}.", tilde(&dir));
+                let text = format!("Could not read {}: {err}.", tilde(store.location()));
                 self.app.say(Severity::Error, text);
                 return;
             }
         };
-        let items = paths
+        let items = stored
             .into_iter()
-            .filter_map(|path| {
-                let text = std::fs::read_to_string(&path).ok()?;
-                Some(ProfileItem::new(&self.app.snap, path, &text))
-            })
+            .map(|s| ProfileItem::new(&self.app.snap, s))
             .collect();
-        self.app.open_profiles(items, &tilde(&dir));
+        self.app.open_profiles(items, &tilde(store.location()));
     }
 
     fn open_profile(&mut self, name: &str) {
-        let Some(dir) = self.layouts_dir() else {
+        let Some(store) = self.store() else {
             return;
         };
-        let path = profile_path(&dir, name);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let item = ProfileItem::new(&self.app.snap, path, &text);
+        match store.read(name) {
+            Ok(stored) => {
+                let item = ProfileItem::new(&self.app.snap, stored);
                 self.app.open_profile(item);
             }
             Err(err) => {
-                let text = format!("Could not read {}: {err}.", tilde(&path));
+                let text = err.sentence(&tilde(err.path()));
                 self.app.say(Severity::Error, text);
             }
         }
@@ -260,44 +261,43 @@ impl<'a> Session<'a> {
     /// Saves the pending layout. An existing file keeps its other lines; when the result
     /// differs from it, the editor asks first and shows the diff.
     fn save_profile(&mut self, name: &str) {
-        let Some(dir) = self.layouts_dir() else {
+        let Some(store) = self.store() else {
             return;
         };
-        let path = profile_path(&dir, name);
-        let old = match std::fs::read_to_string(&path) {
-            Ok(text) => Some(text),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        let save = match store.save(name, &self.app.layout) {
+            Ok(save) => save,
             Err(err) => {
-                let text = format!("Could not read {}: {err}.", tilde(&path));
+                let text = err.sentence(&tilde(err.path()));
                 self.app.say(Severity::Error, text);
                 return;
             }
         };
-        let command = command::script_command(&self.app.layout);
-        let text = save_text(old.as_deref(), &command);
-        match old {
-            Some(old) if old == text => {
-                let text = format!("{} is up to date.", tilde(&path));
+        match save.old {
+            Some(old) if old == save.text => {
+                let text = format!("{} is up to date.", tilde(&save.path));
                 self.app.say(Severity::Info, text);
             }
             Some(old) => self.app.confirm_overwrite(SavePlan {
-                diff: line_diff(&old, &text),
-                path,
-                text,
+                diff: line_diff(&old, &save.text),
+                name: save.name,
+                path: save.path,
+                text: save.text,
             }),
             None => self.write_profile(&SavePlan {
-                path,
-                text,
+                name: save.name,
+                path: save.path,
+                text: save.text,
                 diff: Vec::new(),
             }),
         }
     }
 
     fn write_profile(&mut self, plan: &SavePlan) {
-        match script::write_atomic(&plan.path, &plan.text, 0o755) {
-            Ok(()) => self
-                .app
-                .saved(script::profile_name(&plan.path), &tilde(&plan.path)),
+        let Some(store) = self.store() else {
+            return;
+        };
+        match store.write(&plan.path, &plan.text) {
+            Ok(()) => self.app.saved(plan.name.clone(), &tilde(&plan.path)),
             Err(err) => {
                 let text = format!("Could not write {}: {err}.", tilde(&plan.path));
                 self.app.say(Severity::Error, text);
@@ -342,7 +342,7 @@ impl<'a> Session<'a> {
                     )
                 }
             };
-            if let Err(err) = script::write_atomic(path, &text, 0o755) {
+            if let Err(err) = write_atomic(path, &text, 0o755) {
                 self.app.report(
                     "Apply failed",
                     vec![format!(

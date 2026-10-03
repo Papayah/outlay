@@ -1,54 +1,18 @@
 //! Screenlayout profiles: arandr-style `#!/bin/sh` scripts of xrandr calls, as kept in
 //! `~/.screenlayout`. Parsing is lenient, like the shell running the script: what outlay does not
-//! understand becomes a warning. Links are not stored; loading infers them from the positions.
+//! understand becomes a warning. A script reads into the neutral [`Profile`].
 
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use crate::model::geometry::{Point, Rect};
-use crate::model::layout::{Layout, OutputState};
-use crate::model::links::{Align, Link, Side, place};
-use crate::model::{Mode, ModeId, Reflection, Rotation, Scaling, Snapshot, Transform};
+use crate::model::geometry::Point;
+use crate::model::links::Side;
+pub use crate::model::profile::{Entry, Profile, Remap};
+use crate::model::profile::{ModeRequest, Target};
+use crate::model::{Reflection, Rotation, Scaling, Transform};
 
 use super::command;
-
-/// What a profile says about one output. Later options win when an output repeats.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Entry {
-    pub name: String,
-    pub off: bool,
-    /// `--auto` or `--preferred`: the preferred mode.
-    pub auto: bool,
-    /// A mode name, or an XID such as `0x1c3`.
-    pub mode: Option<String>,
-    pub rate: Option<f64>,
-    pub pos: Option<Point>,
-    pub rotation: Option<Rotation>,
-    pub reflection: Option<Reflection>,
-    pub transform: Option<Transform>,
-    pub filter: Option<String>,
-    /// `--left-of X` and friends; `--same-as X` is `Side::Same`.
-    pub relative: Option<(Side, String)>,
-}
-
-/// A parsed profile.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Profile {
-    /// In order of first mention.
-    pub entries: Vec<Entry>,
-    /// `Some(Some(name))` for `--primary`, `Some(None)` for `--noprimary`.
-    pub primary: Option<Option<String>>,
-    pub warnings: Vec<String>,
-    /// How many xrandr calls the script makes.
-    pub calls: usize,
-}
-
-/// A requested rate this close to the one found is the same rate (60.00 and 59.94).
-const RATE_TOLERANCE: f64 = 0.5;
-
-/// Where each profile output that is not connected goes: a connected output, or nowhere.
-pub type Remap = Vec<(String, Option<usize>)>;
 
 /// Options outlay reads.
 const UNDERSTOOD: &[&str] = &[
@@ -197,6 +161,17 @@ fn parse_pos(v: &str) -> Option<Point> {
     Some(Point::new(x.parse().ok()?, y.parse().ok()?))
 }
 
+/// `--mode`: an XID such as `0x1c3`, else a mode name.
+fn parse_mode(v: &str) -> ModeRequest {
+    match v
+        .strip_prefix("0x")
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+    {
+        Some(xid) => ModeRequest::Xid(xid),
+        None => ModeRequest::Name(v.to_owned()),
+    }
+}
+
 fn parse_scale(v: &str) -> Option<Transform> {
     let (sx, sy) = v.split_once('x').unwrap_or((v, v));
     let (sx, sy): (f64, f64) = (sx.parse().ok()?, sy.parse().ok()?);
@@ -210,9 +185,10 @@ fn parse_scale(v: &str) -> Option<Transform> {
 }
 
 impl Profile {
-    /// Parses a script. It never fails: what cannot be read becomes a warning.
+    /// Parses a screenlayout script. It never fails: what cannot be read becomes a warning.
     pub fn parse(text: &str) -> Profile {
         let mut profile = Profile::default();
+        let mut calls = 0;
         for range in logical_lines(text) {
             let line = &text[range];
             let cmds = match commands(line) {
@@ -226,12 +202,12 @@ impl Profile {
             };
             for cmd in &cmds {
                 if let Some(args) = xrandr_args(cmd) {
-                    profile.calls += 1;
+                    calls += 1;
                     profile.read_call(args);
                 }
             }
         }
-        if profile.calls == 0 {
+        if calls == 0 {
             profile
                 .warnings
                 .push("The script does not call xrandr.".to_owned());
@@ -240,13 +216,11 @@ impl Profile {
     }
 
     fn entry(&mut self, name: &str) -> &mut Entry {
-        match self.entries.iter().position(|e| e.name == name) {
+        let named = |e: &Entry| matches!(&e.target, Target::Name(n) if n == name);
+        match self.entries.iter().position(named) {
             Some(k) => &mut self.entries[k],
             None => {
-                self.entries.push(Entry {
-                    name: name.to_owned(),
-                    ..Entry::default()
-                });
+                self.entries.push(Entry::named(name));
                 self.entries.last_mut().expect("just pushed")
             }
         }
@@ -306,20 +280,17 @@ impl Profile {
                 match arg {
                     "--off" => {
                         e.off = true;
-                        e.auto = false;
                         e.mode = None;
                         e.rate = None;
                     }
                     "--auto" | "--preferred" => {
                         e.off = false;
-                        e.auto = true;
-                        e.mode = None;
+                        e.mode = Some(ModeRequest::Preferred);
                     }
                     "--primary" => {}
                     "--mode" => {
                         e.off = false;
-                        e.auto = false;
-                        e.mode = Some(value.clone());
+                        e.mode = Some(parse_mode(&value));
                     }
                     "--rate" | "--refresh" => match value.parse::<f64>() {
                         Ok(r) if r.is_finite() && r > 0.0 => e.rate = Some(r),
@@ -341,11 +312,11 @@ impl Profile {
                         None => invalid = Some("reflection"),
                     },
                     "--scale" => match parse_scale(&value) {
-                        Some(t) => e.transform = Some(t),
+                        Some(t) => e.scaling = Some(Scaling::X11(t)),
                         None => invalid = Some("scale"),
                     },
                     "--transform" => match super::parse_transform_arg(&value) {
-                        Some(t) => e.transform = Some(t),
+                        Some(t) => e.scaling = Some(Scaling::X11(t)),
                         None => invalid = Some("transform"),
                     },
                     "--filter" => e.filter = Some(value.clone()),
@@ -371,249 +342,6 @@ impl Profile {
             }
         }
     }
-
-    fn turns_on(entry: &Entry) -> bool {
-        !entry.off
-    }
-
-    /// Profile outputs that would be on but are not connected: they need a remap.
-    pub fn unmatched(&self, snap: &Snapshot) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|e| Self::turns_on(e))
-            .filter(|e| {
-                snap.find(&e.name)
-                    .is_none_or(|i| !snap.outputs[i].is_connected())
-            })
-            .map(|e| e.name.clone())
-            .collect()
-    }
-
-    /// Connected outputs the profile does not turn on: the ones a remap may use.
-    pub fn free_outputs(&self, snap: &Snapshot) -> Vec<usize> {
-        snap.numbered()
-            .into_iter()
-            .filter(|&i| snap.outputs[i].is_connected())
-            .filter(|&i| {
-                !self
-                    .entries
-                    .iter()
-                    .any(|e| Self::turns_on(e) && e.name == snap.outputs[i].name)
-            })
-            .collect()
-    }
-
-    /// The remap dialog's starting point: each unmatched output goes to a free output with the
-    /// same connector prefix (`eDP-2` → `eDP-1`) that no earlier one took, else nowhere.
-    pub fn default_remap(&self, snap: &Snapshot) -> Remap {
-        let free = self.free_outputs(snap);
-        let mut taken: Vec<usize> = Vec::new();
-        self.unmatched(snap)
-            .into_iter()
-            .map(|name| {
-                let pick = free.iter().copied().find(|&i| {
-                    !taken.contains(&i) && connector(&snap.outputs[i].name) == connector(&name)
-                });
-                taken.extend(pick);
-                (name, pick)
-            })
-            .collect()
-    }
-
-    /// The output a profile name stands for on `snap`, after the remap.
-    fn index_of(&self, snap: &Snapshot, remap: &Remap, name: &str) -> Option<usize> {
-        if let Some((_, to)) = remap.iter().find(|(from, _)| from == name) {
-            return *to;
-        }
-        snap.find(name)
-    }
-
-    /// The layout this profile describes on `snap`, with `remap` for the outputs that are not
-    /// connected, and notes about everything that did not fit.
-    pub fn layout(&self, snap: &Snapshot, remap: &Remap) -> (Layout, Vec<String>) {
-        let live = Layout::inferred(snap);
-        let mut states: Vec<OutputState> = live.outputs.clone();
-        let mut notes = self.warnings.clone();
-
-        // Outputs named directly first, remapped ones after, so a remap overrides an --off.
-        let mut targets: Vec<(usize, &Entry)> = Vec::new();
-        for e in &self.entries {
-            let direct = snap
-                .find(&e.name)
-                .filter(|&i| snap.outputs[i].is_connected() || e.off);
-            if let Some(i) = direct.filter(|_| !remap.iter().any(|(from, _)| *from == e.name)) {
-                targets.push((i, e));
-            }
-        }
-        for (from, to) in remap {
-            let Some(e) = self.entries.iter().find(|e| e.name == *from) else {
-                continue;
-            };
-            match to {
-                Some(i) => {
-                    targets.retain(|(k, _)| k != i);
-                    targets.push((*i, e));
-                }
-                None => notes.push(format!("{from} is not connected; skipped.")),
-            }
-        }
-
-        for &(i, e) in &targets {
-            if live.locked[i] {
-                notes.push(format!(
-                    "{} uses panning; outlay leaves it as it is.",
-                    snap.outputs[i].name
-                ));
-                continue;
-            }
-            let st = &mut states[i];
-            if e.off {
-                st.enabled = false;
-                st.primary = false;
-                continue;
-            }
-            let out = &snap.outputs[i];
-            let was_on = st.enabled;
-            let keep = st.mode.clone().filter(|m| out.mode(m.id).is_some());
-            let mode: Option<Mode> = match &e.mode {
-                Some(m) => m
-                    .strip_prefix("0x")
-                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                    .and_then(|xid| out.mode(ModeId::from_xid(xid)))
-                    .or_else(|| out.find_mode(m, e.rate))
-                    .cloned(),
-                None if e.auto => out.preferred_mode().cloned(),
-                None => {
-                    let base = keep.or_else(|| out.preferred_mode().cloned());
-                    match (base, e.rate) {
-                        (Some(b), Some(r)) => out
-                            .rates(b.width, b.height)
-                            .into_iter()
-                            .min_by(|x, y| (x.refresh - r).abs().total_cmp(&(y.refresh - r).abs()))
-                            .cloned()
-                            .or(Some(b)),
-                        (base, _) => base,
-                    }
-                }
-            };
-            let mode = match mode {
-                Some(m) => m,
-                None => {
-                    let Some(preferred) = out.preferred_mode().cloned() else {
-                        notes.push(format!("{} lists no modes; skipped.", out.name));
-                        continue;
-                    };
-                    notes.push(format!(
-                        "{} has no mode {}; using {}.",
-                        out.name,
-                        e.mode.as_deref().unwrap_or("?"),
-                        preferred.summary()
-                    ));
-                    preferred
-                }
-            };
-            if let Some(r) = e.rate
-                && (mode.refresh - r).abs() > RATE_TOLERANCE
-            {
-                notes.push(format!(
-                    "{} has no {r:.2} Hz at {}x{}; using {:.2} Hz.",
-                    out.name, mode.width, mode.height, mode.refresh
-                ));
-            }
-            st.enabled = true;
-            st.mode = Some(mode);
-            st.pos = e
-                .pos
-                .unwrap_or(if was_on { st.pos } else { Point::default() });
-            if let Some(r) = e.rotation {
-                st.rotation = r;
-            }
-            if let Some(r) = e.reflection {
-                st.reflection = r;
-            }
-            if let Some(t) = &e.transform {
-                st.scaling = Scaling::X11(t.clone());
-            }
-            if let (Some(f), Scaling::X11(t)) = (&e.filter, &mut st.scaling)
-                && !t.is_identity()
-            {
-                t.filter = f.clone();
-            }
-        }
-
-        match &self.primary {
-            Some(Some(name)) => match self.index_of(snap, remap, name) {
-                Some(p) if states[p].enabled => {
-                    for (k, st) in states.iter_mut().enumerate() {
-                        st.primary = k == p;
-                    }
-                }
-                _ => {}
-            },
-            Some(None) => states.iter_mut().for_each(|st| st.primary = false),
-            None => {}
-        }
-
-        // Relative placement, as xrandr does it: next to the parent, edges aligned at the start.
-        let mut sticks: Vec<(usize, usize, Side)> = Vec::new();
-        let relative: Vec<(usize, Side, &str)> = targets
-            .iter()
-            .filter_map(|&(i, e)| e.relative.as_ref().map(|(s, p)| (i, *s, p.as_str())))
-            .filter(|&(i, _, _)| states[i].enabled)
-            .collect();
-        let mut placed: Vec<usize> = Vec::new();
-        for _ in 0..relative.len() {
-            for &(c, side, parent) in &relative {
-                if placed.contains(&c) {
-                    continue;
-                }
-                let Some(p) = self
-                    .index_of(snap, remap, parent)
-                    .filter(|&p| states[p].enabled && p != c)
-                else {
-                    continue;
-                };
-                let waits = relative.iter().any(|&(o, _, _)| o == p) && !placed.contains(&p);
-                if waits {
-                    continue;
-                }
-                let link = Link {
-                    parent: p,
-                    side,
-                    align: Align::Start,
-                    offset: 0,
-                };
-                let parent_rect = Rect::from_parts(states[p].pos, states[p].size());
-                states[c].pos = place(states[c].size(), parent_rect, &link);
-                sticks.push((c, p, side));
-                placed.push(c);
-            }
-        }
-        for &(c, _, parent) in &relative {
-            if !placed.contains(&c) {
-                notes.push(format!(
-                    "{}: cannot place it next to {parent}; it stays at {},{}.",
-                    snap.outputs[c].name, states[c].pos.x, states[c].pos.y
-                ));
-            }
-        }
-
-        if !states.iter().any(|s| s.enabled) {
-            notes.push("The profile turns every display off; keeping the live layout.".to_owned());
-            return (live, notes);
-        }
-        let (layout, more) = Layout::from_states(snap, states, &sticks);
-        notes.extend(more);
-        (layout, notes)
-    }
-}
-
-/// The connector type of an output name: `eDP` for `eDP-1`, `DP` for `DP-1-2.1`.
-pub fn connector(name: &str) -> &str {
-    let end = name
-        .find(|c: char| !c.is_ascii_alphabetic())
-        .unwrap_or(name.len());
-    &name[..end]
 }
 
 /// `<dir>/<name>.sh`, or `name` itself when it contains `/` or ends in `.sh`.
@@ -706,59 +434,6 @@ pub fn save_text(old: Option<&str>, command: &str) -> String {
     out
 }
 
-/// A line diff from `old` to `new`: kept lines start with two spaces, removed ones with `- `,
-/// added ones with `+ `.
-pub fn line_diff(old: &str, new: &str) -> Vec<String> {
-    let a: Vec<&str> = old.lines().collect();
-    let b: Vec<&str> = new.lines().collect();
-    // Longest common subsequence, filled from the end.
-    let mut lcs = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for i in (0..a.len()).rev() {
-        for j in (0..b.len()).rev() {
-            lcs[i][j] = if a[i] == b[j] {
-                lcs[i + 1][j + 1] + 1
-            } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
-        }
-    }
-    let (mut i, mut j) = (0, 0);
-    let mut out = Vec::new();
-    while i < a.len() || j < b.len() {
-        if i < a.len() && j < b.len() && a[i] == b[j] {
-            out.push(format!("  {}", a[i]));
-            i += 1;
-            j += 1;
-        } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
-            out.push(format!("- {}", a[i]));
-            i += 1;
-        } else {
-            out.push(format!("+ {}", b[j]));
-            j += 1;
-        }
-    }
-    out
-}
-
-/// Writes a file atomically: a temporary file next to it, then a rename. A new file gets
-/// `mode`; an existing one keeps its permissions.
-pub fn write_atomic(path: &Path, text: &str, mode: u32) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)?;
-    }
-    let permissions = match std::fs::metadata(path) {
-        Ok(meta) => meta.permissions(),
-        Err(_) => std::fs::Permissions::from_mode(mode),
-    };
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".outlay-tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, text)?;
-    std::fs::set_permissions(&tmp, permissions)?;
-    std::fs::rename(&tmp, path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,16 +474,19 @@ mod tests {
              --reflect xy --primary --output B --off --output A --scale 1.5 --output B --auto \
              --right-of A --output C --same-as A --dpi 96 --frob\n",
         );
-        assert_eq!(p.calls, 1);
         let a = &p.entries[0];
-        assert_eq!(a.mode.as_deref(), Some("1920x1080"));
+        assert_eq!(a.target, Target::Name("A".to_owned()));
+        assert_eq!(a.mode, Some(ModeRequest::Name("1920x1080".to_owned())));
         assert_eq!(a.rate, Some(60.0));
         assert_eq!(a.pos, Some(Point::new(10, -5)));
         assert_eq!(a.rotation, Some(Rotation::Left));
         assert_eq!(a.reflection, Some(Reflection::XY));
-        assert_eq!(a.transform, Some(Transform::scale(1.5, 1.5)));
+        assert_eq!(a.scaling, Some(Scaling::X11(Transform::scale(1.5, 1.5))));
         let b = &p.entries[1];
-        assert!(!b.off && b.auto, "--auto after --off turns it on: {b:?}");
+        assert!(
+            !b.off && b.mode == Some(ModeRequest::Preferred),
+            "--auto after --off turns it on: {b:?}"
+        );
         assert_eq!(b.relative, Some((Side::RightOf, "A".to_owned())));
         assert_eq!(p.entries[2].relative, Some((Side::Same, "A".to_owned())));
         assert_eq!(p.primary, Some(Some("A".to_owned())));
@@ -837,11 +515,17 @@ mod tests {
     }
 
     #[test]
-    fn connectors_and_paths() {
-        assert_eq!(connector("eDP-2"), "eDP");
-        assert_eq!(connector("DP-1-2.1"), "DP");
-        assert_eq!(connector("DVI-I-2-1"), "DVI");
-        assert_eq!(connector("HDMI-1-0"), "HDMI");
+    fn modes_by_name_or_xid() {
+        let p = Profile::parse("xrandr --output A --mode 0x1c3 --output B --mode 0xZZ");
+        assert_eq!(p.entries[0].mode, Some(ModeRequest::Xid(0x1c3)));
+        assert_eq!(
+            p.entries[1].mode,
+            Some(ModeRequest::Name("0xZZ".to_owned()))
+        );
+    }
+
+    #[test]
+    fn paths() {
         let dir = Path::new("/layouts");
         assert_eq!(profile_path(dir, "home"), Path::new("/layouts/home.sh"));
         assert_eq!(profile_path(dir, "x/home"), Path::new("x/home"));
@@ -871,29 +555,5 @@ mod tests {
             "{appended}"
         );
         assert!(appended.ends_with("xrandr --output A --auto\n"));
-    }
-
-    #[test]
-    fn line_diffs() {
-        assert_eq!(
-            line_diff("a\nb\nc\n", "a\nx\nc\nd\n"),
-            ["  a", "- b", "+ x", "  c", "+ d"]
-        );
-        assert_eq!(line_diff("", "a"), ["+ a"]);
-    }
-
-    #[test]
-    fn atomic_writes_keep_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("outlay-atomic-{}", std::process::id()));
-        let path = dir.join("nested").join("p.sh");
-        write_atomic(&path, "one\n", 0o755).unwrap();
-        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&path), 0o755);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        write_atomic(&path, "two\n", 0o755).unwrap();
-        assert_eq!(mode(&path), 0o700);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

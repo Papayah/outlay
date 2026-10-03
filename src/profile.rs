@@ -7,22 +7,20 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
 use crate::backend::{Backend, Plan, command_text};
 use crate::cli::Cli;
 use crate::config::Config;
+use crate::files::line_diff;
+use crate::model::Kind;
 use crate::model::layout::Layout;
 use crate::model::validate::{Severity, validate};
-use crate::model::{Kind, Snapshot};
-use crate::tui::app::{
-    App, ApplyRequest, Effect, NO_WAYLAND_PROFILES, ProfileItem, RevertReason, UiMode,
-};
+use crate::profiles::{ProfileStore, Save};
+use crate::tui::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, UiMode};
 use crate::tui::confine;
 use crate::tui::session::{Input, Session, tilde};
-use crate::xrandr::command;
-use crate::xrandr::script::{line_diff, profile_path, save_text, write_atomic};
 
 /// Writes a line to stderr. After a SIGHUP there is no terminal, and `eprintln!` would panic.
 fn say(text: impl AsRef<str>) {
@@ -37,22 +35,17 @@ impl Input for Lines {
     fn drain(&mut self) {}
 }
 
-/// Profiles are screenlayout scripts, which only X11 runs.
-fn refuse_wayland(snap: &Snapshot) -> Result<()> {
-    if snap.caps.kind == Kind::Wayland {
-        bail!("{}", NO_WAYLAND_PROFILES.trim_end_matches('.'));
-    }
-    Ok(())
+/// Where profiles live for this kind of display server.
+fn store(cli: &Cli, config: &Config, kind: Kind) -> Result<ProfileStore> {
+    let dir = cli.layouts_dir(config);
+    ProfileStore::for_kind(kind, Some(&dir)).map_err(|why| anyhow!("{}", why.trim_end_matches('.')))
 }
 
 /// `outlay apply PROFILE`
 pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> Result<()> {
     let snap = backend.query()?;
-    refuse_wayland(&snap)?;
-    let path = profile_path(&cli.layouts_dir(config), name);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("could not read {}", path.display()))?;
-    let item = ProfileItem::new(&snap, path, &text);
+    let stored = store(cli, config, snap.caps.kind)?.read(name)?;
+    let item = ProfileItem::new(&snap, stored);
     let remap = item.profile.default_remap(&snap);
     for (from, to) in &remap {
         if let Some(i) = to {
@@ -189,15 +182,11 @@ pub fn save(
     force: bool,
 ) -> Result<()> {
     let snap = backend.query()?;
-    refuse_wayland(&snap)?;
+    let store = store(cli, config, snap.caps.kind)?;
     let layout = Layout::inferred(&snap);
-    let path = profile_path(&cli.layouts_dir(config), name);
-    let old = match std::fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("could not read {}", path.display())),
-    };
-    let text = save_text(old.as_deref(), &command::script_command(&layout));
+    let Save {
+        path, old, text, ..
+    } = store.save(name, &layout)?;
     if cli.dry_run {
         print!("{text}");
         return Ok(());
@@ -226,7 +215,8 @@ pub fn save(
             }
         }
     }
-    write_atomic(&path, &text, 0o755)
+    store
+        .write(&path, &text)
         .with_context(|| format!("could not write {}", path.display()))?;
     say(format!("Saved {}.", tilde(&path)));
     Ok(())
