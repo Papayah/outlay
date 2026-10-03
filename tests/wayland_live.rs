@@ -577,3 +577,34 @@ fn kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload() {
     kanshi.applied(&sway, 4);
     assert_eq!(backend.query().unwrap(), live, "{}", kanshi.log());
 }
+
+/// Up to wlroots 0.20.2, a client that bound while a custom-mode head was off aborts the
+/// compositor when it turns that head on again while another client still holds the head's old
+/// virtual mode. `revert.sh` runs `outlay restore`, such a client, so the panic hook hangs up
+/// on the compositor first.
+#[test]
+fn hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on() {
+    let Some(sway) = Sway::start(2) else { return };
+    let backend = connect(&sway);
+    let before = backend.query().unwrap();
+    let script = sway.runtime.join("revert.sh");
+    let program = std::path::Path::new(env!("CARGO_BIN_EXE_outlay"));
+    std::fs::write(&script, outlay::wayland::revert_script(program, &before)).unwrap();
+    // The editor turns HEADLESS-2 off and still holds its virtual mode.
+    assert!(
+        backend
+            .apply(&plan(vec![off("HEADLESS-2")]))
+            .unwrap()
+            .success
+    );
+    // Without this, sway 1.12 (wlroots 0.20.2) dies: head_send_state: Assertion `found' failed.
+    backend.hang_up();
+    let out = sway.command("sh").arg(&script).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        sway.log()
+    );
+    assert_eq!(connect(&sway).query().unwrap(), before, "{}", sway.log());
+}

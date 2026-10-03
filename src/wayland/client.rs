@@ -9,9 +9,11 @@
 //! own) is never sent back.
 
 use std::collections::HashMap;
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -122,6 +124,29 @@ struct Inner {
 /// The compositor, through `zwlr_output_manager_v1`.
 pub struct WlrBackend {
     inner: Mutex<Inner>,
+    /// A second handle on the connection's socket, to hang up with.
+    socket: UnixStream,
+    /// Which backend [`LIVE`] belongs to.
+    id: usize,
+}
+
+/// The socket of the backend connected last, for [`hang_up`], with that backend's id. It is a
+/// second handle, so the backend's drop takes it out: it would keep the connection open.
+static LIVE: Mutex<Option<(usize, UnixStream)>> = Mutex::new(None);
+
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+/// Ends the connection of the backend connected last, if it still exists, so the compositor
+/// drops this client and everything it holds. The panic hook calls it before `revert.sh`, whose
+/// `outlay restore` is another client: up to wlroots 0.20.2, a client that turns a custom-mode
+/// head back on aborts the compositor while another client still holds that head's old virtual
+/// mode. Only shuts the socket down, never closes it, and never waits for a lock.
+pub fn hang_up() {
+    if let Ok(live) = LIVE.try_lock()
+        && let Some((_, socket)) = live.as_ref()
+    {
+        let _ = socket.shutdown(Shutdown::Both);
+    }
 }
 
 impl WlrBackend {
@@ -129,6 +154,12 @@ impl WlrBackend {
     pub fn connect(path: &Path) -> Result<Self, ConnectError> {
         let stream =
             UnixStream::connect(path).map_err(|err| ConnectError::NoCompositor(err.to_string()))?;
+        let second = || {
+            stream
+                .try_clone()
+                .map_err(|err| ConnectError::NoCompositor(err.to_string()))
+        };
+        let (socket, live) = (second()?, second()?);
         let conn = Connection::from_socket(stream)
             .map_err(|err| ConnectError::NoCompositor(err.to_string()))?;
         let (globals, mut queue) = registry_queue_init::<State>(&conn)
@@ -152,13 +183,22 @@ impl WlrBackend {
         queue
             .roundtrip(&mut state)
             .map_err(|err| ConnectError::NoCompositor(err.to_string()))?;
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, live));
         Ok(Self {
             inner: Mutex::new(Inner {
                 queue,
                 state,
                 manager,
             }),
+            socket,
+            id,
         })
+    }
+
+    /// Ends this connection, as [`hang_up`] does for the one connected last.
+    pub fn hang_up(&self) {
+        let _ = self.socket.shutdown(Shutdown::Both);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -171,6 +211,15 @@ impl WlrBackend {
     pub fn configure_without_roundtrip(&self, plan: &Plan, test: bool) -> Result<Configured> {
         let mut inner = self.lock();
         inner.configure(plan, test, false)
+    }
+}
+
+impl Drop for WlrBackend {
+    fn drop(&mut self) {
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        if live.as_ref().is_some_and(|(id, _)| *id == self.id) {
+            *live = None;
+        }
     }
 }
 
@@ -687,5 +736,30 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn hanging_up_ends_the_live_connection_without_closing_it() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        *LIVE.lock().unwrap() = Some((usize::MAX, ours.try_clone().unwrap()));
+        hang_up();
+        let mut buf = [0u8; 1];
+        assert_eq!(
+            theirs.read(&mut buf).unwrap(),
+            0,
+            "the other end sees the end"
+        );
+        assert!(
+            ours.try_clone().is_ok(),
+            "the descriptor is still open: its owner closes it"
+        );
+        *LIVE.lock().unwrap() = None;
+        hang_up();
     }
 }
