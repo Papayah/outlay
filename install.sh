@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install or update outlay, the keyboard-driven xrandr layout editor.
+# Install or update outlay, the keyboard-driven monitor layout editor.
 #
 #   curl -fsSL https://github.com/Papayah/outlay/releases/latest/download/install.sh | sh
 #
@@ -174,7 +174,7 @@ uninstall() {
 detect_target() {
     os=$(uname -s) || os=unknown
     if [ "$os" != Linux ]; then
-        die "outlay runs on Linux with X11; this system is $os"
+        die "outlay runs on Linux with X11 or a wlroots-based Wayland compositor; this system is $os"
     fi
     arch=$(uname -m) || arch=unknown
     case $arch in
@@ -362,8 +362,9 @@ main() {
     esac
     install_completions
     check_path || true
-    if ! command -v xrandr >/dev/null 2>&1; then
-        say "outlay needs the xrandr program: xorg-xrandr on Arch, x11-xserver-utils on Debian and Ubuntu, xrandr elsewhere" || true
+    # On Wayland outlay talks to the compositor itself.
+    if [ -z "${WAYLAND_DISPLAY:-}" ] && ! command -v xrandr >/dev/null 2>&1; then
+        say "on X11, outlay needs the xrandr program: xorg-xrandr on Arch, x11-xserver-utils on Debian and Ubuntu, xrandr elsewhere" || true
     fi
 }
 
