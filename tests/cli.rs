@@ -373,6 +373,17 @@ fn the_wayland_demo() {
 }
 
 #[test]
+fn show_names_wayland_transforms_as_the_compositor_does() {
+    let (ok, stdout, stderr) = outlay(&["show", "--from-file", &wayland_fixture("rotated")]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains("\n1  DP-1      1920x1080 @ 60.00   0,0       90 (left)    "),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  flipped-270 (right)  "), "{stdout}");
+}
+
+#[test]
 fn dump_prints_the_capture_a_fixture_came_from() {
     let path = wayland_fixture("rotated");
     let (ok, stdout, stderr) = outlay(&["dump", "--from-file", &path]);

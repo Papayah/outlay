@@ -11,62 +11,13 @@ pub use client::WlrBackend;
 use std::cmp::Ordering;
 use std::path::Path;
 
-use crate::model::{Reflection, Rotation, Snapshot};
+use crate::model::Snapshot;
+pub use crate::model::orientation::{
+    TRANSFORMS, parse_transform, transform_from_value, transform_name, transform_value,
+};
 
 /// The built-in fixture behind `--demo=wayland`.
 pub const DEMO: &str = include_str!("../../tests/fixtures/wayland/demo.json");
-
-/// The `wl_output` transforms in protocol order (the index is the enum value), with the names
-/// `wlr-randr` and kanshi use, as outlay's rotation and reflection.
-///
-/// The protocol turns counter-clockwise, like RandR: `wayland.xml` defines `90` as "90 degrees
-/// counter-clockwise" and the flipped values as "an initial flip around a vertical axis followed
-/// by rotation", and XWayland's `wl_transform_to_xrandr` (`hw/xwayland/xwayland-output.c`) maps
-/// `90` to `RR_Rotate_90`, which xrandr calls `left`, and `flipped-90` to `RR_Reflect_X |
-/// RR_Rotate_90`. The test below checks the pixels through wlroots' `wlr_box_transform` and the X
-/// server's `RRTransformCompute`.
-///
-/// sway's own commands and `swaymsg -t get_outputs` name the turns the other way round
-/// (`sway/commands/output/transform.c`: "Sway uses clockwise transforms"): sway's `90` is the
-/// protocol's `270`.
-pub const TRANSFORMS: [(&str, Rotation, Reflection); 8] = [
-    ("normal", Rotation::Normal, Reflection::Normal),
-    ("90", Rotation::Left, Reflection::Normal),
-    ("180", Rotation::Inverted, Reflection::Normal),
-    ("270", Rotation::Right, Reflection::Normal),
-    ("flipped", Rotation::Normal, Reflection::X),
-    ("flipped-90", Rotation::Left, Reflection::X),
-    ("flipped-180", Rotation::Inverted, Reflection::X),
-    ("flipped-270", Rotation::Right, Reflection::X),
-];
-
-/// The protocol value of a rotation and a reflection. A reflection in `y` has no value of its
-/// own; [`crate::model::x_only`] turns it into one in `x`.
-pub fn transform_value(rotation: Rotation, reflection: Reflection) -> u32 {
-    let (rotation, reflection) = crate::model::x_only(rotation, reflection);
-    TRANSFORMS
-        .iter()
-        .position(|&(_, r, f)| r == rotation && f == reflection)
-        .expect("every rotation with no reflection or one in x has a transform") as u32
-}
-
-/// The name of a rotation and a reflection: `normal`, `90`, `flipped-270`.
-pub fn transform_name(rotation: Rotation, reflection: Reflection) -> &'static str {
-    TRANSFORMS[transform_value(rotation, reflection) as usize].0
-}
-
-/// The rotation and reflection of a transform name.
-pub fn parse_transform(name: &str) -> Option<(Rotation, Reflection)> {
-    TRANSFORMS
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .map(|&(_, r, f)| (r, f))
-}
-
-/// The rotation and reflection of a protocol value.
-pub fn transform_from_value(value: u32) -> Option<(Rotation, Reflection)> {
-    TRANSFORMS.get(value as usize).map(|&(_, r, f)| (r, f))
-}
 
 /// The `revert.sh` written before an apply on Wayland: it hands the state from before the apply,
 /// as a capture, to `outlay restore`, which applies it back. `program` is outlay itself.
@@ -125,7 +76,7 @@ fn natural(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::x_only;
+    use crate::model::{Reflection, Rotation, x_only};
 
     const W: i32 = 4;
     const H: i32 = 3;

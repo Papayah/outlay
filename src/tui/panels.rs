@@ -7,6 +7,7 @@ use ratatui::symbols::merge::MergeStrategy;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Widget, Wrap};
 
+use crate::model::orientation;
 use crate::model::{Kind, Reflection, Scaling};
 
 use super::app::{App, UiMode};
@@ -163,10 +164,16 @@ pub fn details(app: &App, area: Rect, buf: &mut Buffer) {
             _ => format!("pos   {},{}", st.pos.x, st.pos.y),
         };
         lines.push(Line::from(pos));
-        let mut rot = format!("rot   {}", st.rotation);
-        if st.reflection != Reflection::Normal {
-            rot.push_str(&format!(" · reflect {}", st.reflection));
-        }
+        let rot = match app.layout.caps.kind {
+            Kind::X11 if st.reflection != Reflection::Normal => {
+                format!("rot   {} · reflect {}", st.rotation, st.reflection)
+            }
+            Kind::X11 => format!("rot   {}", st.rotation),
+            Kind::Wayland => format!(
+                "rot   {}",
+                orientation::label(Kind::Wayland, st.rotation, st.reflection)
+            ),
+        };
         lines.push(Line::from(rot));
         if let Some(scale) = scale_line(app, i) {
             lines.push(Line::from(scale));

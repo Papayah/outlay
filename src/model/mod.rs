@@ -5,6 +5,7 @@ pub mod geometry;
 pub mod history;
 pub mod layout;
 pub mod links;
+pub mod orientation;
 pub mod profile;
 pub mod snap;
 pub mod validate;

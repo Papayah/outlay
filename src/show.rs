@@ -8,8 +8,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
 use crate::model::layout::{Layout, OutputState};
+use crate::model::orientation;
 use crate::model::validate::validate;
-use crate::model::{Kind, Output, Reflection, Snapshot};
+use crate::model::{Kind, Output, Snapshot};
 use crate::tui;
 use crate::tui::canvas::{self, Scene, Viewport};
 use crate::tui::theme::Theme;
@@ -125,12 +126,10 @@ pub fn list(snap: &Snapshot) -> String {
     text
 }
 
-/// `rotation`, plus a reflection and a scale badge when set: `left, reflect x ×1.5`.
-fn orientation(st: &OutputState) -> String {
-    let mut text = st.rotation.to_string();
-    if st.reflection != Reflection::Normal {
-        text.push_str(&format!(", reflect {}", st.reflection));
-    }
+/// The orientation, plus a scale badge when set: `left, reflect x ×1.5` on X11, `90 (left) 150%`
+/// on Wayland.
+fn orientation(st: &OutputState, kind: Kind) -> String {
+    let mut text = orientation::label(kind, st.rotation, st.reflection);
     if !st.scaling.is_identity() {
         match st.scaling.badge() {
             Some(badge) => text.push_str(&format!(" {badge}")),
@@ -345,7 +344,7 @@ fn table_rows(snap: &Snapshot) -> String {
                 [
                     mode,
                     format!("{},{}", st.pos.x, st.pos.y),
-                    orientation(st),
+                    orientation(st, snap.caps.kind),
                     layout.link_text(i),
                 ]
             }

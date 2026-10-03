@@ -1279,6 +1279,42 @@ fn wayland_has_no_primary_and_no_mirror() {
 }
 
 #[test]
+fn wayland_names_transforms_as_the_compositor_does() {
+    let mut app = wayland_demo();
+    press(&mut app, "1:rotate 90<Enter>");
+    let edp = ix(&app.layout, "eDP-1");
+    assert_eq!(
+        app.layout.outputs[edp].rotation,
+        outlay::model::Rotation::Left,
+        "90 is left"
+    );
+    let shown = text(&screen(&mut app, 120, 40));
+    assert!(shown.contains("rot   90 (left)"), "{shown}");
+    let diff: Vec<String> = app
+        .layout
+        .diff(&app.snap)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        diff.iter()
+            .any(|d| d.contains("transform normal → 90 (left)")),
+        "one transform, not a rotation and a reflection: {diff:?}"
+    );
+    press(&mut app, ":reflect x<Enter>");
+    let shown = text(&screen(&mut app, 120, 40));
+    assert!(
+        shown.contains("rot   flipped-90 (left)\n") || shown.contains("rot   flipped-90 (left) "),
+        "{shown}"
+    );
+    press(&mut app, ":rotate flipped-90<Enter>");
+    assert_eq!(
+        status(&app),
+        "usage: :rotate normal|left|right|inverted|90|180|270"
+    );
+}
+
+#[test]
 fn wayland_has_profiles_too() {
     let mut app = wayland_demo();
     assert_eq!(press(&mut app, "e"), [Effect::ListProfiles]);
