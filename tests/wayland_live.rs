@@ -346,6 +346,9 @@ fn the_editor_applies_waits_for_the_answer_and_reverts() {
     }
 
     let Some(sway) = Sway::start(2) else { return };
+    // sway 1.9 puts HEADLESS-1 first, 1.12 HEADLESS-2: pin them.
+    sway.swaymsg(&["output", "HEADLESS-2", "pos", "0", "0"]);
+    sway.swaymsg(&["output", "HEADLESS-1", "pos", "1280", "0"]);
     let backend = connect(&sway);
     let before = backend.query().unwrap();
     let revert = sway.runtime.join("state").join("revert.sh");
@@ -362,8 +365,8 @@ fn the_editor_applies_waits_for_the_answer_and_reverts() {
         }
         s.perform(&mut NoInput);
     };
-    // sway puts HEADLESS-2 left of HEADLESS-1. To 150 %, then rotated: it shrinks, and
-    // HEADLESS-1 follows it.
+    // HEADLESS-2 is left of HEADLESS-1. To 150 %, then rotated: it shrinks, and HEADLESS-1
+    // follows it.
     press(&mut session, "2>>o");
     press(&mut session, "a");
     let UiMode::ConfirmApply(preview) = &session.app.mode else {
