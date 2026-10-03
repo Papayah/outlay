@@ -649,10 +649,12 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Cause:** PRs are rebase-merged, so GitHub writes new commits on `main` (PR #9: `ae36cc6` on
   the branch became `67fd7a5` on `main`). `v0.1.0` sits on `main`'s commit, not the branch's.
 - **Fix:** open the release PR without a tag. After the merge, run `git switch main && git pull
-  --ff-only`, check that `git log -1` is `chore: release X.Y.Z`, then tag. Push the tag only on
-  the user's go-ahead (`CLAUDE.md`, "Releases"). Before 0.2.0, the bump also broke
-  `script_of_the_demo`, which had the version written out. Goldens take it from
-  `CARGO_PKG_VERSION` now; keep new ones that way.
+  --ff-only`, check that `Cargo.toml` says `version = "X.Y.Z"` and that CI on `main` passed,
+  then tag `main`'s head. The head need not be `chore: release X.Y.Z`: in 0.2.0 a
+  `docs: record traps` commit came after it, and `v0.2.0` sits on that. `release.yml` checks the
+  tag against `Cargo.toml` anyway. Push the tag only on the user's go-ahead (`CLAUDE.md`,
+  "Releases"). Before 0.2.0, the bump also broke `script_of_the_demo`, which had the version
+  written out. Goldens take it from `CARGO_PKG_VERSION` now; keep new ones that way.
 
 ## `sleep` suspends the machine
 
