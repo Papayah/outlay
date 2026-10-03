@@ -422,3 +422,96 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   compares, so the old value still passes.
 - **Fix:** diff the two files, then copy only the content lines into the old `.snap` (or set
   the header line back to the old value before renaming).
+
+## Wayland's `90` is xrandr's `left`, and sway names it `270`
+
+- **Symptom:** the plan expected X11 `right` ↔ Wayland `90`. A rotated head read back with the
+  wrong turn; `swaymsg -t get_outputs` reports a head outlay set to `90` as `"270"`.
+- **Cause:** the protocol's transforms turn counter-clockwise, like RandR (`wayland.xml`;
+  XWayland's `wl_transform_to_xrandr` maps `90` to `RR_Rotate_90`, which xrandr calls `left`).
+  sway's own config and IPC turn clockwise and invert the name
+  (`sway/commands/output/transform.c`, `sway/ipc-json.c`).
+- **Fix:** the table is `TRANSFORMS` in `src/wayland/mod.rs`, with a pixel-for-pixel test.
+  Check a head with `wlr-randr --json` or `outlay dump`, never with `swaymsg`, and remember that
+  `swaymsg output X transform 90` sets the protocol's `270`.
+
+## wlroots custom modes are one virtual mode object that changes size
+
+- **Symptom:** a headless head lists one mode with refresh 0; after an apply the same mode object
+  reports another size.
+- **Cause:** for a custom current mode, wlroots sends each client one virtual
+  `zwlr_output_mode_v1`, never `preferred`, with no `refresh` event while the rate is 0. A new
+  custom mode re-sends `size` and `refresh` on that same object (checked on the wire with sway
+  1.12 / wlroots 0.20.2, and in the source of 0.17 and master).
+- **Fix:** keep mode state per object and let events overwrite it. outlay marks a mode custom
+  when the capture says `"custom": true` or the rate is 0, sends a mode only when it changes, and
+  sends `set_custom_mode` when no mode object matches.
+
+## On sway the new state arrives before `succeeded`
+
+- **Symptom:** waiting for a `done` after `succeeded` timed out (a full second) on every apply.
+- **Cause:** sway sends the head events and `done` first, then `succeeded`.
+- **Fix:** count `done`s before sending `apply`, and after `succeeded` wait only while no new one
+  has come (`Inner::settle` in `src/wayland/client.rs`).
+
+## 1280x720 cannot tell truncation from rounding
+
+- **Symptom:** a test meant to pin the logical-size rounding passed with either rule.
+- **Cause:** 1280 and 720 divided by 1.25, 1.5 or 1.75 never leave a fraction above one half.
+- **Fix:** use a custom 1366x768 mode (`capture::mode(1366, 768, 60_000, false, true)`): at 1.5
+  it is 910x512 in `swaymsg -t get_outputs`, so sway truncates (wlroots'
+  `wlr_output_effective_resolution`).
+
+## `outlay restore` loses the connection: the compositor aborted
+
+- **Symptom:** "Lost the connection to the compositor: … Broken pipe" from `sh revert.sh` in a
+  live test; `Sway::log()` shows `head_send_state: Assertion 'found' failed`.
+- **Cause:** a wlroots bug up to 0.20.2 (fixed upstream by 40640950, 2026-09-30, unreleased): a
+  client that bound while a custom-mode head was disabled enables it again while another client
+  still holds that head's old virtual mode, and the compositor aborts.
+- **Fix:** nothing outlay can do for other clients. Tests close their own `WlrBackend` before
+  they run `revert.sh`. On a broken pipe, read sway's log before debugging outlay.
+
+## Headless sway accepts every `test`
+
+- **Symptom:** no configuration made `test` answer `failed`: 40000x40000, every head off, scale
+  0.01 all succeed.
+- **Fix:** cover a rejected test with the fake backend (`Fake::answering` in `tests/apply.rs`).
+  On a real GPU the result may differ.
+
+## Headless sway lists HEADLESS-2 first, at 0,0
+
+- **Symptom:** a test expected HEADLESS-2 right of HEADLESS-1.
+- **Cause:** wlroots sends heads newest first, and sway places HEADLESS-2 at 0,0 and HEADLESS-1
+  at 1280,0. outlay sorts heads, so display 1 is HEADLESS-1, the right one.
+- **Fix:** read positions from `connect(&sway).query()` before you write an expectation.
+
+## Live Wayland tests share one process
+
+- **Symptom:** connecting with `Connection::connect_to_env()` from a test reaches the wrong
+  compositor, or the developer's.
+- **Cause:** tests run in parallel threads, each with its own headless sway; the environment is
+  global (and `set_var` is unsafe in edition 2024).
+- **Fix:** `WlrBackend::connect(&sway.socket)` in-process, and `sway.command(program)` for
+  children, which sets `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and `SWAYSOCK` and removes `DISPLAY`.
+
+## A green `cargo test` does not mean the live tests ran
+
+- **Symptom:** `cargo test` passes with the same count whether sway runs or not.
+- **Cause:** without `OUTLAY_TEST_SWAY` each live test prints "skipped" and passes.
+- **Fix:** `OUTLAY_TEST_SWAY=$(command -v sway) cargo test --test wayland_live -- --nocapture`
+  and check that no "skipped" line appears.
+
+## Tracing the Wayland protocol
+
+- **Symptom:** an apply fails or the connection drops, and outlay's message says little.
+- **Fix:** `WAYLAND_DEBUG=1` traces outlay too (wayland-backend's Rust implementation honours
+  it), and `WAYLAND_DEBUG=1 wlr-randr …` traces the reference client. In a live test, the child
+  processes inherit the variable from `cargo test`.
+
+## `wayland-sys` in `cargo tree` links nothing
+
+- **Symptom:** `cargo tree -e features -i wayland-sys` lists it under `wayland-backend`.
+- **Cause:** it is built with no features; only `client_system`/`dlopen` would link libwayland.
+- **Fix:** check `ldd target/debug/outlay | grep wayland` (empty) and that no crate enables
+  `wayland-client/system`; `release.yml` checks the static musl build.
