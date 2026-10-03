@@ -541,3 +541,87 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   "skipped: wlr-randr --json" there and passes, so it runs only where wlr-randr is newer (here).
   The CI step `sway --version && wlr-randr --version || true` shows only the sway version; read the
   wlr-randr version from the apt "Setting up wlr-randr (…)" line.
+
+## `cargo test` stops at the first test binary that fails
+
+- **Symptom:** after a change that breaks two test files, `cargo test` reports only the first;
+  the second shows up only after the first is fixed.
+- **Fix:** `cargo test --no-fail-fast`, then filter the `test result` and `panicked` lines.
+
+## `echo ===` fails in the tool shell
+
+- **Symptom:** `(eval):1: == not found`, and the rest of the command does not run.
+- **Cause:** zsh expands a word that starts with `=` (`=cmd` is the path of `cmd`).
+- **Fix:** quote separators: `echo '---'`.
+
+## Checking that the screenshot window closed
+
+- **Symptom:** `pgrep -fa outlay-shot` after `tools/shot.sh stop` prints a line, as if the window
+  were still open.
+- **Cause:** pgrep matches the tool shell's own command line, which contains the pattern.
+- **Fix:** `xdotool search --class outlay-shot | wc -l` (0 when closed).
+
+## A temporary path that contains the word a test asserts is absent
+
+- **Symptom:** `assert!(!stderr.contains("xrandr"))` failed although the warning was gone.
+- **Cause:** the sandbox was named `outlay-install-no-xrandr-…`, and the installer prints its
+  paths.
+- **Fix:** assert on the whole message (`"on X11, outlay needs the xrandr program"`), not on a
+  word.
+
+## The details panel is open in a TUI test
+
+- **Symptom:** a test pressed `i` to see the details panel, and the panel was gone.
+- **Cause:** the panel is open by default when the screen is wide enough (120x40 is); `i` toggles
+  it off.
+- **Fix:** render without `i`. Keep panel lines under 30 columns: a longer one wraps (a Wayland
+  transform label such as `flipped-90 (left, reflect x)` did, so the label became
+  `flipped-90 (left)`).
+
+## Command-line errors are lowercase
+
+- **Symptom:** a test expected `Usage: :rotate …` in the status line and got `usage: :rotate …`.
+- **Fix:** errors from `cmdline::parse` are shown as they are; only some app messages are
+  capitalised. Read the string from `cmdline.rs` before writing an expectation.
+
+## A new kanshi profile asks before it is written
+
+- **Symptom:** after `wdesk<Enter>` on Wayland the config was unchanged; the mode was
+  `UiMode::Overwrite`.
+- **Cause:** appending a block changes an existing file, and every change to an existing file is
+  shown as a diff first (a screenlayout script is a new file, so it is written at once).
+- **Fix:** press `y` in session tests; from the CLI, `--force` without a terminal. A config that
+  does not exist yet is written at once.
+
+## kanshi's rules differ from xrandr's in small ways
+
+- **Symptom:** a kanshi profile loaded with other modes or matches than expected.
+- **Cause (kanshi 1.9.0, `main.c`):** `mode WxH` without `@R` takes the highest rate at that size,
+  not the first listed one; a criteria is compared to the name with `strcmp` and to
+  `Make Model Serial` with `fnmatch`, so `output DP-*` never matches DP-1 by name; matching is
+  greedy, with the criteria that hold a `*` moved last; an output with neither `enable` nor
+  `disable` keeps the head as it is.
+- **Fix:** check against the source before changing `model/profile.rs` or `wayland/kanshi.rs`:
+  `git clone --depth 1 --branch v1.9.0 https://gitlab.freedesktop.org/emersion/kanshi.git` and
+  `git clone --depth 1 https://git.sr.ht/~emersion/libscfg` (the config syntax: `#` starts a
+  comment only where a directive starts).
+
+## Does kanshi undo an outlay apply? Not while the same heads stay connected
+
+- **Symptom:** the question from the plan: kanshi re-applying its profile during the countdown.
+- **Cause:** `match_and_apply` keeps the current profile while it still matches the connected
+  heads, so another client's change on `done` does not trigger it. A hotplug that changes the set
+  of heads, or `kanshictl reload`, applies the profile again.
+- **Fix:** this was read from the source; kanshi was not installed in session F, so the live test
+  `kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload` has not run yet. Run it with
+  `OUTLAY_TEST_SWAY=$(command -v sway) OUTLAY_TEST_KANSHI=$(command -v kanshi) cargo test --test
+  wayland_live -- kanshi --nocapture` once kanshi is installed, and fix this entry if it fails.
+
+## The wlroots abort, from the panic hook
+
+- **Symptom:** see "`outlay restore` loses the connection": the same abort, but from a panic
+  during the countdown, whose `revert.sh` runs `outlay restore` while the editor is still
+  connected.
+- **Fix:** since session F the panic hook calls `wayland::client::hang_up()` (a socket shutdown,
+  never a close) before `revert.sh`. `hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on`
+  in `tests/wayland_live.rs` reproduces the abort on sway 1.12 if you remove its `hang_up()` line.
