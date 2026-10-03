@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod sway;
+
 use outlay::model::geometry::{Point, Rect, Size, effective_size};
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Link, Side};

@@ -131,11 +131,19 @@ All are pure Rust with an MSRV of at most 1.91:
   - `swaymsg create_output` adds one (undocumented, but it works on headless);
   - `swaymsg output <name> unplug` removes one.
 - **Modes.** Headless heads have no real modes, only custom ones.
-  - **Probably** (to be checked in source and on the wire as the first step of W5): wlroots
-    advertises a *virtual* mode object for a custom current mode, and a new one after every
-    change.
-  - `set_mode` with a virtual mode on a head that has real modes is a protocol error ("mode
-    doesn't belong to head"), and it kills the connection.
+  - **Settled in W5** (sway 1.12, wlroots 0.20.2, on the wire): wlroots advertises one *virtual*
+    mode object per client for a custom current mode, never `preferred`, and with no `refresh`
+    event while the rate is 0. It is **reused**: a new custom mode re-sends `size` and `refresh`
+    on the same object. outlay marks a mode custom when the capture says so or its rate is 0.
+  - wlroots accepts `set_mode` with a virtual mode (it keeps the custom mode); "mode doesn't
+    belong to head" is only for another head's real mode. outlay still sends a mode only when it
+    changes, and a mode no head object has as `set_custom_mode`.
+  - On sway the new head state and `done` arrive **before** `succeeded`; outlay waits for a
+    `done` only when none came yet.
+  - The logical size is **truncated** (1366x768 at 150 % is 910x512 in `swaymsg -t get_outputs`).
+  - **wlroots ≤ 0.20.2 aborts** (`head_send_state: Assertion 'found' failed`) when a client that
+    bound while a custom-mode head was disabled enables it again while another client still holds
+    that head's old virtual mode. Fixed upstream by wlroots 40640950 (2026-09-30, unreleased).
 - **CI runners:**
   - Ubuntu 24.04 has sway 1.9 with wlroots 0.17 (protocol v4).
   - **`ubuntu-latest` moves to 26.04 between 2026-10-19 and 2026-11-19,** so the Wayland job pins

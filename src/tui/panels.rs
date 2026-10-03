@@ -24,6 +24,9 @@ pub fn title_bar(app: &App, area: Rect, buf: &mut Buffer) {
         Span::styled(" outlay", Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(format!(" · {on} on · {} off", numbered.len() - on)),
     ];
+    if let Some(compositor) = &app.compositor {
+        left.push(Span::styled(format!(" · {compositor}"), app.theme.dim()));
+    }
     if let Some(source) = &app.source {
         left.push(Span::styled(format!(" · {source}"), app.theme.dim()));
     }

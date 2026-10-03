@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use common::{ix, keys, unplugged};
-use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan};
-use outlay::model::Rotation;
+use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan, Verdict};
 use outlay::model::Snapshot;
-use outlay::tui::app::{App, Options, UiMode, WATCH_INTERVAL};
+use outlay::model::{Rotation, Scaling};
+use outlay::tui::app::{App, ApplyRequest, Effect, Options, UiMode, WATCH_INTERVAL};
 use outlay::tui::session::{Input, Session, Settings};
 use outlay::xrandr::command;
 use ratatui::crossterm::event::Event;
@@ -30,6 +30,8 @@ enum Next {
     Skips(&'static str),
     /// Cannot even run.
     Breaks,
+    /// Applies it with every Wayland scale it sets off by this much, as a compositor that rounds.
+    Rounds(f64),
 }
 
 /// A backend that records every plan, counts full probes and re-queries, and misbehaves on
@@ -37,6 +39,8 @@ enum Next {
 struct Fake {
     inner: FixtureBackend,
     next: Mutex<VecDeque<Next>>,
+    /// What `test` answers, in turn; `Untested` once they run out.
+    verdicts: Mutex<VecDeque<Verdict>>,
     calls: Mutex<Vec<Plan>>,
     probes: Mutex<usize>,
     requeries: Mutex<usize>,
@@ -47,6 +51,7 @@ impl Fake {
         Self {
             inner,
             next: Mutex::new(VecDeque::new()),
+            verdicts: Mutex::new(VecDeque::new()),
             calls: Mutex::new(Vec::new()),
             probes: Mutex::new(0),
             requeries: Mutex::new(0),
@@ -55,6 +60,15 @@ impl Fake {
 
     fn demo() -> Self {
         Self::new(FixtureBackend::demo())
+    }
+
+    fn wayland() -> Self {
+        Self::new(FixtureBackend::demo_wayland())
+    }
+
+    fn answering(self, verdict: Verdict) -> Self {
+        self.verdicts.lock().unwrap().push_back(verdict);
+        self
     }
 
     /// (full probes, re-queries) so far.
@@ -91,6 +105,15 @@ impl Backend for Fake {
         self.inner.requery()
     }
 
+    fn test(&self, _plan: &Plan) -> Result<Verdict> {
+        Ok(self
+            .verdicts
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Verdict::Untested))
+    }
+
     fn apply(&self, plan: &Plan) -> Result<ApplyOutcome> {
         self.calls.lock().unwrap().push(plan.clone());
         let next = self.next.lock().unwrap().pop_front().unwrap_or(Next::Works);
@@ -114,6 +137,15 @@ impl Backend for Fake {
                 Ok(outcome)
             }
             Next::Breaks => Err(anyhow!("xrandr crashed")),
+            Next::Rounds(by) => {
+                let mut rounded = plan.clone();
+                for on in rounded.outputs.iter_mut().filter_map(|p| p.on.as_mut()) {
+                    if let Scaling::Logical(s) = on.scaling {
+                        on.scaling = Scaling::Logical(s + by);
+                    }
+                }
+                self.inner.apply(&rounded)
+            }
         }
     }
 
@@ -812,4 +844,188 @@ fn a_dock_plugged_in_brings_its_displays_and_keeps_the_edits() {
     rig.press("<C-r>");
     let layout = &rig.app().layout;
     assert_eq!(layout.outputs[ix(layout, "eDP-1")].rotation, rotated);
+}
+
+// --- Wayland ----------------------------------------------------------------------------------
+
+fn edp(backend: &Fake) -> outlay::model::ActiveConfig {
+    let snap = backend.query().unwrap();
+    snap.outputs[snap.find("eDP-1").unwrap()]
+        .active
+        .clone()
+        .unwrap()
+}
+
+#[test]
+fn a_wayland_layout_is_kept() {
+    let backend = Fake::wayland();
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a");
+    let UiMode::ConfirmApply(preview) = &rig.app().mode else {
+        panic!("no confirmation: {:?}", rig.app().mode)
+    };
+    assert_eq!(
+        preview.changes,
+        ["eDP-1  pos 2480,1440 → 2240,1440, scale 200% → 150%"]
+    );
+    assert!(
+        preview
+            .command
+            .starts_with("wlr-randr --output eDP-1 --on ")
+    );
+    rig.press("<Enter>");
+    let c = rig.countdown();
+    assert_eq!(edp(&backend).scaling, Scaling::Logical(1.5));
+    rig.press_at("y", c.blocked_until);
+    assert_eq!(rig.status(), "Kept the new layout.");
+    assert!(rig.app().pending().is_empty());
+    assert_eq!(backend.calls().len(), 1);
+}
+
+#[test]
+fn a_wayland_layout_reverts_without_an_answer() {
+    let backend = Fake::wayland();
+    let before = backend.query().unwrap();
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a<Enter>");
+    let c = rig.countdown();
+    rig.wait_until(c.deadline);
+    let calls = backend.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1], Plan::restore(&before));
+    assert_eq!(backend.query().unwrap(), before);
+    assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
+}
+
+#[test]
+fn a_rejected_test_blocks_the_popup_and_the_apply() {
+    let backend = Fake::wayland().answering(Verdict::Rejected(
+        "The compositor rejects this layout.".into(),
+    ));
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a");
+    let UiMode::ConfirmApply(preview) = &rig.app().mode else {
+        panic!("no confirmation")
+    };
+    assert_eq!(preview.errors, ["The compositor rejects this layout."]);
+    rig.press("<Enter>");
+    assert_eq!(rig.status(), "Fix the errors before applying.");
+    assert!(backend.calls().is_empty());
+
+    // `outlay apply` asks for the apply directly; the session tests the plan itself.
+    let dir = std::env::temp_dir().join(format!("outlay-apply-wl-{}", std::process::id()));
+    let path = dir.join("revert.sh");
+    let backend = Fake::wayland().answering(Verdict::Rejected(
+        "The compositor rejects this layout.".into(),
+    ));
+    let settings = Settings {
+        revert_file: Some(path.clone()),
+        ..Settings::default()
+    };
+    let mut rig = Rig::new(&backend, settings);
+    rig.press("1<lt><lt>");
+    let app = rig.app();
+    let plan = Plan::pending(&app.layout, &app.snap);
+    let layout = app.layout.clone();
+    rig.session
+        .push(Effect::Apply(ApplyRequest { plan, layout }));
+    rig.session.perform(&mut rig.input);
+    assert_eq!(
+        rig.message(),
+        "Apply failed: The compositor rejects this layout. | Nothing changed."
+    );
+    assert!(backend.calls().is_empty());
+    assert!(!path.exists(), "no revert.sh for an apply that never ran");
+}
+
+#[test]
+fn a_scale_the_compositor_rounds_is_adopted() {
+    let backend = Fake::wayland().then(Next::Rounds(0.004));
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a<Enter>");
+    let c = rig.countdown();
+    assert_eq!(edp(&backend).scaling, Scaling::Logical(1.504));
+    rig.press_at("y", c.blocked_until);
+    let app = rig.app();
+    assert_eq!(
+        app.layout.outputs[ix(&app.layout, "eDP-1")].scaling,
+        Scaling::Logical(1.504),
+        "the scale the display has now"
+    );
+    assert!(app.pending().is_empty());
+}
+
+#[test]
+fn a_scale_that_came_out_different_is_a_mismatch() {
+    let backend = Fake::wayland().then(Next::Rounds(0.25));
+    let before = backend.query().unwrap();
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a<Enter>");
+    let message = rig.message();
+    assert!(
+        message.contains("eDP-1 is at 175% instead of 150%."),
+        "{message}"
+    );
+    assert!(
+        message.ends_with("Reverted to the previous layout."),
+        "{message}"
+    );
+    assert_eq!(backend.query().unwrap(), before);
+}
+
+#[test]
+fn a_cancelled_wayland_apply_says_so_in_its_own_words() {
+    let backend = Fake::wayland().then(Next::Fails {
+        stderr: "The outputs changed while applying.\n",
+        changes: false,
+    });
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a<Enter>");
+    let message = rig.message();
+    assert!(
+        message.starts_with("Apply failed: The outputs changed while applying. | "),
+        "{message}"
+    );
+    assert!(message.ends_with(" | Nothing changed."), "{message}");
+    assert!(!message.contains("xrandr"), "{message}");
+}
+
+#[test]
+fn the_wayland_revert_sh_hands_the_state_to_outlay_restore() {
+    let dir = std::env::temp_dir().join(format!("outlay-revert-wl-{}", std::process::id()));
+    let path = dir.join("revert.sh");
+    let program = env!("CARGO_BIN_EXE_outlay");
+    let backend = Fake::wayland();
+    let before = backend.query().unwrap();
+    let settings = Settings {
+        revert_file: Some(path.clone()),
+        restore_program: Some(program.into()),
+        ..Settings::default()
+    };
+    let mut rig = Rig::new(&backend, settings);
+    rig.press("1<lt><lt>a<Enter>");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let capture = outlay::wayland::capture::write(&before);
+    assert_eq!(
+        text,
+        format!(
+            "#!/bin/sh\n# Written by outlay {} before an apply. It restores the layout from \
+             before it.\nexec '{program}' restore - <<'OUTLAY-CAPTURE'\n{capture}OUTLAY-CAPTURE\n",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+    // The shell hands the capture over unchanged.
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(text.replace(&format!("exec '{program}' restore -"), "cat"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), capture);
+    assert_eq!(
+        outlay::wayland::capture::parse(&capture).unwrap(),
+        before,
+        "it reads back as the state from before"
+    );
+    rig.press_at("n", rig.countdown().blocked_until);
+    std::fs::remove_dir_all(dir).unwrap();
 }

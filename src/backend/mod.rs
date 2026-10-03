@@ -1,6 +1,7 @@
 //! The neutral side of talking to a display server: the [`Backend`] trait, the [`Plan`] an apply
 //! carries out, and the in-memory backends behind `--demo`, `--from-file` and `-n`.
 
+pub mod detect;
 pub mod fixture;
 pub mod plan;
 
@@ -8,7 +9,8 @@ use anyhow::Result;
 
 use crate::model::{Kind, Snapshot};
 use crate::{wayland, xrandr};
-pub use fixture::{DryRun, FixtureBackend};
+pub use detect::{compositor_label, detect};
+pub use fixture::{DryRun, FixtureBackend, parse_capture};
 pub use plan::{On, Plan, PlanForm, Planned, PrimaryRule, ScalingChange};
 
 /// What an apply produced: whether it worked, and the tool's own messages. On X11 they are what

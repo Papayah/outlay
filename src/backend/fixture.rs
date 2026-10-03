@@ -31,14 +31,9 @@ impl FixtureBackend {
         }
     }
 
-    /// The snapshot a capture describes, keeping the text: `wlr-randr --json` when it starts
-    /// like JSON, else `xrandr --verbose`.
+    /// The snapshot a capture describes, keeping the text.
     pub fn from_text(text: String) -> Result<Self> {
-        let snapshot = if capture::is_capture(&text) {
-            capture::parse(&text)?
-        } else {
-            parse_verbose(&text)?
-        };
+        let snapshot = parse_capture(&text)?;
         Ok(Self {
             source: Some(text),
             ..Self::new(snapshot)
@@ -75,6 +70,16 @@ impl FixtureBackend {
     pub fn set_state(&self, snapshot: Snapshot) {
         *self.state.lock().expect("fixture lock") = snapshot;
     }
+}
+
+/// The snapshot a capture describes: `wlr-randr --json` (or `outlay dump` on Wayland) when it
+/// starts like JSON, else `xrandr --verbose`.
+pub fn parse_capture(text: &str) -> Result<Snapshot> {
+    Ok(if capture::is_capture(text) {
+        capture::parse(text)?
+    } else {
+        parse_verbose(text)?
+    })
 }
 
 impl Backend for FixtureBackend {

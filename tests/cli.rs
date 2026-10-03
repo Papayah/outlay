@@ -442,3 +442,86 @@ fn a_capture_that_is_not_one_says_why() {
         "{stderr}"
     );
 }
+
+/// Runs outlay with `stdin` and a config directory of the test's own.
+fn outlay_in(args: &[&str], config_home: &std::path::Path, stdin: &str) -> (bool, String, String) {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_outlay"))
+        .args(args)
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("HOME", "/nonexistent/outlay-test-home")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run outlay");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn restore_applies_a_capture_at_once() {
+    let dir = std::env::temp_dir().join(format!("outlay-cli-restore-{}", std::process::id()));
+    let config = dir.join("config");
+    std::fs::create_dir_all(config.join("outlay")).unwrap();
+    // A broken config file blocks everything but a restore.
+    std::fs::write(
+        config.join("outlay").join("config.toml"),
+        "revert_seconds = [",
+    )
+    .unwrap();
+    let demo = std::fs::read_to_string(wayland_fixture("demo")).unwrap();
+    let moved = demo.replace("\"x\": 2480", "\"x\": 2000");
+    let path = dir.join("before.json");
+    std::fs::write(&path, &moved).unwrap();
+
+    let (ok, _, stderr) = outlay_in(&["--demo=wayland", "show"], &config, "");
+    assert!(!ok, "the config is broken");
+    assert!(stderr.contains("config.toml"), "{stderr}");
+
+    let (ok, stdout, stderr) = outlay_in(
+        &["--demo=wayland", "restore", path.to_str().unwrap()],
+        &config,
+        "",
+    );
+    assert!(ok, "{stderr}");
+    assert!(stdout.is_empty() && stderr.is_empty(), "{stdout}{stderr}");
+    let (ok, _, stderr) = outlay_in(&["--demo=wayland", "restore", "-"], &config, &moved);
+    assert!(ok, "from stdin: {stderr}");
+
+    // A head that is not there is a problem, and exits 1.
+    let gone = demo.replace("\"name\": \"DP-4\"", "\"name\": \"DP-9\"");
+    let (ok, _, stderr) = outlay_in(&["--demo=wayland", "restore", "-"], &config, &gone);
+    assert!(!ok);
+    assert_eq!(
+        stderr,
+        "warning: output DP-9 not found; ignoring\noutlay: the restore left something out\n"
+    );
+
+    let (ok, _, stderr) = outlay_in(&["--demo", "restore", "-"], &config, &demo);
+    assert!(!ok);
+    assert_eq!(
+        stderr,
+        "outlay: the capture is from Wayland, but this session is X11\n"
+    );
+    let (ok, _, stderr) = outlay_in(&["--demo", "restore", "-"], &config, "[{");
+    assert!(!ok);
+    assert!(
+        stderr.starts_with("outlay: could not read the capture"),
+        "{stderr}"
+    );
+
+    let (_, help, _) = outlay(&["--help"]);
+    assert!(!help.contains("restore"), "hidden:\n{help}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

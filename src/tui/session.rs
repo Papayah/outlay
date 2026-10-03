@@ -16,9 +16,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ratatui::crossterm::event::Event;
 
-use crate::backend::{Backend, Plan};
-use crate::model::Snapshot;
+use crate::backend::{Backend, Plan, Verdict};
 use crate::model::validate::Severity;
+use crate::model::{Kind, Snapshot};
+use crate::wayland;
 use crate::xrandr::command;
 use crate::xrandr::script::{self, line_diff, profile_path, save_text};
 
@@ -44,6 +45,9 @@ pub struct Settings {
     pub hook_timeout: Duration,
     /// Where profiles live. Unset, `w` and `e` only report that.
     pub layouts_dir: Option<PathBuf>,
+    /// The program a Wayland `revert.sh` runs (`PROGRAM restore -`): outlay itself. Unset, it
+    /// is `outlay` on `PATH`.
+    pub restore_program: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -54,6 +58,7 @@ impl Default for Settings {
             hooks: Vec::new(),
             hook_timeout: Duration::from_secs(10),
             layouts_dir: None,
+            restore_program: None,
         }
     }
 }
@@ -178,6 +183,13 @@ impl<'a> Session<'a> {
                     if let Ok(snap) = self.backend.requery() {
                         self.app.refreshed(snap, false);
                     }
+                }
+                Effect::Test(plan) => {
+                    let verdict = self
+                        .backend
+                        .test(&plan)
+                        .unwrap_or_else(|err| Verdict::Rejected(format!("{err:#}")));
+                    self.app.tested(verdict);
                 }
                 Effect::Apply(request) => self.apply(request, input),
                 Effect::Revert(reason) => self.revert(reason),
@@ -312,9 +324,25 @@ impl<'a> Session<'a> {
                 return;
             }
         };
+        // The compositor may know better than validation; then nothing is touched.
+        if let Ok(Verdict::Rejected(why)) = self.backend.test(&request.plan) {
+            self.app
+                .report("Apply failed", vec![why, "Nothing changed.".to_owned()]);
+            return;
+        }
         let restore = Plan::restore(&before);
         if let Some(path) = &self.settings.revert_file {
-            if let Err(err) = script::write_atomic(path, &command::revert_script(&restore), 0o755) {
+            let text = match before.caps.kind {
+                Kind::X11 => command::revert_script(&restore),
+                Kind::Wayland => {
+                    let program = self.settings.restore_program.clone();
+                    wayland::revert_script(
+                        &program.unwrap_or_else(|| PathBuf::from("outlay")),
+                        &before,
+                    )
+                }
+            };
+            if let Err(err) = script::write_atomic(path, &text, 0o755) {
                 self.app.report(
                     "Apply failed",
                     vec![format!(
@@ -333,17 +361,22 @@ impl<'a> Session<'a> {
         let after = self.backend.requery();
 
         let mut problems = Vec::new();
+        let x11 = before.caps.kind == Kind::X11;
         match &outcome {
             Ok(o) if o.success => {}
-            Ok(_) => problems.push("xrandr reported an error.".to_owned()),
-            Err(err) => problems.push(format!("Could not run xrandr: {err:#}")),
+            Ok(_) if x11 => problems.push("xrandr reported an error.".to_owned()),
+            Ok(_) => {}
+            Err(err) if x11 => problems.push(format!("Could not run xrandr: {err:#}")),
+            Err(err) => problems.push(format!("{err:#}")),
         }
         if let Ok(o) = &outcome {
+            // xrandr's messages get its name; the compositor's are sentences of outlay's own.
+            let prefix = if x11 { "xrandr: " } else { "" };
             problems.extend(
                 o.stderr
                     .lines()
                     .filter(|l| !l.trim().is_empty())
-                    .map(|l| format!("xrandr: {}", l.trim())),
+                    .map(|l| format!("{prefix}{}", l.trim())),
             );
         }
         let failed_run = !matches!(&outcome, Ok(o) if o.success);

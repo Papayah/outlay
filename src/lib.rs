@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod model;
 pub mod profile;
+pub mod restore;
 pub mod show;
 pub mod tui;
 pub mod wayland;

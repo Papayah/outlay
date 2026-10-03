@@ -2,11 +2,15 @@
 //! capture format, the equivalent `wlr-randr` command, and what the protocol's names mean.
 
 pub mod capture;
+pub mod client;
 pub mod command;
 
-use std::cmp::Ordering;
+pub use client::WlrBackend;
 
-use crate::model::{Reflection, Rotation};
+use std::cmp::Ordering;
+use std::path::Path;
+
+use crate::model::{Reflection, Rotation, Snapshot};
 
 /// The built-in fixture behind `--demo=wayland`.
 pub const DEMO: &str = include_str!("../../tests/fixtures/wayland/demo.json");
@@ -61,6 +65,18 @@ pub fn parse_transform(name: &str) -> Option<(Rotation, Reflection)> {
 /// The rotation and reflection of a protocol value.
 pub fn transform_from_value(value: u32) -> Option<(Rotation, Reflection)> {
     TRANSFORMS.get(value as usize).map(|&(_, r, f)| (r, f))
+}
+
+/// The `revert.sh` written before an apply on Wayland: it hands the state from before the apply,
+/// as a capture, to `outlay restore`, which applies it back. `program` is outlay itself.
+pub fn revert_script(program: &Path, before: &Snapshot) -> String {
+    let program = program.to_string_lossy().replace('\'', r"'\''");
+    format!(
+        "#!/bin/sh\n# Written by outlay {} before an apply. It restores the layout from before \
+         it.\nexec '{program}' restore - <<'OUTLAY-CAPTURE'\n{}OUTLAY-CAPTURE\n",
+        env!("CARGO_PKG_VERSION"),
+        capture::write(before),
+    )
 }
 
 /// How heads are numbered: built-in panels first (`eDP`, `LVDS`, `DSI`), then by name with the

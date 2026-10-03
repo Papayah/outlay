@@ -53,6 +53,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// `X11` or `Wayland`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::X11 => "X11",
+            Kind::Wayland => "Wayland",
+        }
+    }
+
     /// What carries out an apply, as the editor names it.
     pub fn tool(self) -> &'static str {
         match self {
