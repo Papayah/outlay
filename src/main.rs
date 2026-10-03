@@ -7,7 +7,7 @@ use clap::{CommandFactory, Parser};
 use outlay::cli::{Cli, Command};
 use outlay::config::Config;
 use outlay::show;
-use outlay::{profile, tui};
+use outlay::{profile, restore, tui};
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
@@ -25,6 +25,10 @@ fn run(cli: Cli) -> Result<()> {
         let mut out = Vec::new();
         clap_complete::generate(*shell, &mut Cli::command(), "outlay", &mut out);
         return print_stdout(&String::from_utf8_lossy(&out));
+    }
+    // Before the config: a broken config file must not block a revert.
+    if let Some(Command::Restore { capture }) = &cli.command {
+        return restore::restore(&cli, capture);
     }
     let config = Config::load()?;
     if let Some(Command::Keys) = &cli.command {
@@ -48,7 +52,9 @@ fn run(cli: Cli) -> Result<()> {
         ),
         Command::List => show::list(&backend.query()?),
         Command::Dump => backend.dump()?,
-        Command::Keys | Command::Completions { .. } => unreachable!("handled above"),
+        Command::Keys | Command::Completions { .. } | Command::Restore { .. } => {
+            unreachable!("handled above")
+        }
     };
     print_stdout(&text)
 }

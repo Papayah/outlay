@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
-use crate::backend::{Plan, command_text, portable_command_text};
+use crate::backend::{Plan, Verdict, command_text, portable_command_text};
 use crate::model::geometry::effective_size;
 use crate::model::geometry::{Dir, Point, Rect};
 use crate::model::history::History;
@@ -34,7 +34,10 @@ pub enum Effect {
         probe: bool,
     },
     Quit,
-    /// Run xrandr, verify the result, and start the countdown.
+    /// Ask the display server whether it would take this plan; the answer goes to
+    /// [`App::tested`].
+    Test(Plan),
+    /// Carry out the plan, verify the result, and start the countdown.
     Apply(ApplyRequest),
     /// Restore the layout that was live before the apply.
     Revert(RevertReason),
@@ -304,8 +307,10 @@ pub struct Options {
     pub animations: bool,
     /// Cell height divided by cell width; `None` detects it from the terminal.
     pub cell_aspect: Option<f64>,
-    /// Where the state comes from when it is not the live X server: `demo`, a file name.
+    /// Where the state comes from when it is not the live display server: `demo`, a file name.
     pub source: Option<String>,
+    /// The Wayland compositor's name (`sway`), a label for the title bar.
+    pub compositor: Option<String>,
     /// How often to look for displays that were plugged in or unplugged; `None` never looks.
     pub watch: Option<Duration>,
 }
@@ -320,6 +325,7 @@ impl Default for Options {
             animations: false,
             cell_aspect: None,
             source: None,
+            compositor: None,
             watch: None,
         }
     }
@@ -345,6 +351,7 @@ pub struct App {
     pub viewport: Viewport,
     pub cell_aspect: f64,
     pub source: Option<String>,
+    pub compositor: Option<String>,
     /// The time of the last tick; the countdown and the input block compare against it.
     pub now: Instant,
     /// The held nudge key, if any.
@@ -381,6 +388,7 @@ impl App {
             viewport: Viewport::default(),
             cell_aspect: options.cell_aspect.unwrap_or(2.0),
             source: options.source,
+            compositor: options.compositor,
             now,
             burst: None,
             nudge_run: None,
@@ -992,7 +1000,7 @@ impl App {
             Action::Details => self.show_details = !self.show_details,
             Action::Help => self.mode = UiMode::Help { scroll: 0 },
             Action::Quit => return self.quit(false),
-            Action::Apply => self.open_apply(),
+            Action::Apply => return self.open_apply(),
             Action::Copy => {
                 let plan = Plan::pending(&self.layout, &self.snap);
                 let text = portable_command_text(self.layout.caps.kind, &plan);
@@ -1071,9 +1079,9 @@ impl App {
         }
     }
 
-    /// The apply confirmation for the pending layout. With no changes it re-applies the live
-    /// layout, which is a safe way to try the apply flow.
-    fn open_apply(&mut self) {
+    /// The apply confirmation for the pending layout, and a test of its plan. With no changes it
+    /// re-applies the live layout, which is a safe way to try the apply flow.
+    fn open_apply(&mut self) -> Vec<Effect> {
         let mut changes: Vec<String> = self.pending().iter().map(ToString::to_string).collect();
         if changes.is_empty() {
             changes.push("No changes: this re-applies the current layout.".to_owned());
@@ -1097,8 +1105,19 @@ impl App {
             errors,
             warnings,
             command: command_text(self.layout.caps.kind, &plan),
-            plan,
+            plan: plan.clone(),
         });
+        vec![Effect::Test(plan)]
+    }
+
+    /// The display server's answer to the plan in the confirmation: a rejection blocks the
+    /// apply like a validation error.
+    pub fn tested(&mut self, verdict: Verdict) {
+        if let (UiMode::ConfirmApply(preview), Verdict::Rejected(why)) = (&mut self.mode, verdict)
+            && !preview.errors.contains(&why)
+        {
+            preview.errors.push(why);
+        }
     }
 
     /// The countdown starts: the apply went through and came out as asked.
@@ -1132,6 +1151,16 @@ impl App {
     pub fn kept(&mut self, snap: Snapshot) {
         let before = self.layout.clone();
         let matches = self.layout.mismatches(&snap).is_empty();
+        if matches {
+            // A Wayland scale the compositor rounded is what the display has now.
+            for (st, out) in self.layout.outputs.iter_mut().zip(&snap.outputs) {
+                if let (Some(live), true) = (&out.active, st.enabled)
+                    && matches!(live.scaling, Scaling::Logical(_))
+                {
+                    st.scaling = live.scaling.clone();
+                }
+            }
+        }
         self.adopt(snap);
         if !matches {
             let mut layout = Layout::from_snapshot(&self.snap).0;
@@ -1945,7 +1974,7 @@ impl App {
             },
             Cmd::Open(Some(name)) => return vec![Effect::OpenProfile(name)],
             Cmd::Open(None) => return vec![Effect::ListProfiles],
-            Cmd::Apply => self.open_apply(),
+            Cmd::Apply => return self.open_apply(),
         }
         Vec::new()
     }

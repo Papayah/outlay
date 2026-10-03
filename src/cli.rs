@@ -6,12 +6,11 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::backend::{Backend, DryRun, FixtureBackend};
+use crate::backend::{Backend, DryRun, FixtureBackend, compositor_label, detect};
 use crate::config::Config;
 use crate::tui::app::{Options, WATCH_INTERVAL};
 use crate::tui::session::{Settings, default_revert_file};
 use crate::tui::theme::Theme;
-use crate::xrandr::{XrandrCli, check_session};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -84,6 +83,12 @@ pub enum Command {
     Dump,
     /// Print a shell completion script
     Completions { shell: clap_complete::Shell },
+    /// Apply the layout a capture describes, at once (what a Wayland revert.sh runs)
+    #[command(hide = true)]
+    Restore {
+        /// A capture file, or - for stdin
+        capture: String,
+    },
 }
 
 /// Which built-in fixture `--demo` uses.
@@ -95,7 +100,7 @@ pub enum Demo {
 
 impl Cli {
     /// The backend the global flags select: a fixture for `--demo` and `--from-file`, else the
-    /// real `xrandr` (simulated with `--dry-run`). Refuses live X where xrandr cannot work.
+    /// live display server [`detect`] finds (simulated with `--dry-run`).
     pub fn backend(&self) -> Result<Box<dyn Backend>> {
         match self.demo {
             Some(Demo::X11) => return Ok(Box::new(FixtureBackend::demo())),
@@ -105,12 +110,11 @@ impl Cli {
         if let Some(path) = &self.from_file {
             return Ok(Box::new(FixtureBackend::from_file(path)?));
         }
-        check_session(|name| std::env::var(name).ok()).map_err(anyhow::Error::msg)?;
-        let live = XrandrCli::new();
+        let live = detect(&|name| std::env::var(name).ok())?;
         if self.dry_run {
-            return Ok(Box::new(DryRun::new(&live)?));
+            return Ok(Box::new(DryRun::new(live.as_ref())?));
         }
-        Ok(Box::new(live))
+        Ok(live)
     }
 
     /// Editor settings from the config file and the flags.
@@ -130,6 +134,11 @@ impl Cli {
         } else {
             None
         };
+        // Only a live session has a compositor; fixtures stay the same on every machine.
+        let live = self.demo.is_none() && self.from_file.is_none();
+        let compositor = live
+            .then(|| compositor_label(&|name| std::env::var(name).ok()))
+            .flatten();
         let options = Options {
             keymap: config.keymap()?,
             theme: Theme::from_env(),
@@ -138,6 +147,7 @@ impl Cli {
             animations: config.animations && !self.no_anim,
             cell_aspect: config.cell_aspect,
             source,
+            compositor,
             watch: Some(WATCH_INTERVAL),
         };
         let settings = Settings {
@@ -146,6 +156,7 @@ impl Cli {
             hooks: config.post_apply.clone(),
             hook_timeout: Duration::from_secs(config.post_apply_timeout),
             layouts_dir: Some(self.layouts_dir(config)),
+            restore_program: Some(restore_program()),
         };
         Ok((options, settings))
     }
@@ -156,6 +167,15 @@ impl Cli {
             .clone()
             .unwrap_or_else(|| config.layouts_dir())
     }
+}
+
+/// The program a Wayland `revert.sh` runs: this binary, unless it is gone (`install.sh` replaced
+/// it while outlay ran, and Linux then names it "… (deleted)"); then `outlay` on `PATH`.
+fn restore_program() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .filter(|p| p.is_file() && !p.to_string_lossy().ends_with(" (deleted)"))
+        .unwrap_or_else(|| PathBuf::from("outlay"))
 }
 
 #[cfg(test)]

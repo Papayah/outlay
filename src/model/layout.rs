@@ -15,6 +15,10 @@ use super::{Cap, Caps, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snap
 /// fixed point.
 pub const SCALES: [f64; 9] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
+/// How far a Wayland scale may come out from the one asked for and still count as it: the
+/// compositor may round it.
+pub const LOGICAL_TOLERANCE: f64 = 0.01;
+
 /// The range `:scale` accepts.
 pub const MIN_SCALE: f64 = 0.25;
 pub const MAX_SCALE: f64 = 8.0;
@@ -717,8 +721,9 @@ fn rect_text(r: Rect) -> String {
 
 impl Layout {
     /// How `snap`, the state re-read after applying this layout, differs from it: the enabled
-    /// set, mode ids, rectangles and, where there is one, the primary. Empty when the apply came
-    /// out as asked.
+    /// set, mode ids, rectangles, the Wayland scale within 0.01 and, where there is one, the
+    /// primary. Empty when the apply came out as asked. A compositor may round a scale: within
+    /// the tolerance, the rectangle is checked at the scale it chose.
     /// xrandr exits 0 even when it ignores an output, so the exit code alone proves nothing.
     pub fn mismatches(&self, snap: &Snapshot) -> Vec<String> {
         let same_outputs = snap.outputs.len() == self.len()
@@ -751,7 +756,21 @@ impl Layout {
                             mode.summary()
                         ));
                     }
-                    let want = self.rect(i);
+                    let mut want = self.rect(i);
+                    if let (Scaling::Logical(got), Scaling::Logical(asked)) =
+                        (&live.scaling, &st.scaling)
+                    {
+                        if (got - asked).abs() > LOGICAL_TOLERANCE {
+                            found.push(format!(
+                                "{name} is at {} instead of {}.",
+                                scale_text(&live.scaling),
+                                scale_text(&st.scaling)
+                            ));
+                        } else if let Some(mode) = &st.mode {
+                            let size = effective_size(mode.size(), st.rotation, &live.scaling);
+                            want = Rect::from_parts(st.pos, size);
+                        }
+                    }
                     if live.rect() != want {
                         found.push(format!(
                             "{name} is at {} instead of {}.",

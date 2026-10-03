@@ -16,9 +16,11 @@ curl -fsSL https://github.com/Papayah/outlay/releases/latest/download/install.sh
 This installs a static binary for x86_64 or aarch64 Linux to `~/.local/bin/outlay`, with shell
 completions. Run the same command again to update.
 
-outlay needs an X11 session and the `xrandr` program (`xorg-xrandr` on Arch, `x11-xserver-utils`
-on Debian and Ubuntu, `xrandr` on Fedora, openSUSE, Void and Alpine). Wayland compositors need
-their own tools, such as wlr-randr, kanshi or `hyprctl`.
+On X11, outlay needs the `xrandr` program (`xorg-xrandr` on Arch, `x11-xserver-utils` on Debian
+and Ubuntu, `xrandr` on Fedora, openSUSE, Void and Alpine). On Wayland it talks to the compositor
+itself and needs nothing else: sway, Hyprland, niri, river, labwc, Wayfire and the other
+compositors that offer wlr-output-management work. GNOME and KDE Plasma do not yet, and profiles
+on Wayland (kanshi) arrive in the next version.
 
 For options, end the line with `sh -s --` and add them: `--version 0.1.0` installs that release,
 `--to DIR` installs into another directory, and `--uninstall` removes outlay again (`--help` lists

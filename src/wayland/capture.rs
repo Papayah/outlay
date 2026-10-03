@@ -16,7 +16,8 @@ use thiserror::Error;
 use super::{head_order, parse_transform, transform_name};
 use crate::model::geometry::{Point, Size, effective_size};
 use crate::model::{
-    ActiveConfig, Caps, Connection, Identity, Mode, ModeId, Output, Scaling, Snapshot,
+    ActiveConfig, Caps, Connection, Identity, Mode, ModeId, Output, Reflection, Rotation, Scaling,
+    Snapshot,
 };
 
 #[derive(Debug, Error)]
@@ -103,6 +104,37 @@ struct HeadMode {
     custom: Option<bool>,
 }
 
+/// What the compositor says about one head, from a capture or from the protocol.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HeadReport {
+    pub name: String,
+    pub description: Option<String>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+    pub physical_size: Option<Size>,
+    pub enabled: bool,
+    pub modes: Vec<ModeReport>,
+    /// Position, transform and scale mean something only while the head is enabled.
+    pub position: Point,
+    pub rotation: Rotation,
+    pub reflection: Reflection,
+    pub scale: f64,
+    pub adaptive_sync: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModeReport {
+    pub width: i32,
+    pub height: i32,
+    pub millihertz: u32,
+    pub preferred: bool,
+    pub current: bool,
+    /// Whether the head does not advertise the mode; unknown when `None`, and then a rate of 0
+    /// (which no real mode has) means custom.
+    pub custom: Option<bool>,
+}
+
 /// Reads a capture. Heads come out in [`head_order`], so display numbers do not depend on the
 /// order the compositor listed them in.
 pub fn parse(text: &str) -> Result<Snapshot, CaptureError> {
@@ -110,15 +142,60 @@ pub fn parse(text: &str) -> Result<Snapshot, CaptureError> {
         Heads::Many(heads) => heads,
         Heads::One(head) => vec![*head],
     };
-    let mut outputs = heads
+    let outputs = heads
         .into_iter()
-        .map(output)
+        .map(|head| output(report(head)?))
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(snapshot(outputs))
+}
+
+/// The Wayland snapshot of these outputs, in [`head_order`].
+pub fn snapshot(mut outputs: Vec<Output>) -> Snapshot {
     outputs.sort_by(|a, b| head_order(&a.name, &b.name));
-    Ok(Snapshot {
+    Snapshot {
         screen: None,
         outputs,
         caps: Caps::wayland(),
+    }
+}
+
+fn report(head: Head) -> Result<HeadReport, CaptureError> {
+    let name = head.name;
+    let (rotation, reflection) = match head.transform.as_deref() {
+        None => Default::default(),
+        Some(t) => parse_transform(t)
+            .ok_or_else(|| CaptureError::BadTransform(name.clone(), t.to_owned()))?,
+    };
+    let modes = head
+        .modes
+        .iter()
+        .map(|m| {
+            Ok(ModeReport {
+                width: m.width,
+                height: m.height,
+                millihertz: millihertz(&name, m.refresh)?,
+                preferred: m.preferred,
+                current: m.current,
+                custom: m.custom,
+            })
+        })
+        .collect::<Result<_, CaptureError>>()?;
+    Ok(HeadReport {
+        description: head.description,
+        make: head.make,
+        model: head.model,
+        serial: head.serial,
+        physical_size: head.physical_size.map(|d| Size::new(d.width, d.height)),
+        enabled: head.enabled,
+        modes,
+        position: head
+            .position
+            .map_or_else(Point::default, |p| Point::new(p.x, p.y)),
+        rotation,
+        reflection,
+        scale: head.scale.unwrap_or(1.0),
+        adaptive_sync: head.adaptive_sync,
+        name,
     })
 }
 
@@ -182,9 +259,10 @@ pub fn identity(make: Option<&str>, model: Option<&str>, serial: Option<&str>) -
     })
 }
 
-fn output(head: Head) -> Result<Output, CaptureError> {
+/// The output a head report describes. Modes are merged by size and rate; a duplicate the head
+/// runs keeps its own `custom`.
+pub fn output(head: HeadReport) -> Result<Output, CaptureError> {
     let name = head.name;
-    // One mode per size and rate; a duplicate the head runs keeps its own `custom`.
     let mut modes: Vec<Mode> = Vec::new();
     let mut current = None;
     for m in &head.modes {
@@ -194,7 +272,7 @@ fn output(head: Head) -> Result<Output, CaptureError> {
         if w == 0 || h == 0 {
             return Err(CaptureError::BadSize(name, m.width, m.height));
         }
-        let mhz = millihertz(&name, m.refresh)?;
+        let mhz = m.millihertz;
         let custom = m.custom.unwrap_or(mhz == 0);
         let new = mode(w, h, mhz, m.preferred, custom);
         let id = new.id;
@@ -216,21 +294,15 @@ fn output(head: Head) -> Result<Output, CaptureError> {
             return Err(CaptureError::NoCurrentMode(name));
         };
         let size = modes.iter().find(|m| m.id == id).expect("listed").size();
-        let (rotation, reflection) = match head.transform.as_deref() {
-            None => Default::default(),
-            Some(t) => parse_transform(t)
-                .ok_or_else(|| CaptureError::BadTransform(name.clone(), t.to_owned()))?,
-        };
-        let scale = head.scale.unwrap_or(1.0);
+        let (rotation, reflection) = (head.rotation, head.reflection);
+        let scale = head.scale;
         if !(scale.is_finite() && scale > 0.0) {
             return Err(CaptureError::BadScale(name, scale));
         }
         let scaling = Scaling::Logical(scale);
         Some(ActiveConfig {
             mode: id,
-            pos: head
-                .position
-                .map_or_else(Point::default, |p| Point::new(p.x, p.y)),
+            pos: head.position,
             size: effective_size(size, rotation, &scaling),
             rotation,
             reflection,
@@ -251,10 +323,7 @@ fn output(head: Head) -> Result<Output, CaptureError> {
         primary: false,
         modes,
         edid: None,
-        physical_mm: head
-            .physical_size
-            .map(|d| Size::new(d.width, d.height))
-            .filter(|s| s.w > 0 && s.h > 0),
+        physical_mm: head.physical_size.filter(|s| s.w > 0 && s.h > 0),
         crtc: None,
         crtcs: Vec::new(),
         active,

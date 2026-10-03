@@ -97,27 +97,6 @@ impl Backend for XrandrCli {
     }
 }
 
-/// Refuses to drive the live X server where xrandr cannot work: under Wayland it would only
-/// reconfigure XWayland, and without `DISPLAY` there is no server to talk to. `env` looks up an
-/// environment variable.
-pub fn check_session(env: impl Fn(&str) -> Option<String>) -> Result<(), String> {
-    let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
-    if set("WAYLAND_DISPLAY") || env("XDG_SESSION_TYPE").as_deref() == Some("wayland") {
-        return Err(
-            "this is a Wayland session, where xrandr would only reconfigure XWayland. \
-                    Use wlr-randr, kanshi, hyprctl or the desktop's display settings instead. \
-                    (--demo and --from-file still work.)"
-                .to_owned(),
-        );
-    }
-    if !set("DISPLAY") {
-        return Err("DISPLAY is not set, so there is no X server to talk to. \
-             (--demo and --from-file still work.)"
-            .to_owned());
-    }
-    Ok(())
-}
-
 /// How to install xrandr on the distribution `/etc/os-release` describes.
 pub fn install_hint(os_release: &str) -> String {
     let field = |key: &str| {
@@ -172,27 +151,6 @@ pub(crate) fn parse_transform_arg(value: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn live_x_needs_an_x_session() {
-        let env = |vars: &'static [(&'static str, &'static str)]| {
-            move |k: &str| {
-                vars.iter()
-                    .find(|(n, _)| *n == k)
-                    .map(|(_, v)| (*v).to_owned())
-            }
-        };
-        assert!(check_session(env(&[("DISPLAY", ":0"), ("XDG_SESSION_TYPE", "x11")])).is_ok());
-        let wayland = check_session(env(&[("DISPLAY", ":0"), ("WAYLAND_DISPLAY", "wayland-0")]));
-        assert!(wayland.unwrap_err().contains("wlr-randr"));
-        let wayland = check_session(env(&[("DISPLAY", ":0"), ("XDG_SESSION_TYPE", "wayland")]));
-        assert!(wayland.is_err());
-        assert!(
-            check_session(env(&[]))
-                .unwrap_err()
-                .starts_with("DISPLAY is not set")
-        );
-    }
 
     #[test]
     fn install_hints_follow_os_release() {
