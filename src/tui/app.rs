@@ -15,10 +15,11 @@ use crate::model::history::History;
 use crate::model::layout::SCALES;
 use crate::model::layout::{CommitReport, EditError, Layout, OutputDiff};
 use crate::model::links::{Align, Side, best_align};
+use crate::model::profile::{Profile, Remap};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
 use crate::model::{Cap, Kind, Mode, ModeId, Output, Scaling, Snapshot};
-use crate::xrandr::script::{Profile, Remap};
+use crate::profiles::{NO_WAYLAND_PROFILES, Stored};
 
 use super::canvas::Viewport;
 use super::cmdline::{self, Cmd};
@@ -45,7 +46,7 @@ pub enum Effect {
     Keep,
     /// Put text on the clipboard with OSC 52.
     Copy(String),
-    /// Read the profiles in the layouts directory and open the picker.
+    /// Read the profiles in the store and open the picker.
     ListProfiles,
     /// Read one profile, by name or path, and open it.
     OpenProfile(String),
@@ -70,12 +71,16 @@ pub struct ProfileItem {
 }
 
 impl ProfileItem {
-    pub fn new(snap: &Snapshot, path: PathBuf, text: &str) -> Self {
-        let profile = Profile::parse(text);
+    pub fn new(snap: &Snapshot, stored: Stored) -> Self {
+        let Stored {
+            name,
+            path,
+            profile,
+        } = stored;
         let remap = profile.default_remap(snap);
         let (preview, notes) = profile.layout(snap, &remap);
         Self {
-            name: crate::xrandr::script::profile_name(&path),
+            name,
             unmatched: profile.unmatched(snap),
             path,
             profile,
@@ -105,6 +110,8 @@ pub struct RemapDialog {
 /// A save that would overwrite a different file: the new text and the diff to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavePlan {
+    /// The profile's name.
+    pub name: String,
     pub path: PathBuf,
     pub text: String,
     pub diff: Vec<String>,
@@ -178,10 +185,6 @@ pub const ANIMATION: Duration = Duration::from_millis(120);
 
 /// How often the editor re-reads the live state, to pick up displays that were plugged in.
 pub const WATCH_INTERVAL: Duration = Duration::from_secs(2);
-
-/// Why `w`, `e`, `outlay apply` and `outlay save` do nothing on Wayland yet.
-pub const NO_WAYLAND_PROFILES: &str =
-    "Profiles on Wayland are kanshi profiles, which arrive in the next version of outlay.";
 
 /// Displays gliding from where they were drawn to where the edit put them.
 #[derive(Clone, Debug, PartialEq)]
