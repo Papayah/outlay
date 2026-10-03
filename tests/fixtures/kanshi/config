@@ -1,0 +1,29 @@
+# A synthetic kanshi config, after the examples in kanshi(5), for the Wayland demo
+# (tests/fixtures/wayland/demo.json): HDMI-A-1 Philips TV, DP-3 Dell, eDP-1 laptop, DP-4 LG.
+
+output "Dell Inc. DELL U2719D 7LQ2M43" alias $dell
+output eDP-1 scale 2
+
+profile home {
+	output eDP-1 enable position 560,1440
+	output $dell enable mode 2560x1440@143.912Hz position 0,0
+	# the TV, by a glob on its description
+	output "Philips Consumer Electronics Company PHILIPS FTV *" {
+		mode 1920x1080
+		position 2560,0
+	}
+	output "LG Electronics LG HDR 4K 0x0000B1D2" disable
+	exec swaymsg workspace 1, move workspace to eDP-1
+}
+
+profile nomad {
+	output eDP-1 enable scale 1.5
+	...output * disable
+}
+
+profile {
+	output eDP-1 disable
+	output * enable mode 3840x2160@30Hz position 0,0
+}
+
+include desks.d/*

@@ -47,9 +47,14 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "SECONDS")]
     pub revert_timeout: Option<u64>,
 
-    /// Where profiles live [default: ~/.screenlayout, or layouts_dir from the config]
+    /// Where profiles live on X11 [default: ~/.screenlayout, or layouts_dir from the config]
     #[arg(long, global = true, value_name = "DIR")]
     pub layouts_dir: Option<PathBuf>,
+
+    /// The kanshi config, where profiles live on Wayland [default: $XDG_CONFIG_HOME/kanshi/config,
+    /// or kanshi_config from the config]
+    #[arg(long, global = true, value_name = "FILE")]
+    pub kanshi_config: Option<PathBuf>,
 
     /// Move displays at once instead of letting them glide into place
     #[arg(long, global = true)]
@@ -62,13 +67,14 @@ pub enum Command {
     Show,
     /// List outputs, then resolutions with their rates
     List,
-    /// Apply a profile (<layouts-dir>/<PROFILE>.sh, or a path) with the automatic revert;
-    /// with -n, print the command only
+    /// Apply a profile (<layouts-dir>/<PROFILE>.sh or a path on X11, a kanshi profile on
+    /// Wayland) with the automatic revert; with -n, print the command only
     Apply {
         /// A profile name, or a path to a script
         profile: String,
     },
-    /// Save the live layout as an arandr-compatible profile; with -n, print it only
+    /// Save the live layout as a profile (an arandr-compatible script on X11, a block in the
+    /// kanshi config on Wayland); with -n, print the file only
     Save {
         /// A profile name, or a path to a script
         profile: String,
@@ -156,6 +162,7 @@ impl Cli {
             hooks: config.post_apply.clone(),
             hook_timeout: Duration::from_secs(config.post_apply_timeout),
             layouts_dir: Some(self.layouts_dir(config)),
+            kanshi_config: self.kanshi_config(config),
             restore_program: Some(restore_program()),
         };
         Ok((options, settings))
@@ -166,6 +173,13 @@ impl Cli {
         self.layouts_dir
             .clone()
             .unwrap_or_else(|| config.layouts_dir())
+    }
+
+    /// `--kanshi-config`, else the config's `kanshi_config`, else the file kanshi reads.
+    pub fn kanshi_config(&self, config: &Config) -> Option<PathBuf> {
+        self.kanshi_config
+            .clone()
+            .or_else(|| config.kanshi_config())
     }
 }
 
@@ -268,6 +282,19 @@ mod tests {
         assert_eq!(cli.layouts_dir(&config), PathBuf::from("/from/config"));
         let (_, settings) = cli.tui_options(&config).unwrap();
         assert_eq!(settings.layouts_dir, Some(PathBuf::from("/from/config")));
+    }
+
+    #[test]
+    fn the_kanshi_config_comes_from_the_flag_then_the_config() {
+        let config = Config {
+            kanshi_config: Some("/from/config".to_owned()),
+            ..Config::default()
+        };
+        let cli = Cli::try_parse_from(["outlay", "--kanshi-config", "/k", "save", "x"]).unwrap();
+        assert_eq!(cli.kanshi_config(&config), Some(PathBuf::from("/k")));
+        let cli = Cli::try_parse_from(["outlay"]).unwrap();
+        let (_, settings) = cli.tui_options(&config).unwrap();
+        assert_eq!(settings.kanshi_config, Some(PathBuf::from("/from/config")));
     }
 
     #[test]

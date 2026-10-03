@@ -8,6 +8,7 @@ use outlay::model::geometry::Dir;
 use outlay::model::history::History;
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Side};
+use outlay::wayland::kanshi;
 use outlay::xrandr::command;
 use outlay::xrandr::script::Profile;
 use proptest::prelude::*;
@@ -421,6 +422,32 @@ proptest! {
         let (mut loaded, notes) = profile.layout(&snap, &Vec::new());
         prop_assert!(notes.is_empty(), "{:?}", notes);
         // A script says only `--off` for an output that is off, not where it was.
+        for i in 0..layout.len() {
+            if !layout.is_enabled(i) && !loaded.is_enabled(i) {
+                loaded.outputs[i] = layout.outputs[i].clone();
+            }
+        }
+        prop_assert_eq!(loaded, layout, "{}", text);
+    }
+
+    #[test]
+    fn a_saved_kanshi_profile_loads_back_the_same(outs in arb_desk_wl(), edits in prop::collection::vec(arb_edit_wl(), 0..20)) {
+        let snap = desk_wl(&outs);
+        let mut layout = Layout::inferred(&snap);
+        for edit in edits.iter().filter(|e| !matches!(e, Edit::Undo | Edit::Redo)) {
+            apply(&mut layout, &snap, edit);
+        }
+        layout.infer_links();
+        layout.restore = vec![None; layout.len()];
+        let path = std::path::Path::new("/k/config");
+        let (_, text) = kanshi::save(None, path, "p", &layout, &snap);
+        let config = kanshi::parse(path, &text);
+        prop_assert!(config.problems.is_empty(), "{:?}", config.problems);
+        let profile = &config.find("p").unwrap().profile;
+        prop_assert!(profile.warnings.is_empty(), "{:?}", profile.warnings);
+        let (mut loaded, notes) = profile.layout(&snap, &Vec::new());
+        prop_assert!(notes.is_empty(), "{:?}", notes);
+        // A block says only `disable` for an output that is off, not where it was.
         for i in 0..layout.len() {
             if !layout.is_enabled(i) && !loaded.is_enabled(i) {
                 loaded.outputs[i] = layout.outputs[i].clone();

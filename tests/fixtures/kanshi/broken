@@ -1,0 +1,7 @@
+profile broken {
+	output eDP-1 enable mode fast scale -1 frobnicate
+	output "HDMI-A-1 enable
+	alias $tv
+}
+}
+workspace 1

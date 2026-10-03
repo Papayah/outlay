@@ -377,6 +377,27 @@ pub struct Mode {
 }
 
 impl Mode {
+    /// A mode of a Wayland head, named by its size so `find_mode` works on it.
+    pub fn wayland(
+        width: u16,
+        height: u16,
+        millihertz: u32,
+        preferred: bool,
+        custom: bool,
+    ) -> Self {
+        Self {
+            id: ModeId::wayland(width, height, millihertz),
+            name: format!("{width}x{height}"),
+            width: i32::from(width),
+            height: i32::from(height),
+            refresh: f64::from(millihertz) / 1000.0,
+            interlaced: false,
+            double_scan: false,
+            preferred,
+            custom,
+        }
+    }
+
     pub fn size(&self) -> Size {
         Size::new(self.width, self.height)
     }

@@ -389,24 +389,99 @@ fn dump_prints_the_capture_a_fixture_came_from() {
     );
 }
 
-#[test]
-fn profiles_wait_for_kanshi_on_wayland() {
-    let dir = std::env::temp_dir().join(format!("outlay-cli-wl-{}", std::process::id()));
-    let d = dir.to_str().unwrap();
-    for args in [
-        vec!["--demo=wayland", "--layouts-dir", d, "apply", "home", "-n"],
-        vec!["--demo=wayland", "--layouts-dir", d, "save", "home"],
-    ] {
-        let (ok, stdout, stderr) = outlay(&args);
-        assert!(!ok, "{args:?}");
-        assert!(stdout.is_empty());
-        assert_eq!(
-            stderr,
-            "outlay: Profiles on Wayland are kanshi profiles, which arrive in the next version \
-             of outlay\n"
-        );
+/// A copy of the kanshi fixtures in a fresh directory.
+fn kanshi_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("outlay-cli-kanshi-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("desks.d")).unwrap();
+    let from = format!("{}/tests/fixtures/kanshi", env!("CARGO_MANIFEST_DIR"));
+    for name in ["config", "desks.d/office"] {
+        std::fs::copy(format!("{from}/{name}"), dir.join(name)).unwrap();
     }
-    assert!(!dir.exists(), "nothing written");
+    dir
+}
+
+#[test]
+fn wayland_profiles_are_kanshi_profiles() {
+    let dir = kanshi_dir("apply");
+    let config = dir.join("config");
+    let c = config.to_str().unwrap();
+    let (ok, stdout, stderr) = outlay(&[
+        "--demo=wayland",
+        "--kanshi-config",
+        c,
+        "apply",
+        "home",
+        "-n",
+    ]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        "wlr-randr --output eDP-1 --on --mode 2880x1800@60.001Hz --pos 560,1440 --transform normal \
+         --scale 2 --output DP-3 --on --mode 2560x1440@143.912Hz --pos 0,0 --transform normal \
+         --scale 1 --output DP-4 --off --output HDMI-A-1 --on --mode 1920x1080@60.000Hz --pos \
+         2560,0 --transform normal --scale 1\n"
+    );
+    assert_eq!(
+        stderr,
+        "kanshi runs this profile's exec commands; outlay does not.\n"
+    );
+    let (ok, _, stderr) = outlay(&[
+        "--demo=wayland",
+        "--kanshi-config",
+        c,
+        "apply",
+        "away",
+        "-n",
+    ]);
+    assert!(!ok);
+    assert_eq!(stderr, format!("outlay: there is no profile away in {c}\n"));
+
+    // -n prints the whole file and writes nothing.
+    let before = std::fs::read_to_string(&config).unwrap();
+    let (ok, stdout, stderr) =
+        outlay(&["--demo=wayland", "--kanshi-config", c, "save", "desk", "-n"]);
+    assert!(ok, "{stderr}");
+    assert!(stdout.starts_with(&before), "{stdout}");
+    assert!(
+        stdout.contains("\nprofile desk {\n    output eDP-1 enable "),
+        "{stdout}"
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+    // The config exists, so the save asks; without a terminal, --force answers.
+    let (ok, _, stderr) = outlay(&["--demo=wayland", "--kanshi-config", c, "save", "desk"]);
+    assert!(!ok);
+    assert!(stderr.contains("+ profile desk {\n"), "the diff: {stderr}");
+    assert!(
+        stderr.contains("exists and differs; pass --force"),
+        "{stderr}"
+    );
+    let (ok, _, stderr) = outlay(&[
+        "--demo=wayland",
+        "--kanshi-config",
+        c,
+        "save",
+        "desk",
+        "--force",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stderr.ends_with("config. Run `kanshictl reload` so kanshi uses it.\n"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), stdout);
+
+    // A new config needs no question.
+    let fresh = dir.join("fresh");
+    let f = fresh.to_str().unwrap();
+    let (ok, _, stderr) = outlay(&["--demo=wayland", "--kanshi-config", f, "save", "desk"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        std::fs::read_to_string(&fresh)
+            .unwrap()
+            .contains("profile desk {")
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

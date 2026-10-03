@@ -14,8 +14,10 @@ pub struct Config {
     pub revert_seconds: u64,
     /// Pixels per Alt-direction nudge.
     pub nudge_step: i32,
-    /// Where profiles live.
+    /// Where profiles live on X11.
     pub layouts_dir: String,
+    /// The kanshi config, where profiles live on Wayland; unset, the one kanshi reads.
+    pub kanshi_config: Option<String>,
     pub animations: bool,
     /// The focus letters: left, down, up, right.
     pub directions: String,
@@ -36,6 +38,7 @@ impl Default for Config {
             revert_seconds: 15,
             nudge_step: 10,
             layouts_dir: "~/.screenlayout".to_owned(),
+            kanshi_config: None,
             animations: true,
             directions: "hjkl".to_owned(),
             cell_aspect: None,
@@ -89,6 +92,15 @@ impl Config {
     pub fn layouts_dir(&self) -> PathBuf {
         expand_home(&self.layouts_dir)
     }
+
+    /// `kanshi_config` with a leading `~` expanded, else `$XDG_CONFIG_HOME/kanshi/config`, as
+    /// kanshi finds it.
+    pub fn kanshi_config(&self) -> Option<PathBuf> {
+        match &self.kanshi_config {
+            Some(path) => Some(expand_home(path)),
+            None => dirs::config_dir().map(|d| d.join("kanshi").join("config")),
+        }
+    }
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -115,6 +127,7 @@ mod tests {
             revert_seconds = 20
             nudge_step = 5
             layouts_dir = "~/layouts"
+            kanshi_config = "~/.config/kanshi/desks"
             animations = false
             directions = "hjkl"
             cell_aspect = 2.1
@@ -132,6 +145,15 @@ mod tests {
         assert_eq!(config.post_apply_timeout, 10, "the default");
         assert!(config.layouts_dir().ends_with("layouts"));
         assert!(!config.layouts_dir().starts_with("~"));
+        let kanshi = config.kanshi_config().unwrap();
+        assert!(kanshi.ends_with(".config/kanshi/desks"), "{kanshi:?}");
+        assert!(!kanshi.starts_with("~"));
+        assert!(
+            Config::default()
+                .kanshi_config()
+                .unwrap()
+                .ends_with("kanshi/config")
+        );
     }
 
     #[test]
