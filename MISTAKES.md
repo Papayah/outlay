@@ -368,9 +368,10 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 
 - **Symptom:** a polling loop such as `for i in …; do gh pr checks …; sleep 30; done` finishes
   in seconds, with one `Too many arguments.` per iteration, while the checks are still pending.
-- **Cause:** the tool harness blocks a foreground `sleep`.
-- **Fix:** run the wait in the background (`gh pr checks N --watch --interval 30` with
-  `run_in_background`); the harness reports when it exits. `gh pr checks` exits 8 while checks
+- **Cause:** the tool harness blocks `sleep`, in a `run_in_background` command too: an
+  `until …; do sleep 15; done` there spins and calls `gh` hundreds of times a minute.
+- **Fix:** let a program do the waiting: `gh pr checks N --watch --interval 30` with
+  `run_in_background`; the harness reports when it exits. `gh pr checks` exits 8 while checks
   are pending.
 
 ## A live pty run misses the countdown that a `--demo` run sees
