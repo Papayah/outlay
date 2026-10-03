@@ -641,3 +641,24 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   it was verified on kanshi 1.9.0.
 - **Fix:** none. On 2026-10-03 the user chose to keep kanshi out of CI, so the test runs locally
   only. Check a newer runner image's file list before you try again.
+
+## A release tag waits for the merge
+
+- **Symptom:** after `chore: release X.Y.Z` on a PR branch, `git tag -a vX.Y.Z` there tags a
+  commit that never reaches `main`.
+- **Cause:** PRs are rebase-merged, so GitHub writes new commits on `main` (PR #9: `ae36cc6` on
+  the branch became `67fd7a5` on `main`). `v0.1.0` sits on `main`'s commit, not the branch's.
+- **Fix:** open the release PR without a tag. After the merge, run `git switch main && git pull
+  --ff-only`, check that `git log -1` is `chore: release X.Y.Z`, then tag. Push the tag only on
+  the user's go-ahead (`CLAUDE.md`, "Releases"). Before 0.2.0, the bump also broke
+  `script_of_the_demo`, which had the version written out. Goldens take it from
+  `CARGO_PKG_VERSION` now; keep new ones that way.
+
+## `sleep` suspends the machine
+
+- **Symptom:** `sleep 20` in a Bash tool call prints `Too many arguments.` and does not wait.
+- **Cause:** the shell is set up from the user's profile, and `~/.zsh_aliases` has
+  `alias sleep='systemctl suspend'`. With an argument, `systemctl` refuses; a bare `sleep`
+  would suspend the developer's machine.
+- **Fix:** never type plain `sleep`. Use `/usr/bin/sleep 20` (or `command sleep 20`), and check
+  `type <cmd>` when a common command behaves oddly.
