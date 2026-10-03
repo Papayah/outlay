@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod client;
 pub mod command;
+pub mod kanshi;
 
 pub use client::WlrBackend;
 
@@ -79,16 +80,18 @@ pub fn revert_script(program: &Path, before: &Snapshot) -> String {
     )
 }
 
-/// How heads are numbered: built-in panels first (`eDP`, `LVDS`, `DSI`), then by name with the
-/// numbers in names compared as numbers, so numbers do not depend on what was plugged in first.
+/// Whether a head is a built-in panel: `eDP`, `LVDS` or `DSI`.
+pub fn built_in(name: &str) -> bool {
+    ["eDP", "LVDS", "DSI"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// How heads are numbered: built-in panels first, then by name with the numbers in names
+/// compared as numbers, so numbers do not depend on what was plugged in first.
 pub fn head_order(a: &str, b: &str) -> Ordering {
-    let external = |name: &str| {
-        !["eDP", "LVDS", "DSI"]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-    };
-    external(a)
-        .cmp(&external(b))
+    (!built_in(a))
+        .cmp(&!built_in(b))
         .then_with(|| natural(a, b))
         .then_with(|| a.cmp(b))
 }

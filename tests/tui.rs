@@ -1279,18 +1279,16 @@ fn wayland_has_no_primary_and_no_mirror() {
 }
 
 #[test]
-fn wayland_refuses_profiles_until_kanshi() {
+fn wayland_has_profiles_too() {
     let mut app = wayland_demo();
-    for keys in ["w", "e", ":w home<Enter>", ":e<Enter>"] {
-        let effects = press(&mut app, keys);
-        assert!(effects.is_empty(), "{keys}: {effects:?}");
-        assert_eq!(app.mode, UiMode::Normal, "{keys}");
-        assert_eq!(
-            status(&app),
-            "Profiles on Wayland are kanshi profiles, which arrive in the next version of outlay.",
-            "{keys}"
-        );
-    }
+    assert_eq!(press(&mut app, "e"), [Effect::ListProfiles]);
+    assert_eq!(press(&mut app, ":e<Enter>"), [Effect::ListProfiles]);
+    assert_eq!(
+        press(&mut app, ":w home<Enter>"),
+        [Effect::SaveProfile("home".to_owned())]
+    );
+    assert!(press(&mut app, "w").is_empty());
+    assert_eq!(app.mode, UiMode::SavePrompt(String::new()));
 }
 
 #[test]

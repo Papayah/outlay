@@ -3,7 +3,7 @@
 use std::fmt;
 
 use super::layout::Layout;
-use super::{Scaling, Snapshot};
+use super::{Kind, Scaling, Snapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
@@ -51,11 +51,13 @@ pub fn validate(layout: &Layout, snap: &Snapshot) -> Vec<Issue> {
     }
     for &i in &on {
         let out = &snap.outputs[i];
-        // The live mode of a stale output is no longer listed; only a pending change counts.
+        // The live mode of a stale output is no longer listed; only a pending change counts. A
+        // compositor sets a custom mode it does not list (kanshi's `mode --custom`).
         let live = out.active.as_ref().map(|a| a.mode);
         if let Some(mode) = &layout.outputs[i].mode
             && out.mode(mode.id).is_none()
             && Some(mode.id) != live
+            && !(mode.custom && snap.caps.kind == Kind::Wayland)
         {
             issues.push(issue(
                 Error,

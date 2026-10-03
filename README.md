@@ -19,8 +19,8 @@ completions. Run the same command again to update.
 On X11, outlay needs the `xrandr` program (`xorg-xrandr` on Arch, `x11-xserver-utils` on Debian
 and Ubuntu, `xrandr` on Fedora, openSUSE, Void and Alpine). On Wayland it talks to the compositor
 itself and needs nothing else: sway, Hyprland, niri, river, labwc, Wayfire and the other
-compositors that offer wlr-output-management work. GNOME and KDE Plasma do not yet, and profiles
-on Wayland (kanshi) arrive in the next version.
+compositors that offer wlr-output-management work. GNOME and KDE Plasma do not yet. Profiles on
+Wayland are kanshi profiles.
 
 For options, end the line with `sh -s --` and add them: `--version 0.1.0` installs that release,
 `--to DIR` installs into another directory, and `--uninstall` removes outlay again (`--help` lists
@@ -66,14 +66,15 @@ The whole apply flow, countdown and revert included, works in all three.
 outlay                      open the editor (default)
 outlay show                 print the to-scale diagram and output table, then exit
 outlay list                 list outputs, then resolutions with their rates
-outlay apply <profile>      apply ~/.screenlayout/<profile>.sh or a path (-n prints the command only)
-outlay save <profile>       save the live layout as an arandr-compatible script
+outlay apply <profile>      apply ~/.screenlayout/<profile>.sh or a path; on Wayland, a kanshi profile
+                            (-n prints the command only)
+outlay save <profile>       save the live layout as an arandr-compatible script, or a kanshi profile
 outlay keys                 print the keymap
 outlay completions <shell>  print a completion script
 ```
 
 Global flags: `--demo`, `--from-file <capture>`, `-n`, `--layouts-dir <dir>`,
-`--revert-timeout <s>` (`0` turns the countdown off), `--no-anim`.
+`--kanshi-config <file>`, `--revert-timeout <s>` (`0` turns the countdown off), `--no-anim`.
 
 ## Keys
 
@@ -153,6 +154,7 @@ without asking). With `-n`, both only print what they would run or write.
 revert_seconds = 15
 nudge_step = 10
 layouts_dir = "~/.screenlayout"
+# kanshi_config = "~/.config/kanshi/config"   # Wayland profiles; default: the file kanshi reads
 animations = true
 directions = "hjkl"        # focus letters: left, down, up, right
 # cell_aspect = 2.0        # detected from the terminal when omitted

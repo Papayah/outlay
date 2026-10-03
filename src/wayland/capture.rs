@@ -16,8 +16,7 @@ use thiserror::Error;
 use super::{head_order, parse_transform, transform_name};
 use crate::model::geometry::{Point, Size, effective_size};
 use crate::model::{
-    ActiveConfig, Caps, Connection, Identity, Mode, ModeId, Output, Reflection, Rotation, Scaling,
-    Snapshot,
+    ActiveConfig, Caps, Connection, Identity, Mode, Output, Reflection, Rotation, Scaling, Snapshot,
 };
 
 #[derive(Debug, Error)]
@@ -210,17 +209,7 @@ fn millihertz(name: &str, hz: f64) -> Result<u32, CaptureError> {
 
 /// A mode of a Wayland head, named by its size so `find_mode` works on it.
 pub fn mode(width: u16, height: u16, millihertz: u32, preferred: bool, custom: bool) -> Mode {
-    Mode {
-        id: ModeId::wayland(width, height, millihertz),
-        name: format!("{width}x{height}"),
-        width: i32::from(width),
-        height: i32::from(height),
-        refresh: f64::from(millihertz) / 1000.0,
-        interlaced: false,
-        double_scan: false,
-        preferred,
-        custom,
-    }
+    Mode::wayland(width, height, millihertz, preferred, custom)
 }
 
 /// The rate of a Wayland mode in mHz.
@@ -432,7 +421,7 @@ pub fn write(snap: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Reflection, Rotation};
+    use crate::model::{ModeId, Reflection, Rotation};
 
     const HEADLESS: &str = r#"[
   {

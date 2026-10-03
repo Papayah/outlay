@@ -1,0 +1,5 @@
+# Included from ../config.
+profile office {
+	output eDP-1 enable mode 2880x1800 position 0,0 scale 2 transform 90
+	output "Dell Inc. DELL U2720Q *" enable mode --custom 3000x2000@59.5Hz position 900,0
+}

@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 
 use super::{ApplyOutcome, Backend, Plan, PrimaryRule, ScalingChange};
 use crate::model::geometry::{Size, effective_size};
-use crate::model::{ActiveConfig, Scaling, Snapshot, Transform};
+use crate::model::{ActiveConfig, Kind, Scaling, Snapshot, Transform};
 use crate::wayland::{self, capture};
 use crate::xrandr::{DEMO, command, parse_verbose};
 
@@ -173,6 +173,10 @@ fn simulate(snapshot: &mut Snapshot, plan: &Plan) -> ApplyOutcome {
             out.crtc = None;
             continue;
         };
+        // A compositor takes a custom mode it does not list, and lists it from then on.
+        if next.caps.kind == Kind::Wayland && on.mode.custom && out.mode(on.mode.id).is_none() {
+            out.modes.push(on.mode.clone());
+        }
         let Some(mode) = out.mode(on.mode.id).cloned() else {
             return failure(format!(
                 "xrandr: cannot find mode 0x{:x} for output {}\n",

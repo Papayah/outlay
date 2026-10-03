@@ -47,6 +47,11 @@ pub enum ModeRequest {
     Name(String),
     /// An X11 mode by its XID: `--mode 0x1c3`.
     Xid(u32),
+    /// A mode by size, as kanshi's `mode WxH[@R]` asks for it: the rate nearest the entry's, or
+    /// the highest one.
+    Size { width: i32, height: i32 },
+    /// A mode by size and rate whether the output lists it or not: kanshi's `mode --custom`.
+    Custom { width: i32, height: i32 },
 }
 
 impl ModeRequest {
@@ -56,6 +61,8 @@ impl ModeRequest {
             Self::Preferred => "preferred".to_owned(),
             Self::Name(name) => name.clone(),
             Self::Xid(xid) => format!("0x{xid:x}"),
+            Self::Size { width, height } => format!("{width}x{height}"),
+            Self::Custom { width, height } => format!("--custom {width}x{height}"),
         }
     }
 }
@@ -65,6 +72,9 @@ impl ModeRequest {
 pub struct Entry {
     pub target: Target,
     pub off: bool,
+    /// The entry leaves an output that is off as it is: a kanshi output with neither `enable`
+    /// nor `disable`.
+    pub keep_off: bool,
     /// `None` keeps the mode the output runs, or the preferred one when it is off.
     pub mode: Option<ModeRequest>,
     pub rate: Option<f64>,
@@ -194,6 +204,21 @@ fn bracket(p: &[char], c: char) -> Option<usize> {
     (hit != negated).then_some(k + 1)
 }
 
+/// The mode a custom request sets: the listed one of that size and rate, else a new custom
+/// mode. `None` when the size does not fit a Wayland mode.
+fn custom_mode(out: &Output, width: i32, height: i32, rate: Option<f64>) -> Option<Mode> {
+    let millihertz = (rate.unwrap_or(0.0) * 1000.0).round();
+    let listed = out.modes.iter().find(|m| {
+        m.width == width && m.height == height && (m.refresh * 1000.0).round() == millihertz
+    });
+    if let Some(m) = listed {
+        return Some(m.clone());
+    }
+    let (w, h) = (u16::try_from(width).ok()?, u16::try_from(height).ok()?);
+    (w > 0 && h > 0 && (0.0..=f64::from(u32::MAX)).contains(&millihertz))
+        .then(|| Mode::wayland(w, h, millihertz as u32, false, true))
+}
+
 /// The connector type of an output name: `eDP` for `eDP-1`, `DP` for `DP-1-2.1`.
 pub fn connector(name: &str) -> &str {
     let end = name
@@ -203,26 +228,31 @@ pub fn connector(name: &str) -> &str {
 }
 
 impl Profile {
-    /// The output each entry stands for on `snap`, before any remap. A name matches that output
-    /// when it is connected, or whenever the entry turns it off; a description matches a
-    /// connected output no other entry took; `*` takes one that is left. Names go first, then
-    /// descriptions, then `*`, so a wildcard never takes a display a later entry names.
+    /// The output each entry stands for on `snap`, before any remap, matched as kanshi matches:
+    /// entries in order, each taking the first connected output that fits and that no earlier
+    /// entry took, with the entries whose criteria hold a `*` last. A name fits that output, and
+    /// for an entry that turns it off, it need not be connected; a description fits by glob; `*`
+    /// fits any. Outputs are tried in display-number order.
     pub fn matches(&self, snap: &Snapshot) -> Vec<Option<usize>> {
         let mut found = vec![None; self.entries.len()];
         let mut taken: Vec<usize> = Vec::new();
         let connected = |i: usize| snap.outputs[i].is_connected();
-        for pass in 0..3 {
+        for wildcards in [false, true] {
             for (k, e) in self.entries.iter().enumerate() {
+                if e.target.label().contains('*') != wildcards {
+                    continue;
+                }
                 let free = |i: &usize| connected(*i) && !taken.contains(i);
-                let pick = match (&e.target, pass) {
-                    (Target::Name(name), 0) => snap.find(name).filter(|&i| connected(i) || e.off),
-                    (Target::Description(glob), 1) => snap
+                let pick = match &e.target {
+                    Target::Name(name) => snap
+                        .find(name)
+                        .filter(|&i| (connected(i) || e.off) && !taken.contains(&i)),
+                    Target::Description(glob) => snap
                         .numbered()
                         .into_iter()
                         .filter(free)
                         .find(|&i| glob_match(glob, &description(&snap.outputs[i]))),
-                    (Target::Any, 2) => snap.numbered().into_iter().find(free),
-                    _ => continue,
+                    Target::Any => snap.numbered().into_iter().find(free),
                 };
                 found[k] = pick;
                 taken.extend(pick);
@@ -351,6 +381,9 @@ impl Profile {
                 st.primary = false;
                 continue;
             }
+            if e.keep_off && !st.enabled {
+                continue;
+            }
             let out = &snap.outputs[i];
             let was_on = st.enabled;
             let keep = st.mode.clone().filter(|m| out.mode(m.id).is_some());
@@ -358,6 +391,19 @@ impl Profile {
                 Some(ModeRequest::Xid(xid)) => out.mode(ModeId::from_xid(*xid)).cloned(),
                 Some(ModeRequest::Name(name)) => out.find_mode(name, e.rate).cloned(),
                 Some(ModeRequest::Preferred) => out.preferred_mode().cloned(),
+                Some(ModeRequest::Size { width, height }) => {
+                    let rates = out.rates(*width, *height);
+                    match e.rate {
+                        Some(r) => rates
+                            .into_iter()
+                            .min_by(|x, y| (x.refresh - r).abs().total_cmp(&(y.refresh - r).abs())),
+                        None => rates.into_iter().next(),
+                    }
+                    .cloned()
+                }
+                Some(ModeRequest::Custom { width, height }) => {
+                    custom_mode(out, *width, *height, e.rate)
+                }
                 None => {
                     let base = keep.or_else(|| out.preferred_mode().cloned());
                     match (base, e.rate) {

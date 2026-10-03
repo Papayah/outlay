@@ -19,7 +19,7 @@ use crate::model::profile::{Profile, Remap};
 use crate::model::snap::SnapKind;
 use crate::model::validate::{Issue, Severity, validate};
 use crate::model::{Cap, Kind, Mode, ModeId, Output, Scaling, Snapshot};
-use crate::profiles::{NO_WAYLAND_PROFILES, Stored};
+use crate::profiles::Stored;
 
 use super::canvas::Viewport;
 use super::cmdline::{self, Cmd};
@@ -1009,7 +1009,6 @@ impl App {
                 let text = portable_command_text(self.layout.caps.kind, &plan);
                 return vec![Effect::Copy(text)];
             }
-            Action::Save | Action::Open if !self.has_profiles() => {}
             Action::Save => {
                 self.mode = UiMode::SavePrompt(self.profile.clone().unwrap_or_default())
             }
@@ -1755,10 +1754,14 @@ impl App {
         self.mode = UiMode::Overwrite(plan);
     }
 
-    /// The profile was written.
-    pub fn saved(&mut self, name: String, shown: &str) {
+    /// The profile was written; `then` is what to do next, if anything.
+    pub fn saved(&mut self, name: String, shown: &str, then: Option<&str>) {
         self.profile = Some(name);
-        self.say(Severity::Info, format!("Saved {shown}."));
+        let text = match then {
+            Some(then) => format!("Saved {shown}. {then}"),
+            None => format!("Saved {shown}."),
+        };
+        self.say(Severity::Info, text);
     }
 
     fn profiles_key(&mut self, action: Action) {
@@ -1969,7 +1972,6 @@ impl App {
             Cmd::On(t) => self.switch(t, true),
             Cmd::Off(t) => self.switch(t, false),
             Cmd::Quit { force } => return self.quit(force),
-            Cmd::Save(_) | Cmd::Open(_) if !self.has_profiles() => {}
             Cmd::Save(Some(name)) => return vec![Effect::SaveProfile(name)],
             Cmd::Save(None) => match self.profile.clone() {
                 Some(name) => return vec![Effect::SaveProfile(name)],
@@ -2029,15 +2031,6 @@ impl App {
             }
             self.say(Severity::Info, text);
         }
-    }
-
-    /// Whether this display server has profiles yet; says why not when it has none.
-    fn has_profiles(&mut self) -> bool {
-        if self.layout.caps.kind == Kind::Wayland {
-            self.say(Severity::Info, NO_WAYLAND_PROFILES);
-            return false;
-        }
-        true
     }
 }
 

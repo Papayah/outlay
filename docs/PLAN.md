@@ -394,6 +394,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   revert_seconds = 15
   nudge_step = 10
   layouts_dir = "~/.screenlayout"
+  # kanshi_config = "~/.config/kanshi/config"   # Wayland profiles; default: the file kanshi reads
   animations = true
   directions = "hjkl"        # focus letters: left, down, up, right
   # cell_aspect = 2.0        # auto-detected when omitted

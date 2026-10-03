@@ -1,26 +1,30 @@
 //! Where profiles live. On X11 they are screenlayout scripts, one per file in a directory
-//! (`~/.screenlayout`). The editor (`w`, `e`) and `outlay apply`/`outlay save` all go through a
-//! [`ProfileStore`], picked by the kind of display server, so both read and write profiles alike.
+//! (`~/.screenlayout`); on Wayland they are the profile blocks of kanshi's config, which kanshi
+//! applies again whenever displays come and go. The editor (`w`, `e`) and `outlay apply`/`outlay
+//! save` all go through a [`ProfileStore`], picked by the kind of display server, so both read
+//! and write profiles alike.
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::files::write_atomic;
-use crate::model::Kind;
 use crate::model::layout::Layout;
 use crate::model::profile::Profile;
+use crate::model::{Kind, Snapshot};
+use crate::wayland::kanshi;
 use crate::xrandr::{command, script};
 
-/// Why `w`, `e`, `outlay apply` and `outlay save` do nothing on Wayland yet.
-pub const NO_WAYLAND_PROFILES: &str =
-    "Profiles on Wayland are kanshi profiles, which arrive in the next version of outlay.";
+/// What the status line adds after a kanshi profile is saved: outlay never reloads kanshi.
+pub const KANSHI_RELOAD: &str = "Run `kanshictl reload` so kanshi uses it.";
 
 /// Where profiles are read from and saved to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProfileStore {
     /// A directory of `#!/bin/sh` scripts: `<dir>/<name>.sh`.
     Screenlayout(PathBuf),
+    /// kanshi's config file, which holds every profile; it may include others.
+    Kanshi(PathBuf),
 }
 
 /// A profile read from a store.
@@ -48,12 +52,17 @@ pub struct Save {
 pub enum ReadError {
     /// The file that should hold it could not be read.
     Io { path: PathBuf, source: io::Error },
+    /// The kanshi config has no profile with this name.
+    Missing { name: String, path: PathBuf },
 }
 
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { path, source } => write!(f, "could not read {}: {source}", path.display()),
+            Self::Missing { name, path } => {
+                write!(f, "there is no profile {name} in {}", path.display())
+            }
         }
     }
 }
@@ -64,7 +73,7 @@ impl ReadError {
     /// The file the error is about.
     pub fn path(&self) -> &Path {
         match self {
-            Self::Io { path, .. } => path,
+            Self::Io { path, .. } | Self::Missing { path, .. } => path,
         }
     }
 
@@ -72,8 +81,34 @@ impl ReadError {
     pub fn sentence(&self, shown: &str) -> String {
         match self {
             Self::Io { source, .. } => format!("Could not read {shown}: {source}."),
+            Self::Missing { name, .. } => format!("There is no profile {name} in {shown}."),
         }
     }
+}
+
+/// kanshi's config, or `None` when there is none yet.
+fn read_kanshi(path: &Path) -> Result<Option<kanshi::Config>, ReadError> {
+    match kanshi::read(path) {
+        Ok(config) => Ok(Some(config)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ReadError::Io {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+/// The profiles of a kanshi config.
+fn kanshi_profiles(config: kanshi::Config) -> Vec<Stored> {
+    config
+        .profiles
+        .into_iter()
+        .map(|block| Stored {
+            path: config.files[block.file].0.clone(),
+            name: block.name,
+            profile: block.profile,
+        })
+        .collect()
 }
 
 /// Reads a file that may not exist yet.
@@ -89,14 +124,20 @@ fn read_optional(path: &Path) -> Result<Option<String>, ReadError> {
 }
 
 impl ProfileStore {
-    /// The store for this kind of display server, or why there is none. `layouts_dir` is where
-    /// screenlayout scripts live.
-    pub fn for_kind(kind: Kind, layouts_dir: Option<&Path>) -> Result<Self, &'static str> {
+    /// The store for this kind of display server, or why there is none: screenlayout scripts
+    /// in `layouts_dir` on X11, the kanshi config at `kanshi_config` on Wayland.
+    pub fn for_kind(
+        kind: Kind,
+        layouts_dir: Option<&Path>,
+        kanshi_config: Option<&Path>,
+    ) -> Result<Self, &'static str> {
         match kind {
             Kind::X11 => layouts_dir
                 .map(|dir| Self::Screenlayout(dir.to_owned()))
                 .ok_or("No layouts directory is set."),
-            Kind::Wayland => Err(NO_WAYLAND_PROFILES),
+            Kind::Wayland => kanshi_config
+                .map(|path| Self::Kanshi(path.to_owned()))
+                .ok_or("No kanshi config is set."),
         }
     }
 
@@ -104,6 +145,15 @@ impl ProfileStore {
     pub fn location(&self) -> &Path {
         match self {
             Self::Screenlayout(dir) => dir,
+            Self::Kanshi(path) => path,
+        }
+    }
+
+    /// What the status line adds after a save.
+    pub fn after_save(&self) -> Option<&'static str> {
+        match self {
+            Self::Screenlayout(_) => None,
+            Self::Kanshi(_) => Some(KANSHI_RELOAD),
         }
     }
 
@@ -129,6 +179,11 @@ impl ProfileStore {
                     })
                     .collect())
             }
+            Self::Kanshi(path) => match kanshi::read(path) {
+                Ok(config) => Ok(kanshi_profiles(config)),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(err) => Err(err),
+            },
         }
     }
 
@@ -146,12 +201,25 @@ impl ProfileStore {
                     Err(source) => Err(ReadError::Io { path, source }),
                 }
             }
+            Self::Kanshi(path) => {
+                let config = kanshi::read(path).map_err(|source| ReadError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                kanshi_profiles(config)
+                    .into_iter()
+                    .find(|s| s.name == name)
+                    .ok_or_else(|| ReadError::Missing {
+                        name: name.to_owned(),
+                        path: path.clone(),
+                    })
+            }
         }
     }
 
-    /// What saving `layout` as profile `name` would write. An existing file keeps everything but
-    /// the profile itself.
-    pub fn save(&self, name: &str, layout: &Layout) -> Result<Save, ReadError> {
+    /// What saving `layout`, on `snap`, as profile `name` would write. An existing file keeps
+    /// everything but the profile itself.
+    pub fn save(&self, name: &str, layout: &Layout, snap: &Snapshot) -> Result<Save, ReadError> {
         match self {
             Self::Screenlayout(dir) => {
                 let path = script::profile_path(dir, name);
@@ -164,6 +232,24 @@ impl ProfileStore {
                     text,
                 })
             }
+            Self::Kanshi(main) => {
+                let config = read_kanshi(main)?;
+                let (path, text) = kanshi::save(config.as_ref(), main, name, layout, snap);
+                let old = match config
+                    .iter()
+                    .flat_map(|c| &c.files)
+                    .find(|(p, _)| *p == path)
+                {
+                    Some((_, text)) => Some(text.clone()),
+                    None => read_optional(&path)?,
+                };
+                Ok(Save {
+                    name: name.to_owned(),
+                    path,
+                    old,
+                    text,
+                })
+            }
         }
     }
 
@@ -171,6 +257,7 @@ impl ProfileStore {
     pub fn write(&self, path: &Path, text: &str) -> io::Result<()> {
         match self {
             Self::Screenlayout(_) => write_atomic(path, text, 0o755),
+            Self::Kanshi(_) => write_atomic(path, text, 0o644),
         }
     }
 }

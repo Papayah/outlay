@@ -38,7 +38,9 @@ impl Input for Lines {
 /// Where profiles live for this kind of display server.
 fn store(cli: &Cli, config: &Config, kind: Kind) -> Result<ProfileStore> {
     let dir = cli.layouts_dir(config);
-    ProfileStore::for_kind(kind, Some(&dir)).map_err(|why| anyhow!("{}", why.trim_end_matches('.')))
+    let kanshi = cli.kanshi_config(config);
+    ProfileStore::for_kind(kind, Some(&dir), kanshi.as_deref())
+        .map_err(|why| anyhow!("{}", why.trim_end_matches('.')))
 }
 
 /// `outlay apply PROFILE`
@@ -186,7 +188,7 @@ pub fn save(
     let layout = Layout::inferred(&snap);
     let Save {
         path, old, text, ..
-    } = store.save(name, &layout)?;
+    } = store.save(name, &layout, &snap)?;
     if cli.dry_run {
         print!("{text}");
         return Ok(());
@@ -218,6 +220,9 @@ pub fn save(
     store
         .write(&path, &text)
         .with_context(|| format!("could not write {}", path.display()))?;
-    say(format!("Saved {}.", tilde(&path)));
+    match store.after_save() {
+        Some(then) => say(format!("Saved {}. {then}", tilde(&path))),
+        None => say(format!("Saved {}.", tilde(&path))),
+    }
     Ok(())
 }

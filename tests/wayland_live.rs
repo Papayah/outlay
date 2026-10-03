@@ -397,3 +397,183 @@ fn the_editor_applies_waits_for_the_answer_and_reverts() {
     assert_eq!(backend.query().unwrap(), before, "reverted");
     assert_eq!(sway.rect("HEADLESS-2"), (0, 0, 1280, 720));
 }
+
+/// kanshi against the headless sway, with its own config and log in sway's runtime directory,
+/// so it never reads `~/.config/kanshi`. It runs only when `OUTLAY_TEST_KANSHI` names the kanshi
+/// binary.
+struct Kanshi {
+    child: std::process::Child,
+    kanshictl: std::path::PathBuf,
+    log: std::path::PathBuf,
+}
+
+impl Kanshi {
+    fn start(sway: &Sway, config: &std::path::Path) -> Option<Self> {
+        let Some(kanshi) = std::env::var_os("OUTLAY_TEST_KANSHI") else {
+            println!("skipped: set OUTLAY_TEST_KANSHI=/path/to/kanshi to run kanshi too");
+            return None;
+        };
+        let kanshi = std::path::PathBuf::from(kanshi);
+        let log = sway.runtime.join("kanshi.log");
+        let file = std::fs::File::create(&log).unwrap();
+        let child = sway
+            .command(&kanshi)
+            .arg("-c")
+            .arg(config)
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        Some(Self {
+            child,
+            kanshictl: kanshi.with_file_name("kanshictl"),
+            log,
+        })
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// Waits up to 5 s until kanshi has applied a profile `n` times in all.
+    fn applied(&self, sway: &Sway, n: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.log().matches("' applied").count() < n {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "kanshi did not apply a profile {n} times:\n{}\n{}",
+                self.log(),
+                sway.log()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn reload(&self, sway: &Sway) {
+        let out = sway
+            .command(&self.kanshictl)
+            .arg("reload")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "kanshictl reload: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            self.log()
+        );
+    }
+}
+
+impl Drop for Kanshi {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Does kanshi undo an apply during outlay's countdown? It keeps its current profile while that
+/// still matches the connected heads (`match_and_apply` in kanshi's `main.c`), so it lets
+/// outlay's change stand; it applies its profile again after a hotplug and on `kanshictl reload`.
+/// A profile outlay saves is one kanshi applies as it is, transform names included.
+#[test]
+fn kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload() {
+    let Some(sway) = Sway::start(2) else { return };
+    sway.swaymsg(&["output", "HEADLESS-2", "pos", "0", "0"]);
+    sway.swaymsg(&["output", "HEADLESS-1", "pos", "1280", "0"]);
+    let config = sway.runtime.join("kanshi-config");
+    std::fs::write(
+        &config,
+        "profile desk {\n\toutput HEADLESS-1 enable position 1280,0\n\toutput HEADLESS-2 enable position 0,0\n}\n",
+    )
+    .unwrap();
+    let Some(kanshi) = Kanshi::start(&sway, &config) else {
+        return;
+    };
+    kanshi.applied(&sway, 1);
+    let backend = connect(&sway);
+    let pos = |name| {
+        let snap = backend.requery().unwrap();
+        head(&snap, name).active.as_ref().unwrap().pos
+    };
+    assert_eq!(pos("HEADLESS-1"), Point::new(1280, 0));
+
+    // outlay moves HEADLESS-1 below HEADLESS-2; kanshi lets it be.
+    let current = head(&backend.query().unwrap(), "HEADLESS-1")
+        .current_mode()
+        .unwrap()
+        .clone();
+    let below = plan(vec![on(
+        "HEADLESS-1",
+        current.clone(),
+        (0, 720),
+        Rotation::Normal,
+        1.0,
+    )]);
+    assert!(backend.apply(&below).unwrap().success, "{}", sway.log());
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(pos("HEADLESS-1"), Point::new(0, 720), "{}", kanshi.log());
+    assert_eq!(
+        kanshi.log().matches("' applied").count(),
+        1,
+        "{}",
+        kanshi.log()
+    );
+
+    // A reload applies the profile again.
+    kanshi.reload(&sway);
+    kanshi.applied(&sway, 2);
+    assert_eq!(pos("HEADLESS-1"), Point::new(1280, 0));
+
+    // So does a hotplug: no profile matches three heads, and the profile matches again once
+    // the third is gone.
+    assert!(backend.apply(&below).unwrap().success);
+    sway.swaymsg(&["create_output"]);
+    sway.swaymsg(&["output", "HEADLESS-3", "unplug"]);
+    kanshi.applied(&sway, 3);
+    assert_eq!(pos("HEADLESS-1"), Point::new(1280, 0), "{}", kanshi.log());
+
+    // outlay saves the live layout, turned 90 (xrandr's left) at 150 %, into the profile;
+    // kanshi applies exactly that.
+    let turned = plan(vec![on(
+        "HEADLESS-1",
+        current,
+        (0, 720),
+        Rotation::Left,
+        1.5,
+    )]);
+    assert!(backend.apply(&turned).unwrap().success);
+    let live = backend.query().unwrap();
+    let out = sway
+        .command(env!("CARGO_BIN_EXE_outlay"))
+        .env("XDG_CONFIG_HOME", "/nonexistent/outlay-test-config")
+        .arg("--kanshi-config")
+        .arg(&config)
+        .args(["save", "desk", "--force"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        saved.contains("\toutput HEADLESS-1 enable mode --custom 1280x720 position 0,720 scale 1.5 transform 90\n"),
+        "{saved}"
+    );
+    // Back to kanshi's old layout first, so the reload has something to do.
+    sway.swaymsg(&[
+        "output",
+        "HEADLESS-1",
+        "pos",
+        "1280",
+        "0",
+        "scale",
+        "1",
+        "transform",
+        "normal",
+    ]);
+    kanshi.reload(&sway);
+    kanshi.applied(&sway, 4);
+    assert_eq!(backend.query().unwrap(), live, "{}", kanshi.log());
+}

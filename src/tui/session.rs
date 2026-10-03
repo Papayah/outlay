@@ -46,6 +46,8 @@ pub struct Settings {
     pub hook_timeout: Duration,
     /// Where screenlayout scripts live (X11). Unset, `w` and `e` only report that.
     pub layouts_dir: Option<PathBuf>,
+    /// kanshi's config file (Wayland). Unset, `w` and `e` only report that.
+    pub kanshi_config: Option<PathBuf>,
     /// The program a Wayland `revert.sh` runs (`PROGRAM restore -`): outlay itself. Unset, it
     /// is `outlay` on `PATH`.
     pub restore_program: Option<PathBuf>,
@@ -59,6 +61,7 @@ impl Default for Settings {
             hooks: Vec::new(),
             hook_timeout: Duration::from_secs(10),
             layouts_dir: None,
+            kanshi_config: None,
             restore_program: None,
         }
     }
@@ -214,7 +217,12 @@ impl<'a> Session<'a> {
     /// such place.
     fn store(&mut self) -> Option<ProfileStore> {
         let kind = self.app.snap.caps.kind;
-        match ProfileStore::for_kind(kind, self.settings.layouts_dir.as_deref()) {
+        let settings = &self.settings;
+        match ProfileStore::for_kind(
+            kind,
+            settings.layouts_dir.as_deref(),
+            settings.kanshi_config.as_deref(),
+        ) {
             Ok(store) => Some(store),
             Err(why) => {
                 self.app.say(Severity::Warning, why);
@@ -264,7 +272,7 @@ impl<'a> Session<'a> {
         let Some(store) = self.store() else {
             return;
         };
-        let save = match store.save(name, &self.app.layout) {
+        let save = match store.save(name, &self.app.layout, &self.app.snap) {
             Ok(save) => save,
             Err(err) => {
                 let text = err.sentence(&tilde(err.path()));
@@ -297,7 +305,9 @@ impl<'a> Session<'a> {
             return;
         };
         match store.write(&plan.path, &plan.text) {
-            Ok(()) => self.app.saved(plan.name.clone(), &tilde(&plan.path)),
+            Ok(()) => self
+                .app
+                .saved(plan.name.clone(), &tilde(&plan.path), store.after_save()),
             Err(err) => {
                 let text = format!("Could not write {}: {err}.", tilde(&plan.path));
                 self.app.say(Severity::Error, text);
