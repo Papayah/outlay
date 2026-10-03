@@ -479,12 +479,17 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** cover a rejected test with the fake backend (`Fake::answering` in `tests/apply.rs`).
   On a real GPU the result may differ.
 
-## Headless sway lists HEADLESS-2 first, at 0,0
+## Headless sway 1.9 and 1.12 place the outputs the other way round
 
-- **Symptom:** a test expected HEADLESS-2 right of HEADLESS-1.
-- **Cause:** wlroots sends heads newest first, and sway places HEADLESS-2 at 0,0 and HEADLESS-1
-  at 1280,0. outlay sorts heads, so display 1 is HEADLESS-1, the right one.
-- **Fix:** read positions from `connect(&sway).query()` before you write an expectation.
+- **Symptom:** a live test that passed here failed in CI: it expected HEADLESS-2 at 0,0, and
+  `the_editor_applies_waits_for_the_answer_and_reverts` found HEADLESS-1 there.
+- **Cause:** sway 1.12 (here) places HEADLESS-2 at 0,0 and HEADLESS-1 at 1280,0; sway 1.9
+  (ubuntu-24.04, CI) places HEADLESS-1 at 0,0. Neither order is a contract. outlay sorts heads by
+  name, so display 1 is HEADLESS-1 wherever it sits.
+- **Fix:** pin the positions before the first query when a test depends on them:
+  `sway.swaymsg(&["output", "HEADLESS-2", "pos", "0", "0"])` (and `"$swaymsg" output … pos` in
+  `tools/pty_wayland.sh`). Otherwise read positions from `connect(&sway).query()` before you write
+  an expectation. Only CI runs sway 1.9.
 
 ## Live Wayland tests share one process
 
@@ -515,3 +520,23 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Cause:** it is built with no features; only `client_system`/`dlopen` would link libwayland.
 - **Fix:** check `ldd target/debug/outlay | grep wayland` (empty) and that no crate enables
   `wayland-client/system`; `release.yml` checks the static musl build.
+
+## "HEADLESS-2 has a mode of 0x0" in CI only
+
+- **Symptom:** `revert_sh_restores_the_layout_from_before` failed on ubuntu-24.04 (sway 1.9,
+  wlroots 0.17.1) with "HEADLESS-2 has a mode of 0x0"; it passes with wlroots 0.20.2.
+- **Cause:** wlroots 0.17 gives a client that binds while a custom-mode head is off a virtual mode
+  and never sends its size (fixed upstream by wlroots 2c305337).
+- **Fix:** `capture::output` in `src/wayland/capture.rs` leaves out a mode of no size; one zero
+  side alone is still an error. A capture from such a client lists the off head with no modes.
+
+## `wlr-randr` on ubuntu-24.04 has no `--json` and no `--version`
+
+- **Symptom:** "wlr-randr: unrecognized option '--json'" in the CI log, and `wlr-randr --version`
+  prints "failed to connect to display".
+- **Cause:** noble ships wlr-randr 0.3.0, which has neither option and treats an unknown one as a
+  request to connect.
+- **Fix:** nothing to fix: `wlr_randr_and_outlay_dump_read_the_same` prints
+  "skipped: wlr-randr --json" there and passes, so it runs only where wlr-randr is newer (here).
+  The CI step `sway --version && wlr-randr --version || true` shows only the sway version; read the
+  wlr-randr version from the apt "Setting up wlr-randr (…)" line.
