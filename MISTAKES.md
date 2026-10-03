@@ -612,10 +612,14 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Cause:** `match_and_apply` keeps the current profile while it still matches the connected
   heads, so another client's change on `done` does not trigger it. A hotplug that changes the set
   of heads, or `kanshictl reload`, applies the profile again.
-- **Fix:** this was read from the source; kanshi was not installed in session F, so the live test
-  `kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload` has not run yet. Run it with
-  `OUTLAY_TEST_SWAY=$(command -v sway) OUTLAY_TEST_KANSHI=$(command -v kanshi) cargo test --test
-  wayland_live -- kanshi --nocapture` once kanshi is installed, and fix this entry if it fails.
+- **Fix:** none needed. Verified live on 2026-10-03 (kanshi 1.9.0, sway 1.12, headless):
+  `kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload` passes, and kanshi logs no line at all
+  for outlay's apply. Run it with `OUTLAY_TEST_SWAY=$(command -v sway)
+  OUTLAY_TEST_KANSHI=$(command -v kanshi) cargo test --test wayland_live -- kanshi --nocapture`.
+- **Note:** kanshi applies its profile once at start even when the heads already match it, so the
+  test's count of `' applied` lines starts at 1. The log lives in sway's runtime dir, which is
+  deleted when `Sway` drops: to read it after a passing run, add a temporary
+  `eprintln!("{}", kanshi.log())` at the end of the test.
 
 ## The wlroots abort, from the panic hook
 
