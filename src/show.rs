@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier};
 
 use crate::model::layout::{Layout, OutputState};
 use crate::model::validate::validate;
-use crate::model::{Output, Reflection, Snapshot};
+use crate::model::{Kind, Output, Reflection, Snapshot};
 use crate::tui;
 use crate::tui::canvas::{self, Scene, Viewport};
 use crate::tui::theme::Theme;
@@ -112,10 +112,11 @@ pub fn list(snap: &Snapshot) -> String {
             text.push_str(&columns(&rows, "    "));
         }
     }
+    // A Wayland head exists only while connected.
     let rest: Vec<&str> = snap
         .outputs
         .iter()
-        .filter(|o| !o.is_relevant())
+        .filter(|o| !o.is_relevant() && snap.caps.kind == Kind::X11)
         .map(|o| o.name.as_str())
         .collect();
     if !rest.is_empty() {

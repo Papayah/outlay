@@ -301,3 +301,144 @@ fn completions_for_each_shell() {
         assert!(stdout.contains("layouts-dir"), "{shell}: the global flags");
     }
 }
+
+fn wayland_fixture(name: &str) -> String {
+    format!(
+        "{}/tests/fixtures/wayland/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn a_wayland_capture_shows_logical_sizes_and_percentages() {
+    let (ok, stdout, stderr) = outlay(&["show", "--from-file", &wayland_fixture("laptop-scaled")]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("outlay · 2 on · 0 off · layout 4608x1440\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "\n1  eDP-1   2560x1600 @ 165.00  0,160     normal 125%  left-of 2 DP-1, bottom  \
+             BOE 0x0BCA · 344x215 mm · 189 dpi\n"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("2  DP-1    3840x2160 @ 60.00   2048,0    normal 150%  anchor"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("2560x1600@165.00 125%"), "{stdout}");
+    assert!(!stdout.contains("primary"), "{stdout}");
+}
+
+#[test]
+fn a_wayland_list_has_no_section_for_outputs_not_connected() {
+    let (ok, stdout, stderr) = outlay(&["list", "--from-file", &wayland_fixture("disabled-head")]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        "1  eDP-1  connected · AU Optronics 0x403D · 309x174 mm · 158 dpi\n\
+         \x20   1920x1080  60.01*+  48.01\n\
+         2  DP-2  connected\n\
+         \x20   no modes\n\
+         3  HDMI-A-1  connected · PHILIPS FTV · 1440x810 mm\n\
+         \x20   3840x2160  30.00+  29.97\n\
+         \x20   2560x1440  59.95\n\
+         \x20   1920x1080  60.00  59.94  50.00\n\
+         \x20   1280x720   60.00\n\
+         \x20   1024x768   60.00\n\
+         \x20   800x600    60.32\n\
+         \x20   640x480    59.94\n"
+    );
+}
+
+#[test]
+fn the_wayland_demo() {
+    let (ok, stdout, stderr) = outlay(&["--demo=wayland", "show"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("outlay · 3 on · 1 off · layout 4480x2340\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\n1  eDP-1     2880x1800 @ 60.00   2480,1440  normal 200%"),
+        "{stdout}"
+    );
+    let (ok, stdout, _) = outlay(&["--demo", "show"]);
+    assert!(ok && stdout.contains("HDMI-1-0"), "plain --demo is X11");
+    let (ok, _, stderr) = outlay(&["--demo=gnome", "show"]);
+    assert!(!ok);
+    assert!(stderr.contains("invalid value 'gnome'"), "{stderr}");
+}
+
+#[test]
+fn dump_prints_the_capture_a_fixture_came_from() {
+    let path = wayland_fixture("rotated");
+    let (ok, stdout, stderr) = outlay(&["dump", "--from-file", &path]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, std::fs::read_to_string(&path).unwrap());
+    let (ok, stdout, _) = outlay(&["--demo", "dump"]);
+    assert!(ok);
+    assert!(stdout.starts_with("Screen 0: minimum"), "{stdout}");
+    let (ok, stdout, _) = outlay(&["--demo=wayland", "dump"]);
+    assert!(ok);
+    assert!(
+        stdout.starts_with("[\n  {\n    \"name\": \"HDMI-A-1\""),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn profiles_wait_for_kanshi_on_wayland() {
+    let dir = std::env::temp_dir().join(format!("outlay-cli-wl-{}", std::process::id()));
+    let d = dir.to_str().unwrap();
+    for args in [
+        vec!["--demo=wayland", "--layouts-dir", d, "apply", "home", "-n"],
+        vec!["--demo=wayland", "--layouts-dir", d, "save", "home"],
+    ] {
+        let (ok, stdout, stderr) = outlay(&args);
+        assert!(!ok, "{args:?}");
+        assert!(stdout.is_empty());
+        assert_eq!(
+            stderr,
+            "outlay: Profiles on Wayland are kanshi profiles, which arrive in the next version \
+             of outlay\n"
+        );
+    }
+    assert!(!dir.exists(), "nothing written");
+}
+
+#[test]
+fn keys_mark_what_only_x11_has() {
+    let (ok, stdout, _) = outlay(&["keys"]);
+    assert!(ok);
+    assert!(
+        stdout.contains("  p                         Make primary (X11)\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Mirror the target (same-as) (X11)\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  :primary [OUT]                      Make primary (X11)\n"));
+}
+
+#[test]
+fn a_capture_that_is_not_one_says_why() {
+    let dir = std::env::temp_dir().join(format!("outlay-cli-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bad.json");
+    std::fs::write(
+        &path,
+        "[{\"name\": \"DP-1\", \"enabled\": true, \"modes\": []}]",
+    )
+    .unwrap();
+    let (ok, _, stderr) = outlay(&["show", "--from-file", path.to_str().unwrap()]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(!ok);
+    assert!(
+        stderr.ends_with("DP-1 is enabled, but none of its modes is current\n"),
+        "{stderr}"
+    );
+}

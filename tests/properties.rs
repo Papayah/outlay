@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Out, desk, off, on};
+use common::{Out, desk, desk_wl, off, on};
 use outlay::model::Snapshot;
 use outlay::model::geometry::Dir;
 use outlay::model::history::History;
@@ -48,39 +48,86 @@ fn arb_desk() -> impl Strategy<Value = Vec<Out>> {
         0usize..2,
     )
         .prop_map(|(first, placements, primary, extra_off)| {
-            let mut outs = vec![on("O0", SIZES[first].0, SIZES[first].1, 0, 0)];
-            for (k, p) in placements.iter().enumerate() {
-                let parent = outs[p.parent % outs.len()].clone();
-                let (px, py) = parent.pos.expect("placed displays are on");
-                let (pw, ph) = parent.size;
-                let (mut w, mut h) = SIZES[p.size];
-                // A shared edge of at least one pixel.
-                let slide = |plen: i32, clen: i32| {
-                    -(clen - 1) + (p.along % (plen + clen - 1) as u32) as i32
-                };
-                let (x, y) = match p.kind {
-                    0 => (px + pw, py + slide(ph, h)),
-                    1 => (px - w, py + slide(ph, h)),
-                    2 => (px + slide(pw, w), py + ph),
-                    3 => (px + slide(pw, w), py - h),
-                    4 => (px + pw + 100 + (p.along % 500) as i32, py),
-                    _ => {
-                        (w, h) = (pw, ph);
-                        (px, py)
-                    }
-                };
-                outs.push(on(&format!("O{}", k + 1), w, h, x, y));
-            }
-            if let Some(p) = primary
-                && p < outs.len()
-            {
-                outs[p].primary = true;
-            }
-            for k in 0..extra_off {
-                outs.push(off(&format!("X{k}"), 2560, 1440));
-            }
-            outs
+            place(first, &placements, primary, extra_off, |_| 1.0)
         })
+}
+
+/// The Wayland scales a desk mixes.
+const SCALES: &[f64] = &[1.0, 1.25, 1.5, 2.0];
+
+/// A Wayland desk: each display at one of [`SCALES`], placed by its logical size. A mirror
+/// placement gives two displays the same rectangle, which Wayland shows as an overlap.
+fn arb_desk_wl() -> impl Strategy<Value = Vec<Out>> {
+    let placement = (0usize..8, 0usize..SIZES.len(), 0u8..6, any::<u32>()).prop_map(
+        |(parent, size, kind, along)| Placement {
+            parent,
+            size,
+            kind,
+            along,
+        },
+    );
+    (
+        0usize..SIZES.len(),
+        prop::collection::vec(placement, 1..5),
+        0usize..2,
+        prop::collection::vec(0usize..SCALES.len(), 5),
+    )
+        .prop_map(|(first, placements, extra_off, scales)| {
+            place(first, &placements, None, extra_off, |k| SCALES[scales[k]])
+        })
+}
+
+/// The size a display covers: its mode divided by its scale, truncated as wlroots does.
+fn logical(out: &Out) -> (i32, i32) {
+    let (w, h) = out.size;
+    (
+        (f64::from(w) / out.scale) as i32,
+        (f64::from(h) / out.scale) as i32,
+    )
+}
+
+/// Display 0 at the origin, then each placement against an earlier display; display `k` is at
+/// `scale(k)`.
+fn place(
+    first: usize,
+    placements: &[Placement],
+    primary: Option<usize>,
+    extra_off: usize,
+    scale: impl Fn(usize) -> f64,
+) -> Vec<Out> {
+    let mut outs = vec![on("O0", SIZES[first].0, SIZES[first].1, 0, 0).scaled(scale(0))];
+    for (k, p) in placements.iter().enumerate() {
+        let parent = outs[p.parent % outs.len()].clone();
+        let (px, py) = parent.pos.expect("placed displays are on");
+        let (pw, ph) = logical(&parent);
+        let (mut w, mut h) = SIZES[p.size];
+        let mut s = scale(k + 1);
+        let (lw, lh) = logical(&on("", w, h, 0, 0).scaled(s));
+        // A shared edge of at least one pixel.
+        let slide =
+            |plen: i32, clen: i32| -(clen - 1) + (p.along % (plen + clen - 1) as u32) as i32;
+        let (x, y) = match p.kind {
+            0 => (px + pw, py + slide(ph, lh)),
+            1 => (px - lw, py + slide(ph, lh)),
+            2 => (px + slide(pw, lw), py + ph),
+            3 => (px + slide(pw, lw), py - lh),
+            4 => (px + pw + 100 + (p.along % 500) as i32, py),
+            _ => {
+                ((w, h), s) = (parent.size, parent.scale);
+                (px, py)
+            }
+        };
+        outs.push(on(&format!("O{}", k + 1), w, h, x, y).scaled(s));
+    }
+    if let Some(p) = primary
+        && p < outs.len()
+    {
+        outs[p].primary = true;
+    }
+    for k in 0..extra_off {
+        outs.push(off(&format!("X{k}"), 2560, 1440));
+    }
+    outs
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +142,7 @@ enum Edit {
     Rotate(usize, bool),
     Primary(usize),
     MoveTo(usize, i32, i32),
+    Scale(usize, bool),
     Undo,
     Redo,
 }
@@ -142,9 +190,38 @@ fn apply(layout: &mut Layout, snap: &Snapshot, edit: &Edit) -> bool {
         Edit::Rotate(i, b) => layout.rotate(i % n, b).map(drop),
         Edit::Primary(i) => layout.set_primary(i % n).map(drop),
         Edit::MoveTo(i, x, y) => layout.move_to(i % n, x, y).map(drop),
+        Edit::Scale(i, b) => layout.step_scale(i % n, b).map(drop),
         Edit::Undo | Edit::Redo => unreachable!("handled by the history"),
     };
     result.is_ok()
+}
+
+/// The edits of [`arb_edit`], and scale steps.
+fn arb_edit_wl() -> impl Strategy<Value = Edit> {
+    prop_oneof![
+        12 => arb_edit(),
+        2 => (0usize..8, any::<bool>()).prop_map(|(i, b)| Edit::Scale(i, b)),
+    ]
+}
+
+/// What only Wayland promises: no mirror links and no primary, so displays with the same
+/// rectangle are an overlap.
+fn check_wayland(layout: &Layout) -> Result<(), TestCaseError> {
+    prop_assert!(
+        layout.links.iter().flatten().all(|l| l.side != Side::Same),
+        "no mirrors on Wayland"
+    );
+    prop_assert!(layout.outputs.iter().all(|o| !o.primary), "no primary");
+    let pairs = layout.overlapping_pairs();
+    let on = layout.enabled();
+    for (k, &a) in on.iter().enumerate() {
+        for &b in &on[k + 1..] {
+            if layout.rect(a) == layout.rect(b) {
+                prop_assert!(pairs.contains(&(a, b)), "{} and {} overlap", a, b);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_invariants(layout: &Layout) -> Result<(), TestCaseError> {
@@ -238,6 +315,48 @@ proptest! {
                 h.redo(&mut l);
                 prop_assert_eq!(&l, &layout, "undo then redo is identical");
             }
+
+            if layout.enabled_count() > 1 {
+                for d in layout.enabled() {
+                    let mut l = layout.clone();
+                    l.turn_off(d).unwrap();
+                    l.turn_on(&snap, d).unwrap();
+                    prop_assert_eq!(&l, &layout, "off then on is identical for {}", d);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wayland_edit_sequences_keep_the_invariants(outs in arb_desk_wl(), edits in prop::collection::vec(arb_edit_wl(), 1..30)) {
+        let snap = desk_wl(&outs);
+        let mut layout = Layout::inferred(&snap);
+        let mut history = History::default();
+        check_invariants(&layout)?;
+        check_wayland(&layout)?;
+        for (out, st) in outs.iter().zip(&layout.outputs) {
+            if let (Some(_), Some(_)) = (out.pos, &st.mode) {
+                prop_assert_eq!(st.size().w, logical(out).0, "placed by logical size");
+            }
+        }
+
+        for edit in &edits {
+            let before = layout.clone();
+            let steps = history.undo_len();
+            match edit {
+                Edit::Undo => { history.undo(&mut layout); }
+                Edit::Redo => { history.redo(&mut layout); }
+                _ => {
+                    if apply(&mut layout, &snap, edit) {
+                        history.record(before.clone(), &layout);
+                    } else {
+                        prop_assert_eq!(&layout, &before, "a failed edit changes nothing: {:?}", edit);
+                        prop_assert_eq!(history.undo_len(), steps, "a failed edit adds no undo step");
+                    }
+                }
+            }
+            check_invariants(&layout)?;
+            check_wayland(&layout)?;
 
             if layout.enabled_count() > 1 {
                 for d in layout.enabled() {

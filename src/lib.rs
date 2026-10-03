@@ -7,4 +7,5 @@ pub mod model;
 pub mod profile;
 pub mod show;
 pub mod tui;
+pub mod wayland;
 pub mod xrandr;

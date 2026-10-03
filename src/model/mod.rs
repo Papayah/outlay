@@ -84,15 +84,60 @@ impl Caps {
             all_reflections: true,
         }
     }
+
+    /// What `zwlr_output_manager_v1` offers: no primary display, no mirroring, and only the
+    /// reflection in `x`.
+    pub const fn wayland() -> Self {
+        Self {
+            kind: Kind::Wayland,
+            primary: false,
+            mirror: false,
+            all_reflections: false,
+        }
+    }
+
+    pub const fn has(&self, cap: Cap) -> bool {
+        match cap {
+            Cap::Primary => self.primary,
+            Cap::Mirror => self.mirror,
+            Cap::AllReflections => self.all_reflections,
+        }
+    }
 }
 
-/// Names one mode of one output. On X11 it is the mode's XID.
+/// One ability of [`Caps`], for keys and commands that need it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Cap {
+    Primary,
+    Mirror,
+    AllReflections,
+}
+
+impl Cap {
+    /// Why a key or command that needs this does nothing.
+    pub fn missing(self) -> &'static str {
+        match self {
+            Cap::Primary => "Wayland compositors have no primary display.",
+            Cap::Mirror => "This compositor cannot mirror displays.",
+            Cap::AllReflections => "This compositor reflects only in x.",
+        }
+    }
+}
+
+/// Names one mode of one output. On X11 it is the mode's XID; on Wayland it packs the size and
+/// the rate, so it stays the same across re-queries and processes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModeId(pub u64);
 
 impl ModeId {
     pub const fn from_xid(xid: u32) -> Self {
         Self(xid as u64)
+    }
+
+    /// `w << 48 | h << 32 | mHz`. Width and height are at least 1, so the id is never below
+    /// 2^32 and never looks like an XID.
+    pub const fn wayland(width: u16, height: u16, millihertz: u32) -> Self {
+        Self((width as u64) << 48 | (height as u64) << 32 | millihertz as u64)
     }
 
     /// The X11 XID, when the id is one.
@@ -149,6 +194,10 @@ pub struct Output {
     /// The CRTCs that can drive this output.
     pub crtcs: Vec<u32>,
     pub active: Option<ActiveConfig>,
+    /// The compositor's description of the display; Wayland only.
+    pub description: Option<String>,
+    /// Variable refresh rate, where the compositor reports it; Wayland only.
+    pub adaptive_sync: Option<bool>,
 }
 
 impl Output {
@@ -450,6 +499,18 @@ impl Reflection {
 impl fmt::Display for Reflection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// The same picture with a reflection in `x` at most, for display servers that have no other:
+/// a reflection in `y` is one in `x` turned upside down, and one in both is no reflection turned
+/// upside down. RandR reflects after it rotates, so this holds for every rotation.
+pub fn x_only(rotation: Rotation, reflection: Reflection) -> (Rotation, Reflection) {
+    let upside_down = rotation.clockwise().clockwise();
+    match reflection {
+        Reflection::Normal | Reflection::X => (rotation, reflection),
+        Reflection::Y => (upside_down, Reflection::X),
+        Reflection::XY => (upside_down, Reflection::Normal),
     }
 }
 

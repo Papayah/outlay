@@ -2,7 +2,7 @@
 
 use crate::model::layout::{Layout, MAX_SCALE, MIN_SCALE};
 use crate::model::links::{Align, Side};
-use crate::model::{Reflection, Rotation};
+use crate::model::{Cap, Caps, Reflection, Rotation};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -48,39 +48,115 @@ pub enum Cmd {
     Apply,
 }
 
-/// The command words, for error messages.
-pub const WORDS: &[&str] = &[
-    "pos", "move", "mode", "rate", "rotate", "reflect", "scale", "stick", "unstick", "primary",
-    "on", "off", "w", "e", "apply", "q", "q!",
+/// The command words, with what the display server needs for them, for error messages and
+/// completion.
+pub const WORDS: &[(&str, Option<Cap>)] = &[
+    ("pos", None),
+    ("move", None),
+    ("mode", None),
+    ("rate", None),
+    ("rotate", None),
+    ("reflect", None),
+    ("scale", None),
+    ("stick", None),
+    ("unstick", None),
+    ("primary", Some(Cap::Primary)),
+    ("on", None),
+    ("off", None),
+    ("w", None),
+    ("e", None),
+    ("apply", None),
+    ("q", None),
+    ("q!", None),
 ];
 
+/// One command in help.
+#[derive(Clone, Copy, Debug)]
+pub struct Usage {
+    pub command: &'static str,
+    pub help: &'static str,
+    /// What the display server needs for all of the command.
+    pub needs: Option<Cap>,
+    /// Without that: `None` leaves the command out, `Some` shows this command and help instead.
+    pub without: Option<(&'static str, &'static str)>,
+    /// What `outlay keys`, which knows no display server, adds to the help.
+    pub note: &'static str,
+}
+
+const fn usage_row(command: &'static str, help: &'static str) -> Usage {
+    Usage {
+        command,
+        help,
+        needs: None,
+        without: None,
+        note: "",
+    }
+}
+
 /// Every command with what it does, for help.
-pub const USAGE: &[(&str, &str)] = &[
-    (":pos X Y", "Move the focused display to X,Y"),
-    (":move DX DY", "Move it by DX,DY"),
-    (
+pub const USAGE: &[Usage] = &[
+    usage_row(":pos X Y", "Move the focused display to X,Y"),
+    usage_row(":move DX DY", "Move it by DX,DY"),
+    usage_row(
         ":mode WxH[@R]",
         "Set the resolution, and the rate nearest to R",
     ),
-    (":rate R", "Set the rate nearest to R"),
-    (":rotate normal|left|right|inverted", "Rotate"),
-    (":reflect normal|x|y|xy", "Reflect"),
-    (":scale F", "Set the scale, 0.25 to 8; on Wayland also 150%"),
-    (
-        ":stick A SIDE B [start|center|end]",
-        "SIDE: left-of right-of above below same-as",
-    ),
-    (":unstick [OUT]", "Unstick"),
-    (":primary [OUT]", "Make primary"),
-    (":on [OUT]  :off [OUT]", "Turn on or off"),
-    (
+    usage_row(":rate R", "Set the rate nearest to R"),
+    usage_row(":rotate normal|left|right|inverted", "Rotate"),
+    Usage {
+        needs: Some(Cap::AllReflections),
+        without: Some((":reflect normal|x", "Reflect")),
+        note: "(y, xy: X11)",
+        ..usage_row(":reflect normal|x|y|xy", "Reflect")
+    },
+    usage_row(":scale F", "Set the scale, 0.25 to 8; on Wayland also 150%"),
+    Usage {
+        needs: Some(Cap::Mirror),
+        without: Some((
+            ":stick A SIDE B [start|center|end]",
+            "SIDE: left-of right-of above below",
+        )),
+        note: "(same-as: X11)",
+        ..usage_row(
+            ":stick A SIDE B [start|center|end]",
+            "SIDE: left-of right-of above below same-as",
+        )
+    },
+    usage_row(":unstick [OUT]", "Unstick"),
+    Usage {
+        needs: Some(Cap::Primary),
+        note: "(X11)",
+        ..usage_row(":primary [OUT]", "Make primary")
+    },
+    usage_row(":on [OUT]  :off [OUT]", "Turn on or off"),
+    usage_row(
         ":w [NAME]",
         "Save as a profile (the one last opened, without NAME)",
     ),
-    (":e [NAME]", "Open a profile; without NAME, the picker"),
-    (":apply", "Apply, like a"),
-    (":q  :q!", "Quit; :q! drops pending changes"),
+    usage_row(":e [NAME]", "Open a profile; without NAME, the picker"),
+    usage_row(":apply", "Apply, like a"),
+    usage_row(":q  :q!", "Quit; :q! drops pending changes"),
 ];
+
+/// The commands as help shows them: with `caps`, as they work there; without, all of them, with
+/// a note on what only X11 has.
+pub fn usage(caps: Option<&Caps>) -> Vec<(String, String)> {
+    USAGE
+        .iter()
+        .filter_map(|u| {
+            let (command, help) = match (u.needs, caps) {
+                (None, _) => (u.command, u.help.to_owned()),
+                (Some(_), None) => (u.command, format!("{} {}", u.help, u.note)),
+                (Some(cap), Some(caps)) if caps.has(cap) => (u.command, u.help.to_owned()),
+                (Some(_), Some(_)) => {
+                    let (command, help) = u.without?;
+                    (command, help.to_owned())
+                }
+            };
+            Some((command.to_owned(), help))
+        })
+        .collect()
+}
 
 pub fn parse(line: &str) -> Result<Cmd, String> {
     let words: Vec<&str> = line.split_whitespace().collect();
@@ -212,15 +288,17 @@ pub fn parse(line: &str) -> Result<Cmd, String> {
         }),
         _ => Err(format!(
             "unknown command {verb:?}; commands: {}",
-            WORDS.join(" ")
+            WORDS.iter().map(|(w, _)| *w).collect::<Vec<_>>().join(" ")
         )),
     }
 }
 
 /// Completes the last word of a command line: a command word, then output names, sides,
-/// alignments or rotations, as the command takes them. Returns the new line and, when more than
-/// one word fits, the candidates. A single fit is completed with a space after it.
+/// alignments or rotations, as the command takes them. Words the display server cannot use
+/// (`primary`, `same-as`, `y`, `xy` on Wayland) are not offered. Returns the new line and, when
+/// more than one word fits, the candidates. A single fit is completed with a space after it.
 pub fn complete(line: &str, layout: &Layout) -> (String, Vec<String>) {
+    let caps = layout.caps;
     let words: Vec<&str> = line.split_whitespace().collect();
     let fresh = line.is_empty() || line.ends_with(char::is_whitespace);
     let (done, partial) = match words.split_last() {
@@ -235,10 +313,18 @@ pub fn complete(line: &str, layout: &Layout) -> (String, Vec<String>) {
     };
     let owned = |list: &[&str]| list.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
     let candidates: Vec<String> = match done {
-        [] => owned(WORDS),
+        [] => WORDS
+            .iter()
+            .filter(|(_, needs)| needs.is_none_or(|cap| caps.has(cap)))
+            .map(|(w, _)| (*w).to_owned())
+            .collect(),
         [verb, rest @ ..] => match (*verb, rest.len()) {
+            ("primary", 0) if !caps.primary => Vec::new(),
             ("stick", 0 | 2) | ("unstick" | "primary" | "on" | "off", 0) => outputs(),
-            ("stick", 1) => owned(&["left-of", "right-of", "above", "below", "same-as"]),
+            ("stick", 1) if caps.mirror => {
+                owned(&["left-of", "right-of", "above", "below", "same-as"])
+            }
+            ("stick", 1) => owned(&["left-of", "right-of", "above", "below"]),
             ("stick", 3) => owned(&["start", "center", "end"]),
             ("rotate", 0) => Rotation::ALL
                 .iter()
@@ -246,6 +332,7 @@ pub fn complete(line: &str, layout: &Layout) -> (String, Vec<String>) {
                 .collect(),
             ("reflect", 0) => Reflection::ALL
                 .iter()
+                .filter(|r| caps.all_reflections || matches!(r, Reflection::Normal | Reflection::X))
                 .map(|r| r.as_str().to_owned())
                 .collect(),
             _ => Vec::new(),
@@ -405,6 +492,38 @@ mod tests {
             "nothing to complete"
         );
         assert_eq!(c("").1.len(), WORDS.len());
+    }
+
+    #[test]
+    fn wayland_completes_only_what_it_can_do() {
+        use crate::model::layout::Layout;
+        let snap = crate::wayland::capture::parse(crate::wayland::DEMO).unwrap();
+        let layout = Layout::inferred(&snap);
+        let c = |line: &str| complete(line, &layout);
+        assert_eq!(c("").1.len(), WORDS.len() - 1);
+        assert!(!c("").1.contains(&"primary".to_owned()));
+        assert_eq!(c("p"), ("pos ".to_owned(), vec![]));
+        assert_eq!(c("primary ").1, Vec::<String>::new());
+        assert_eq!(c("stick 1 ").1, ["left-of", "right-of", "above", "below"]);
+        assert_eq!(c("reflect ").1, ["normal", "x"]);
+
+        let rows = usage(Some(&crate::model::Caps::wayland()));
+        assert_eq!(rows.len(), USAGE.len() - 1, "no :primary");
+        assert!(rows.contains(&(":reflect normal|x".to_owned(), "Reflect".to_owned())));
+        assert!(rows.iter().all(|(_, h)| !h.contains("same-as")));
+        let all = usage(None);
+        assert!(all.contains(&(":primary [OUT]".to_owned(), "Make primary (X11)".to_owned())));
+        assert!(
+            all.iter()
+                .any(|(_, h)| h.ends_with("same-as (same-as: X11)"))
+        );
+        assert_eq!(
+            usage(Some(&crate::model::Caps::x11())),
+            USAGE
+                .iter()
+                .map(|u| (u.command.to_owned(), u.help.to_owned()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

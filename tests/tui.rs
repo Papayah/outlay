@@ -1190,3 +1190,248 @@ fn tab_completes_on_the_command_line() {
         stuck("DP-1-2", Side::Below, Align::Center, 0)
     );
 }
+
+// --- Wayland ----------------------------------------------------------------------------------
+
+fn wayland_demo() -> App {
+    App::new(
+        FixtureBackend::demo_wayland().query().unwrap(),
+        Options::default(),
+    )
+}
+
+fn text(term: &Terminal<TestBackend>) -> String {
+    let buf = term.backend().buffer();
+    let area = buf.area;
+    (area.top()..area.bottom())
+        .map(|y| {
+            (area.left()..area.right())
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect()
+}
+
+#[test]
+fn wayland_numbers_the_built_in_panel_first() {
+    let app = wayland_demo();
+    let numbered: Vec<String> = app
+        .snap
+        .numbered()
+        .iter()
+        .map(|&i| app.layout.label(i))
+        .collect();
+    assert_eq!(numbered, ["1 eDP-1", "2 DP-3", "3 DP-4", "4 HDMI-A-1"]);
+    assert_eq!(app.layout.names[app.focus], "eDP-1", "no primary to focus");
+    assert!(app.issues.is_empty(), "{:?}", app.issues);
+}
+
+#[test]
+fn wayland_has_no_primary_and_no_mirror() {
+    let mut app = wayland_demo();
+    press(&mut app, "p");
+    assert_eq!(status(&app), "Wayland compositors have no primary display.");
+    assert!(!app.history.can_undo(), "no undo step");
+    assert_eq!(app.layout.primary(), None);
+
+    press(&mut app, ":primary 2<Enter>");
+    assert_eq!(status(&app), "Wayland compositors have no primary display.");
+    press(&mut app, ":stick 4 same-as 2<Enter>");
+    assert_eq!(status(&app), "This compositor cannot mirror displays.");
+    assert!(!app.history.can_undo());
+
+    press(&mut app, "s2");
+    let UiMode::Stick(flow) = &app.mode else {
+        panic!("not sticking: {:?}", app.mode)
+    };
+    assert_eq!(flow.step, StickStep::Side);
+    press(&mut app, "=");
+    let UiMode::Stick(flow) = &app.mode else {
+        panic!("the flow goes on: {:?}", app.mode)
+    };
+    assert_ne!(flow.side, Side::Same);
+    assert_eq!(
+        app.stick_summary(flow),
+        "Stick 1 eDP-1 below 2 DP-3, centre (This compositor cannot mirror displays)"
+    );
+    let shown = text(&screen(&mut app, 120, 30));
+    let hints = shown.lines().last().unwrap();
+    assert!(
+        hints.contains("side") && !hints.contains("mirror"),
+        "{hints}"
+    );
+    press(&mut app, "<Esc>");
+    assert!(!app.history.can_undo());
+
+    press(&mut app, "?");
+    let help = text(&screen(&mut app, 100, 200));
+    assert!(!help.contains("Make primary"), "{help}");
+    assert!(!help.contains("same-as"), "{help}");
+    assert!(help.contains(":reflect normal|x "), "{help}");
+    assert!(help.contains("Pick a scale"), "{help}");
+}
+
+#[test]
+fn wayland_refuses_profiles_until_kanshi() {
+    let mut app = wayland_demo();
+    for keys in ["w", "e", ":w home<Enter>", ":e<Enter>"] {
+        let effects = press(&mut app, keys);
+        assert!(effects.is_empty(), "{keys}: {effects:?}");
+        assert_eq!(app.mode, UiMode::Normal, "{keys}");
+        assert_eq!(
+            status(&app),
+            "Profiles on Wayland are kanshi profiles, which arrive in the next version of outlay.",
+            "{keys}"
+        );
+    }
+}
+
+#[test]
+fn wayland_turns_a_new_head_on_at_100_percent() {
+    let mut app = wayland_demo();
+    press(&mut app, "3 ");
+    let dp4 = ix(&app.layout, "DP-4");
+    assert!(app.layout.is_enabled(dp4));
+    assert_eq!(status(&app), "3 DP-4 starts at 100%: x picks a scale.");
+    assert_eq!(rect(&app.layout, "DP-4"), Rect::new(4480, 0, 3840, 2160));
+    // Back off and on again: it has been on now, so it says nothing more.
+    press(&mut app, "  ");
+    assert_eq!(status(&app), "");
+}
+
+#[test]
+fn wayland_reflect_y_is_reflect_x_upside_down() {
+    let mut app = wayland_demo();
+    press(&mut app, ":reflect y<Enter>");
+    let st = &app.layout.outputs[app.focus];
+    assert_eq!(
+        (st.rotation, st.reflection),
+        (
+            outlay::model::Rotation::Inverted,
+            outlay::model::Reflection::X
+        )
+    );
+    assert_eq!(
+        status(&app),
+        "Wayland reflects only in x: reflect y is the same picture as rotate inverted, reflect x."
+    );
+    let (line, candidates) = outlay::tui::cmdline::complete("reflect ", &app.layout);
+    assert_eq!((line.as_str(), candidates.len()), ("reflect ", 2));
+}
+
+struct NoInput;
+
+impl outlay::tui::session::Input for NoInput {
+    fn drain(&mut self) {}
+}
+
+#[test]
+fn the_wayland_demo_sticks_scales_applies_and_reverts() {
+    use outlay::tui::session::{Session, Settings};
+    use ratatui::crossterm::event::Event;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let backend = FixtureBackend::demo_wayland();
+    let original = backend.query().unwrap();
+    let app = App::new(original.clone(), Options::default());
+    let settings = Settings::default();
+    let mut session = Session::new(app, &backend, settings, Arc::new(AtomicBool::new(false)));
+    let press = |s: &mut Session, script: &str| {
+        for key in keys(script) {
+            s.handle_event(&Event::Key(key), s.app.now);
+        }
+        s.perform(&mut NoInput);
+    };
+
+    // eDP-1 from 200 % down to 150 %: 1920x1200 logical, still centred below DP-3.
+    press(&mut session, "1<lt><lt>");
+    assert_eq!(
+        rect(&session.app.layout, "eDP-1"),
+        Rect::new(2240, 1440, 1920, 1200)
+    );
+    assert_eq!(
+        link(&session.app.layout, "eDP-1"),
+        stuck("DP-3", Side::Below, Align::Center, 0)
+    );
+    // The TV goes left of the laptop, top-aligned.
+    press(&mut session, "4s1h<Enter>");
+    assert_eq!(
+        link(&session.app.layout, "HDMI-A-1"),
+        stuck("eDP-1", Side::LeftOf, Align::Start, 0)
+    );
+    assert_eq!(
+        rect(&session.app.layout, "HDMI-A-1"),
+        Rect::new(0, 1440, 1920, 1080),
+        "everything shifts right by 320 to start at 0"
+    );
+
+    press(&mut session, "a");
+    let UiMode::ConfirmApply(preview) = &session.app.mode else {
+        panic!("no confirmation: {:?}", session.app.mode)
+    };
+    assert_eq!(
+        preview.command,
+        "wlr-randr --output eDP-1 --on --mode 2880x1800@60.001Hz --pos 1920,1440 \
+         --transform normal --scale 1.5 \
+         --output DP-3 --on --mode 2560x1440@143.912Hz --pos 1600,0 --transform normal --scale 1 \
+         --output DP-4 --off \
+         --output HDMI-A-1 --on --mode 1920x1080@59.940Hz --pos 0,1440 --transform normal \
+         --scale 1"
+    );
+    assert!(preview.errors.is_empty(), "{:?}", preview.errors);
+    let changes = preview.changes.join("\n");
+    assert!(
+        changes.contains("eDP-1  pos 2480,1440 → 1920,1440, scale 200% → 150%"),
+        "{changes}"
+    );
+
+    press(&mut session, "<Enter>");
+    let UiMode::Countdown(c) = session.app.mode else {
+        panic!("no countdown: {:?}", session.app.mode)
+    };
+    assert_eq!(
+        status_of(&session.app),
+        "Simulated: nothing was sent to the displays."
+    );
+    let applied = backend.query().unwrap();
+    let edp = &applied.outputs[applied.find("eDP-1").unwrap()];
+    let a = edp.active.as_ref().unwrap();
+    assert_eq!(
+        (a.pos.x, a.pos.y, a.size.w, a.size.h),
+        (1920, 1440, 1920, 1200)
+    );
+    assert_eq!(a.scaling, outlay::model::Scaling::Logical(1.5));
+
+    session.tick(c.deadline + Duration::from_millis(1));
+    session.perform(&mut NoInput);
+    assert_eq!(session.app.mode, UiMode::Normal);
+    assert_eq!(backend.query().unwrap(), original, "reverted");
+    assert!(status_of(&session.app).starts_with("No answer in 15 s: reverted"));
+    assert_eq!(
+        session.app.pending().len(),
+        3,
+        "the edits are still pending"
+    );
+    let plans = backend.applied();
+    assert_eq!(plans.len(), 2, "the apply and the revert");
+    assert_eq!(plans[1].form, outlay::backend::PlanForm::Restore);
+}
+
+fn status_of(app: &App) -> String {
+    status(app)
+}
+
+#[test]
+fn snapshot_wayland_overview() {
+    let mut app = wayland_demo();
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
+}
+
+#[test]
+fn snapshot_wayland_apply_confirmation() {
+    let mut app = wayland_demo();
+    press(&mut app, "1<lt>a");
+    insta::assert_snapshot!(screen(&mut app, 100, 30).backend());
+}

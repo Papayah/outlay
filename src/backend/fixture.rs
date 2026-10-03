@@ -9,6 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use super::{ApplyOutcome, Backend, Plan, PrimaryRule, ScalingChange};
 use crate::model::geometry::{Size, effective_size};
 use crate::model::{ActiveConfig, Scaling, Snapshot, Transform};
+use crate::wayland::{self, capture};
 use crate::xrandr::{DEMO, command, parse_verbose};
 
 /// A snapshot held in memory, for `--demo`, `--from-file` and tests. An apply never touches the
@@ -30,17 +31,28 @@ impl FixtureBackend {
         }
     }
 
-    /// The snapshot a capture describes, keeping the text.
+    /// The snapshot a capture describes, keeping the text: `wlr-randr --json` when it starts
+    /// like JSON, else `xrandr --verbose`.
     pub fn from_text(text: String) -> Result<Self> {
-        let snapshot = parse_verbose(&text)?;
+        let snapshot = if capture::is_capture(&text) {
+            capture::parse(&text)?
+        } else {
+            parse_verbose(&text)?
+        };
         Ok(Self {
             source: Some(text),
             ..Self::new(snapshot)
         })
     }
 
+    /// The built-in four-output X11 fixture.
     pub fn demo() -> Self {
         Self::from_text(DEMO.to_owned()).expect("the built-in demo fixture parses")
+    }
+
+    /// The built-in four-head Wayland fixture.
+    pub fn demo_wayland() -> Self {
+        Self::from_text(wayland::DEMO.to_owned()).expect("the built-in Wayland demo parses")
     }
 
     pub fn from_file(path: &Path) -> Result<Self> {

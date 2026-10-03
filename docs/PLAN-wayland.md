@@ -203,11 +203,15 @@ src/profiles.rs        ProfileStore: Screenlayout(dir) | Kanshi(file)
   - The model keeps `Rotation × Reflection`. Wayland has only `Reflection::{Normal, X}`.
   - On Wayland, a parsed or typed `y` becomes `inverted` + `x`, and `xy` becomes `inverted`, with a
     status note.
-  - Expected mapping: X11 `normal/right/inverted/left` ↔ Wayland `normal/90/180/270`, with `x`
-    adding `flipped`.
-  - W4 confirms **both** the direction of `90` and the flip order from sway-output(5) and the
-    wlroots source: does (`left`, `x`) map to `flipped-90` or `flipped-270`? It cites the source in
-    a comment next to a unit test.
+  - **Confirmed in W4** (`src/wayland/mod.rs`, `TRANSFORMS`, with a pixel-for-pixel test): X11
+    `normal/left/inverted/right` ↔ Wayland `normal/90/180/270`, with `x` adding `flipped`, so
+    (`left`, `x`) is `flipped-90`. The protocol turns counter-clockwise like RandR: `wayland.xml`,
+    XWayland's `wl_transform_to_xrandr` (90 → `RR_Rotate_90`, which xrandr calls `left`), wlroots'
+    `wlr_box_transform` and the X server's `RRTransformCompute` agree. The planning guess
+    (`right` ↔ `90`) was wrong.
+  - **sway names the turns the other way round** in its config and in `swaymsg -t get_outputs`
+    (`sway/commands/output/transform.c`: "Sway uses clockwise transforms"): sway's `90` is the
+    protocol's `270`. wlr-randr and kanshi use the protocol names.
 - **X11-only data.** CRTCs, panning, stale outputs and `Connection::Unknown` stay in the model, and
   only X11 fills them. The checks that use them already look at the data (empty `crtcs`, no
   `panning`).

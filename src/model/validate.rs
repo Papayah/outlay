@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use super::Snapshot;
 use super::layout::Layout;
+use super::{Scaling, Snapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
@@ -139,10 +139,47 @@ pub fn validate(layout: &Layout, snap: &Snapshot) -> Vec<Issue> {
             ));
         }
     }
-    if !on.is_empty() && layout.primary().is_none() {
+    issues.extend(fractional_issues(layout));
+    if layout.caps.primary && !on.is_empty() && layout.primary().is_none() {
         issues.push(issue(Info, Vec::new(), "No display is primary.".to_owned()));
     }
     issues.sort_by(|a, b| b.severity.cmp(&a.severity));
+    issues
+}
+
+/// A Wayland scale that does not divide the rotated mode evenly: the compositor rounds the
+/// logical size, and the rounding can leave a 1 px gap or overlap that outlay cannot see.
+fn fractional_issues(layout: &Layout) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    for i in layout.enabled() {
+        let st = &layout.outputs[i];
+        let (Scaling::Logical(scale), Some(mode)) = (&st.scaling, &st.mode) else {
+            continue;
+        };
+        let (w, h) = if st.rotation.swaps_axes() {
+            (mode.height, mode.width)
+        } else {
+            (mode.width, mode.height)
+        };
+        let (lw, lh) = (f64::from(w) / scale, f64::from(h) / scale);
+        let whole = |v: f64| (v - v.round()).abs() < 1e-6;
+        let size = match (whole(lw), whole(lh)) {
+            (true, true) => continue,
+            (false, true) => format!("{lw:.1} px wide"),
+            (true, false) => format!("{lh:.1} px high"),
+            (false, false) => format!("{lw:.1}x{lh:.1} px"),
+        };
+        let badge = st.scaling.badge().unwrap_or_default();
+        issues.push(issue(
+            Severity::Warning,
+            vec![i],
+            format!(
+                "{} at {badge} is {size}; the compositor rounds it, which can leave a 1 px gap \
+                 or overlap.",
+                layout.names[i]
+            ),
+        ));
+    }
     issues
 }
 
