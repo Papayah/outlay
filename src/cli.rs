@@ -16,7 +16,7 @@ use crate::tui::theme::Theme;
 #[command(
     name = "outlay",
     version,
-    about = "Keyboard-driven xrandr layout editor"
+    about = "Keyboard-driven monitor layout editor for X11 and wlroots Wayland compositors"
 )]
 pub struct Cli {
     #[command(subcommand)]

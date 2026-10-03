@@ -148,6 +148,11 @@ impl Sandbox {
     /// leaks in, and every path the installer writes to is inside the sandbox. `OUTLAY_TEST_SH`
     /// names another shell to run it with (`/bin/sh` is bash on Arch, dash on Debian).
     fn run_in(&self, cwd: &Path, args: &[&str]) -> Run {
+        self.run_with(cwd, args, &[])
+    }
+
+    /// [`Sandbox::run_in`] with `env` on top of the sandbox's environment.
+    fn run_with(&self, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
         let script = fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/install.sh")).unwrap();
         let shell = std::env::var("OUTLAY_TEST_SH").unwrap_or_else(|_| "sh".to_string());
         let mut child = Command::new(shell)
@@ -163,6 +168,7 @@ impl Sandbox {
                 format!("file://{}", self.releases().display()),
             )
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin().display()))
+            .envs(env.iter().copied())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -175,6 +181,18 @@ impl Sandbox {
             ok: out.status.success(),
             stderr: String::from_utf8(out.stderr).unwrap(),
         }
+    }
+
+    /// A PATH with the sandbox's bin and every program of `/usr/bin` but xrandr.
+    fn path_without_xrandr(&self) -> String {
+        let tools = self.root.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        for entry in fs::read_dir("/usr/bin").unwrap().flatten() {
+            if entry.file_name() != "xrandr" {
+                let _ = std::os::unix::fs::symlink(entry.path(), tools.join(entry.file_name()));
+            }
+        }
+        format!("{}:{}", self.bin().display(), tools.display())
     }
 
     fn leftovers(&self) -> Vec<String> {
@@ -211,6 +229,26 @@ fn a_fresh_install_takes_the_latest_release_with_completions() {
         assert_eq!(text, format!("# outlay 0.2.0 completions for {shell}\n"));
     }
     assert!(sb.leftovers().is_empty());
+}
+
+#[test]
+fn a_missing_xrandr_matters_only_outside_wayland() {
+    const WARNING: &str = "on X11, outlay needs the xrandr program";
+    let sb = Sandbox::new("no-xrandr");
+    let path = sb.path_without_xrandr();
+    let run = sb.run_with(&sb.root, &[], &[("PATH", &path)]);
+    assert!(run.ok, "{}", run.stderr);
+    assert!(run.stderr.contains(WARNING), "{}", run.stderr);
+
+    let sb = Sandbox::new("no-xrandr-wayland");
+    let path = sb.path_without_xrandr();
+    let run = sb.run_with(
+        &sb.root,
+        &[],
+        &[("PATH", &path), ("WAYLAND_DISPLAY", "wayland-1")],
+    );
+    assert!(run.ok, "{}", run.stderr);
+    assert!(!run.stderr.contains(WARNING), "{}", run.stderr);
 }
 
 #[test]

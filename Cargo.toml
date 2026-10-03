@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 license = "GPL-3.0-or-later"
-description = "Keyboard-driven xrandr layout editor that draws your monitors to scale in the terminal"
+description = "Keyboard-driven monitor layout editor for X11 and wlroots Wayland compositors that draws your monitors to scale in the terminal"
 repository = "https://github.com/Papayah/outlay"
 readme = "README.md"
-keywords = ["xrandr", "monitor", "display", "tui", "x11"]
+keywords = ["xrandr", "wayland", "wlroots", "kanshi", "monitor"]
 categories = ["command-line-utilities"]
 
 [dependencies]

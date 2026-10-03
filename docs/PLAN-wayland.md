@@ -144,6 +144,8 @@ All are pure Rust with an MSRV of at most 1.91:
   - **wlroots ≤ 0.20.2 aborts** (`head_send_state: Assertion 'found' failed`) when a client that
     bound while a custom-mode head was disabled enables it again while another client still holds
     that head's old virtual mode. Fixed upstream by wlroots 40640950 (2026-09-30, unreleased).
+    Since session F, the panic hook hangs up on the compositor before it runs `revert.sh`, whose
+    `outlay restore` is such a client (`wayland::client::hang_up`, with a live test).
 - **CI runners:**
   - Ubuntu 24.04 has sway 1.9 with wlroots 0.17 (protocol v4).
   - **`ubuntu-latest` moves to 26.04 between 2026-10-19 and 2026-11-19,** so the Wayland job pins
@@ -177,6 +179,21 @@ All are pure Rust with an MSRV of at most 1.91:
   - `transform normal|90|180|270|flipped|flipped-90|flipped-180|flipped-270`;
   - `adaptive_sync on|off`.
 - **Matching:** a profile matches only when exactly its outputs are connected.
+- **Settled in W8** (from kanshi 1.9.0's `main.c` and `config.c`, and libscfg's `parser.c`):
+  - Matching is greedy, not a search: each profile output, in file order but with the criteria
+    holding a `*` moved last, takes the first unmatched head it fits. A criteria fits a head by
+    `strcmp` with the name or `fnmatch` on `Make Model Serial`.
+  - `mode WxH` without `@R` takes the **highest** rate at that size; with `@R`, the nearest
+    within 50 mHz, else the profile fails to apply.
+  - An output with neither `enable` nor `disable` keeps the head's current state.
+  - Global `output` defaults and `$alias`es are applied when the config is read. outlay
+    resolves them too (the plan said "ignore with a note"), because matching depends on them;
+    `exec` and `...output` are noted and left to kanshi.
+  - scfg: `#` starts a comment only at the start of a directive; `{` needs a space before it.
+  - **kanshi keeps its current profile while it still matches** (`match_and_apply`): another
+    client's apply, outlay's countdown included, stands. kanshi applies a profile again on a
+    hotplug that changes the set of heads and on `kanshictl reload`. This was read from the
+    source, not run: the live test (`OUTLAY_TEST_KANSHI`) was not run in session F.
 
 ## Design
 
@@ -529,6 +546,12 @@ pub struct On {
     - The write is atomic, after a diff and a confirmation, as for scripts. It goes into the file
       that holds the profile, even an `include`d one.
     - The status line adds "Run `kanshictl reload` so kanshi uses it." outlay never runs it.
+    - **Settled in W8:** a new profile appended to an existing config also asks first, with the
+      diff, since the file changes. Comments, `exec` and `...output` lines inside a rewritten
+      block stay; only its `output` directives are replaced or removed.
+    - **Transform names (decided with the user in session F):** on Wayland the details panel,
+      `show` and the apply diff say `90 (left)`, and `:rotate` takes `90`, `180` and `270` too.
+      The table moved to `src/model/orientation.rs`.
   - **Commands.** `outlay apply <profile>` and `outlay save <profile>` use the kanshi config on
     Wayland, and `w`/`e` list its profiles with mini previews. This lifts W4's refusal.
   - **Check with the user's OK** (it needs `pacman -S kanshi`): run kanshi against headless sway

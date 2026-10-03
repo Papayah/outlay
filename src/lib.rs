@@ -1,4 +1,4 @@
-//! outlay: a keyboard-driven xrandr layout editor.
+//! outlay: a keyboard-driven monitor layout editor for X11 and wlroots Wayland compositors.
 
 pub mod backend;
 pub mod cli;
