@@ -947,11 +947,42 @@ fn a_wayland_layout_reverts_without_an_answer() {
 }
 
 #[test]
-fn a_wayland_reflection_in_y_verifies_as_the_same_picture() {
-    // Wayland reflects only in x: `reflect y` goes out, and reads back, as `flipped-180`.
+fn a_wayland_reflection_in_y_is_applied_as_flipped_180() {
+    // Wayland reflects only in x: the editor stores `reflect y` as `flipped-180`, which goes out
+    // and reads back as such.
     let backend = Fake::wayland();
     let mut rig = Rig::new(&backend, Settings::default());
     rig.press("1:reflect y<Enter>a<Enter>");
+    let c = rig.countdown();
+    let live = edp(&backend);
+    assert_eq!(
+        (live.rotation, live.reflection),
+        (Rotation::Inverted, Reflection::X)
+    );
+    rig.press_at("y", c.blocked_until);
+    assert_eq!(rig.status(), "Kept the new layout.");
+}
+
+#[test]
+fn a_wayland_reflection_in_y_verifies_as_the_same_picture() {
+    // The editor never sends `reflect y` to Wayland (see above), so send it as a plan from
+    // elsewhere could: the compositor shows it as `flipped-180`, and the check after the apply
+    // must take that for the picture asked for.
+    let backend = Fake::wayland();
+    let live = backend.query().unwrap();
+    let mut rig = Rig::new(&backend, Settings::default());
+    let mut layout = rig.app().layout.clone();
+    let i = live.find("eDP-1").unwrap();
+    layout.outputs[i].reflection = Reflection::Y;
+    let plan = Plan::pending(&layout, &live);
+    let on = plan.find("eDP-1").unwrap().on.as_ref().unwrap();
+    assert_eq!(
+        (on.rotation, on.reflection),
+        (Rotation::Normal, Reflection::Y)
+    );
+    rig.session
+        .push(Effect::Apply(ApplyRequest { plan, layout }));
+    rig.session.perform(&mut rig.input);
     let c = rig.countdown();
     let live = edp(&backend);
     assert_eq!(
@@ -1151,6 +1182,11 @@ fn a_declined_revert_that_was_ignored_says_so() {
     assert!(!rig.status().contains("Reverted"), "{}", rig.status());
     assert!(!rig.session.awaiting_answer());
     assert!(!rig.session.kept);
+    assert_eq!(
+        rig.session.panic_revert(),
+        Some(scratch.revert_file().as_path()),
+        "a panic still runs revert.sh"
+    );
     // The editor shows what the screens show.
     let snap = &rig.app().snap;
     let edp = snap.outputs[snap.find("eDP-1").unwrap()]
@@ -1220,6 +1256,7 @@ fn a_revert_that_cannot_be_read_back_is_not_called_done() {
 
 #[test]
 fn a_display_unplugged_during_the_revert_is_named() {
+    // No revert can bring it back, so the rest counts as restored.
     let scratch = Scratch::new("unplugged");
     let backend = Fake::wayland()
         .then(Next::Works)
@@ -1227,16 +1264,53 @@ fn a_display_unplugged_during_the_revert_is_named() {
     let mut rig = Rig::new(&backend, scratch.settings());
     rig.press("1<lt><lt>a<Enter>");
     rig.press_at("n", rig.countdown().blocked_until);
+    assert_eq!(rig.app().mode, UiMode::Normal);
     assert_eq!(
-        rig.message(),
-        format!(
-            "Revert failed: The revert did not restore everything: |   eDP-1 is gone. | {}",
-            scratch.hint()
-        )
+        rig.status(),
+        "Reverted to the previous layout. Your edits are still pending. eDP-1 was unplugged, so \
+         it is not back."
     );
     assert!(
         rig.app().snap.find("eDP-1").is_none(),
         "the editor saw it go"
+    );
+    assert_eq!(rig.session.panic_revert(), None);
+}
+
+#[test]
+fn a_panned_primary_is_primary_again_after_a_revert() {
+    // eDP-1 has panning, so outlay leaves it alone, but it is primary. Make HDMI-1 primary and
+    // decline: the revert gives eDP-1 the primary back.
+    let scratch = Scratch::new("panned-primary");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/xrandr/panning.txt"
+    );
+    let backend = Fake::new(FixtureBackend::from_file(std::path::Path::new(path)).unwrap());
+    let before = backend.query().unwrap();
+    let (edp, hdmi) = (
+        before.find("eDP-1").unwrap(),
+        before.find("HDMI-1").unwrap(),
+    );
+    assert!(before.outputs[edp].primary && before.outputs[edp].has_panning());
+    let mut rig = Rig::new(&backend, scratch.settings());
+    let n = rig.app().layout.numbers[hdmi].unwrap();
+    rig.press(&format!("{n}pa<Enter>"));
+    let c = rig.countdown();
+    assert!(backend.query().unwrap().outputs[hdmi].primary);
+    rig.press_at("n", c.blocked_until);
+    assert!(
+        rig.status().starts_with("Reverted to the previous layout."),
+        "{:?} {}",
+        rig.app().mode,
+        rig.status()
+    );
+    let after = backend.query().unwrap();
+    assert!(after.outputs[edp].primary);
+    assert!(!after.outputs[hdmi].primary);
+    assert_eq!(
+        backend.calls_argv()[1].last().map(String::as_str),
+        Some("--primary")
     );
 }
 
@@ -1246,6 +1320,7 @@ fn a_failed_revert_on_a_signal_is_reported_before_quitting() {
     let mut rig = Rig::new(&backend, Settings::default());
     rig.press("3<A-l>a<Enter>");
     rig.countdown();
+    rig.session.drawn();
     rig.signal.store(true, Ordering::SeqCst);
     rig.session.perform(&mut rig.input);
     assert!(rig.session.quit);
@@ -1254,11 +1329,17 @@ fn a_failed_revert_on_a_signal_is_reported_before_quitting() {
         "{}",
         rig.message()
     );
+    assert!(
+        rig.session.unseen_report().is_some(),
+        "printed on the way out"
+    );
 
     // Ctrl-C in the countdown reverts and quits the same way.
     let backend = Fake::demo().then(Next::Works).then(Next::Ignores);
     let mut rig = Rig::new(&backend, Settings::default());
     rig.press("3<A-l>a<Enter>");
+    rig.countdown();
+    rig.session.drawn();
     rig.press_at("<C-c>", rig.countdown().blocked_until);
     assert!(rig.session.quit);
     assert!(
@@ -1266,6 +1347,38 @@ fn a_failed_revert_on_a_signal_is_reported_before_quitting() {
         "{}",
         rig.message()
     );
+    assert!(
+        rig.session.unseen_report().is_some(),
+        "printed on the way out"
+    );
+}
+
+#[test]
+fn a_report_already_on_screen_is_not_printed_on_the_way_out() {
+    // An "Apply failed" report left open, then a SIGTERM: it is not news.
+    let backend = Fake::demo().then(Next::Fails {
+        stderr: "Configure crtc 2 failed\n",
+        changes: false,
+    });
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("3<A-l>a<Enter>");
+    assert!(
+        rig.message().starts_with("Apply failed: "),
+        "{}",
+        rig.message()
+    );
+    assert!(rig.session.unseen_report().is_some(), "not drawn yet");
+    rig.session.drawn();
+    assert!(rig.session.unseen_report().is_none());
+    rig.signal.store(true, Ordering::SeqCst);
+    rig.session.perform(&mut rig.input);
+    assert!(rig.session.quit);
+    assert!(
+        rig.message().starts_with("Apply failed: "),
+        "{}",
+        rig.message()
+    );
+    assert!(rig.session.unseen_report().is_none());
 }
 
 #[test]

@@ -382,6 +382,8 @@ pub struct App {
     watch: Option<Duration>,
     /// When the watch next re-reads the live state.
     next_watch: Instant,
+    /// How many reports have opened, so a new report can be told from one already on screen.
+    reports: u64,
 }
 
 impl App {
@@ -413,6 +415,7 @@ impl App {
             animation: None,
             watch: options.watch,
             next_watch: now + options.watch.unwrap_or_default(),
+            reports: 0,
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -1148,10 +1151,16 @@ impl App {
 
     /// Shows a report and leaves the pending edits alone.
     pub fn report(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.reports += 1;
         self.mode = UiMode::Message(Message {
             title: title.into(),
             lines,
         });
+    }
+
+    /// How many reports have opened so far.
+    pub fn reports(&self) -> u64 {
+        self.reports
     }
 
     /// Takes a fresh reading of the live state after an apply or a revert, without touching the

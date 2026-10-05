@@ -33,7 +33,7 @@ use ratatui::{DefaultTerminal, Terminal};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
 use crate::backend::Backend;
-use app::{App, Options, UiMode};
+use app::{App, Options};
 use session::{Input, Session, Settings};
 
 /// The loop never blocks longer than this, so it notices signals and redraws the countdown.
@@ -172,15 +172,16 @@ pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Resul
         std::mem::forget(terminal);
     }
     restore_terminal(enhanced);
-    // A report still open, such as a revert that failed on the way out, went with the screen.
-    let report = match &session.app.mode {
-        UiMode::Message(message) => Some(message.print(&mut std::io::stderr())),
-        _ => None,
-    };
+    // A report the screen never showed, such as a revert that failed on the way out, went with
+    // the alternate screen: print it, and fail with it.
+    let report = session
+        .unseen_report()
+        .map_or(Ok(()), |message| Err(message.print(&mut std::io::stderr())));
     if session.signalled() {
-        return Ok(());
+        // The terminal may be gone, and the loop's error with it; the report still counts.
+        return report;
     }
-    result.and(report.map_or(Ok(()), Err))
+    result.and(report)
 }
 
 fn event_loop(
@@ -195,6 +196,7 @@ fn event_loop(
             return Ok(());
         }
         terminal.draw(|frame| ui::draw(frame, &mut session.app))?;
+        session.drawn();
         if !session.outbox.is_empty() {
             // Written between two draws, so the escape sequence never splits a frame.
             let mut out = stdout();
