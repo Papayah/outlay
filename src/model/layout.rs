@@ -753,60 +753,65 @@ impl Layout {
             if self.locked[i] {
                 continue;
             }
-            let name = &self.names[i];
-            match (&out.active, st.enabled) {
-                (None, false) => {}
-                (None, true) => found.push(format!("{name} is off; it should be on.")),
-                (Some(_), false) => found.push(format!("{name} is still on.")),
-                (Some(live), true) => {
-                    if let Some(mode) = &st.mode
-                        && live.mode != mode.id
-                    {
-                        found.push(format!(
-                            "{name} runs mode 0x{:x} instead of 0x{:x} ({}).",
-                            live.mode,
-                            mode.id,
-                            mode.summary()
-                        ));
-                    }
-                    let mut want = self.rect(i);
-                    if let (Scaling::Logical(got), Scaling::Logical(asked)) =
-                        (&live.scaling, &st.scaling)
-                    {
-                        if (got - asked).abs() > LOGICAL_TOLERANCE {
-                            found.push(format!(
-                                "{name} is at {} instead of {}.",
-                                scale_text(&live.scaling),
-                                scale_text(&st.scaling)
-                            ));
-                        } else if let Some(mode) = &st.mode {
-                            let size = effective_size(mode.size(), st.rotation, &live.scaling);
-                            want = Rect::from_parts(st.pos, size);
-                        }
-                    }
-                    if live.rect() != want {
-                        found.push(format!(
-                            "{name} is at {} instead of {}.",
-                            rect_text(live.rect()),
-                            rect_text(want)
-                        ));
-                    }
-                    if self.caps.primary && st.primary != out.primary {
-                        let not = if st.primary { "not " } else { "" };
-                        found.push(format!("{name} is {not}primary."));
-                    }
-                }
-            }
+            found.extend(output_mismatches(&self.names[i], st, out, self.caps));
         }
         found
     }
+}
+
+/// How one output, as re-read, differs from the state asked of it: see [`Layout::mismatches`].
+pub fn output_mismatches(name: &str, want: &OutputState, out: &Output, caps: Caps) -> Vec<String> {
+    let mut found = Vec::new();
+    match (&out.active, want.enabled) {
+        (None, false) => {}
+        (None, true) => found.push(format!("{name} is off; it should be on.")),
+        (Some(_), false) => found.push(format!("{name} is still on.")),
+        (Some(live), true) => {
+            if let Some(mode) = &want.mode
+                && live.mode != mode.id
+            {
+                found.push(format!(
+                    "{name} runs mode 0x{:x} instead of 0x{:x} ({}).",
+                    live.mode,
+                    mode.id,
+                    mode.summary()
+                ));
+            }
+            let mut rect = Rect::from_parts(want.pos, want.size());
+            if let (Scaling::Logical(got), Scaling::Logical(asked)) = (&live.scaling, &want.scaling)
+            {
+                if (got - asked).abs() > LOGICAL_TOLERANCE {
+                    found.push(format!(
+                        "{name} is at {} instead of {}.",
+                        scale_text(&live.scaling),
+                        scale_text(&want.scaling)
+                    ));
+                } else if let Some(mode) = &want.mode {
+                    let size = effective_size(mode.size(), want.rotation, &live.scaling);
+                    rect = Rect::from_parts(want.pos, size);
+                }
+            }
+            if live.rect() != rect {
+                found.push(format!(
+                    "{name} is at {} instead of {}.",
+                    rect_text(live.rect()),
+                    rect_text(rect)
+                ));
+            }
+            if caps.primary && want.primary != out.primary {
+                let not = if want.primary { "not " } else { "" };
+                found.push(format!("{name} is {not}primary."));
+            }
+        }
+    }
+    found
 }
 
 fn scale_text(t: &Scaling) -> String {
     t.badge().unwrap_or_else(|| "custom".to_owned())
 }
 
-fn state_from_output(out: &Output, caps: Caps) -> OutputState {
+pub(crate) fn state_from_output(out: &Output, caps: Caps) -> OutputState {
     let Some(active) = &out.active else {
         return OutputState {
             enabled: false,
