@@ -17,7 +17,7 @@ clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6"
 dirs = "7"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
-rustix = { version = "1", features = ["event"] }
+rustix = { version = "1", features = ["event", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1.1"
