@@ -18,6 +18,7 @@ use ratatui::crossterm::event::Event;
 
 use crate::backend::{Backend, Plan, Verdict};
 use crate::files::{line_diff, write_atomic};
+use crate::model::layout::restore_mismatches;
 use crate::model::validate::Severity;
 use crate::model::{Kind, Snapshot};
 use crate::profiles::ProfileStore;
@@ -86,6 +87,14 @@ struct Applied {
     before: Snapshot,
     /// The state read back after it.
     after: Snapshot,
+}
+
+/// A revert that did not bring back the state from before the apply.
+struct RevertFailure {
+    /// What went wrong, ending with how to restore by hand when there is a `revert.sh`.
+    lines: Vec<String>,
+    /// The state read back after the revert, if the read worked.
+    snap: Option<Snapshot>,
 }
 
 pub struct Session<'a> {
@@ -395,11 +404,11 @@ impl<'a> Session<'a> {
             Err(err) => {
                 problems.push(format!("Could not read the state back: {err:#}"));
                 // Assume the worst: something changed.
-                self.applied = Some(Applied {
+                let applied = Applied {
                     before: before.clone(),
                     after: before,
-                });
-                self.revert_after_failure(&mut problems);
+                };
+                self.revert_after_failure(applied, &mut problems);
                 self.app.report("Apply failed", problems);
                 return;
             }
@@ -411,11 +420,11 @@ impl<'a> Session<'a> {
                 problems.extend(mismatches.iter().map(|m| format!("  {m}")));
             }
             if after != before {
-                self.applied = Some(Applied {
+                let applied = Applied {
                     before,
                     after: after.clone(),
-                });
-                self.revert_after_failure(&mut problems);
+                };
+                self.revert_after_failure(applied, &mut problems);
             } else {
                 super::arm_panic_revert(None);
                 problems.push("Nothing changed.".to_owned());
@@ -446,18 +455,21 @@ impl<'a> Session<'a> {
 
     /// The automatic revert after a failed apply that changed the screens; what happened goes
     /// into the report.
-    fn revert_after_failure(&mut self, problems: &mut Vec<String>) {
-        let reverted = self.revert_quietly();
+    fn revert_after_failure(&mut self, applied: Applied, problems: &mut Vec<String>) {
+        let reverted = self.revert_quietly(applied);
         let failures = self.redraw();
-        problems.push(match reverted {
+        match reverted {
             Ok(snap) => {
-                if let Some(snap) = snap {
+                self.app.adopt(snap);
+                problems.push("Reverted to the previous layout.".to_owned());
+            }
+            Err(failure) => {
+                if let Some(snap) = failure.snap {
                     self.app.adopt(snap);
                 }
-                "Reverted to the previous layout.".to_owned()
+                problems.extend(failure.lines);
             }
-            Err(err) => err,
-        });
+        }
         problems.extend(failures);
     }
 
@@ -478,37 +490,49 @@ impl<'a> Session<'a> {
         self.app.say(Severity::Warning, text);
     }
 
-    /// Restores the state from before the apply and reads it back. On failure the message says
-    /// how to restore by hand.
-    fn revert_quietly(&mut self) -> Result<Option<Snapshot>, String> {
-        let Some(applied) = self.applied.take() else {
-            return Ok(None);
-        };
+    /// Restores the state from before the apply, reads it back and checks it against that
+    /// state: the display server's word that it worked is not enough. On failure the lines say
+    /// what is wrong and how to restore by hand.
+    fn revert_quietly(&mut self, applied: Applied) -> Result<Snapshot, RevertFailure> {
         let outcome = self.backend.apply(&Plan::restore(&applied.before));
         super::arm_panic_revert(None);
-        let snap = self.backend.requery().ok();
-        match outcome {
-            Ok(o) if o.success => Ok(snap),
-            other => {
-                let why = match other {
+        let after = self.backend.requery();
+        let (mut lines, snap) = match (outcome, after) {
+            (Ok(o), Ok(snap)) if o.success => {
+                let mismatches = restore_mismatches(&applied.before, &snap);
+                if mismatches.is_empty() {
+                    return Ok(snap);
+                }
+                let mut lines = vec!["The revert did not restore everything:".to_owned()];
+                lines.extend(mismatches.iter().map(|m| format!("  {m}")));
+                (lines, Some(snap))
+            }
+            (Ok(o), Err(err)) if o.success => (
+                vec![format!(
+                    "The revert ran, but the state could not be read back: {err:#}."
+                )],
+                None,
+            ),
+            (outcome, after) => {
+                let why = match outcome {
                     Ok(o) => o.stderr.trim().to_owned(),
                     Err(err) => format!("{err:#}"),
                 };
-                let hint = match &self.settings.revert_file {
-                    Some(path) => format!(" Run {} to restore it.", path.display()),
-                    None => String::new(),
-                };
-                Err(format!("The revert failed: {why}.{hint}"))
+                (vec![format!("The revert failed: {why}.")], after.ok())
             }
+        };
+        if let Some(path) = &self.settings.revert_file {
+            lines.push(format!("Run {} to restore it.", path.display()));
         }
+        Err(RevertFailure { lines, snap })
     }
 
     fn revert(&mut self, reason: RevertReason) {
-        if self.applied.is_none() {
+        let Some(applied) = self.applied.take() else {
             return;
-        }
+        };
         self.kept = false;
-        let reverted = self.revert_quietly();
+        let reverted = self.revert_quietly(applied);
         // Even a failed revert may have changed the screens.
         let failures = self.redraw();
         match reverted {
@@ -517,8 +541,12 @@ impl<'a> Session<'a> {
                     .reverted(snap, reason, self.settings.revert_seconds);
                 self.warn(&failures);
             }
-            Err(err) => {
-                let mut lines = vec![err];
+            Err(failure) => {
+                // The editor shows what is on the screens now; the edits stay pending.
+                if let Some(snap) = failure.snap {
+                    self.app.adopt(snap);
+                }
+                let mut lines = failure.lines;
                 lines.extend(failures);
                 self.app.report("Revert failed", lines);
             }

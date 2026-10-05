@@ -497,6 +497,8 @@ pub struct On {
     - It is dispatched **before `Config::load()`**, next to `Completions` (`src/main.rs:24-29`), so
       a broken config cannot block a revert at panic time.
     - It reads a capture, detects the live backend and applies `Plan::restore`.
+    - It reads the state back and compares it with the capture (`restore_mismatches`, as the
+      editor's revert does); every difference is a problem.
     - It has no countdown, writes no revert file and runs no hooks.
     - It prints problems to stderr and exits 1 when there are any.
   - X11 `revert.sh` stays a plain xrandr script.

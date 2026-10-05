@@ -2,7 +2,7 @@
 //! fixture backend.
 
 use outlay::backend::{Backend, FixtureBackend, Plan, PrimaryRule};
-use outlay::model::layout::Layout;
+use outlay::model::layout::{Layout, restore_mismatches};
 use outlay::model::{Reflection, Rotation, Snapshot};
 use outlay::wayland::capture::parse as parse_capture;
 use outlay::xrandr::command::argv_to_plan;
@@ -373,4 +373,66 @@ fn verification_accepts_the_same_picture_named_another_way() {
         let normal = oriented(&layout, "eDP-1", Rotation::Normal, Reflection::Normal);
         assert_eq!(normal.mismatches(&live).len(), 1, "{asked:?}");
     }
+}
+
+#[test]
+fn a_state_restores_onto_itself_without_mismatches() {
+    for name in ["demo", "scaled", "panning"] {
+        let snap = fixture(name);
+        assert!(restore_mismatches(&snap, &snap).is_empty(), "{name}");
+    }
+    for name in [
+        "demo",
+        "custom-mode",
+        "laptop-scaled",
+        "rotated",
+        "disabled-head",
+    ] {
+        let snap = wayland_fixture(name);
+        assert!(restore_mismatches(&snap, &snap).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_restore_at_negative_positions_is_compared_as_read() {
+    // A Wayland desk left of and above 0,0, restored exactly. `Layout::inferred` would move it
+    // to 0,0 and report every output as misplaced.
+    let mut before = wayland_fixture("demo");
+    for active in before.outputs.iter_mut().filter_map(|o| o.active.as_mut()) {
+        active.pos.x -= 5000;
+        active.pos.y -= 1500;
+    }
+    let backend = FixtureBackend::new(wayland_fixture("demo"));
+    let outcome = backend.apply(&Plan::restore(&before)).unwrap();
+    assert!(outcome.success, "{}", outcome.stderr);
+    let after = backend.requery().unwrap();
+    assert!(
+        restore_mismatches(&before, &after).is_empty(),
+        "{:?}",
+        restore_mismatches(&before, &after)
+    );
+    assert_eq!(
+        restore_mismatches(&before, &wayland_fixture("demo")),
+        [
+            "eDP-1 is at 1440x900+2480+1440 instead of 1440x900+-2520+-60.",
+            "DP-3 is at 2560x1440+1920+0 instead of 2560x1440+-3080+-1500.",
+            "HDMI-A-1 is at 1920x1080+0+360 instead of 1920x1080+-5000+-1140."
+        ]
+    );
+}
+
+#[test]
+fn a_restore_names_outputs_that_are_gone_or_changed() {
+    let before = wayland_fixture("demo");
+    let mut after = before.clone();
+    // eDP-1 (on) and DP-4 (off) were unplugged; DP-3 was left turned off.
+    after
+        .outputs
+        .retain(|o| o.name != "eDP-1" && o.name != "DP-4");
+    let i = after.find("DP-3").unwrap();
+    after.outputs[i].active = None;
+    assert_eq!(
+        restore_mismatches(&before, &after),
+        ["eDP-1 is gone.", "DP-3 is off; it should be on."]
+    );
 }

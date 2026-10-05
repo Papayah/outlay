@@ -14,7 +14,7 @@ use common::{ix, keys, unplugged};
 use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan, Verdict};
 use outlay::model::Snapshot;
 use outlay::model::{Reflection, Rotation, Scaling};
-use outlay::tui::app::{App, ApplyRequest, Effect, Options, UiMode, WATCH_INTERVAL};
+use outlay::tui::app::{App, ApplyRequest, Effect, Message, Options, UiMode, WATCH_INTERVAL};
 use outlay::tui::session::{Input, Session, Settings};
 use outlay::xrandr::command;
 use ratatui::crossterm::event::Event;
@@ -32,6 +32,12 @@ enum Next {
     Breaks,
     /// Applies it with every Wayland scale it sets off by this much, as a compositor that rounds.
     Rounds(f64),
+    /// Succeeds and changes nothing.
+    Ignores,
+    /// Applies it, then this output is unplugged and gone, as a Wayland head goes.
+    Unplugs(&'static str),
+    /// Applies it, but the read-back that follows fails.
+    Unread,
 }
 
 /// A backend that records every plan, counts full probes and re-queries, and misbehaves on
@@ -44,6 +50,8 @@ struct Fake {
     calls: Mutex<Vec<Plan>>,
     probes: Mutex<usize>,
     requeries: Mutex<usize>,
+    /// How many of the next re-queries fail.
+    blind: Mutex<usize>,
 }
 
 impl Fake {
@@ -55,6 +63,7 @@ impl Fake {
             calls: Mutex::new(Vec::new()),
             probes: Mutex::new(0),
             requeries: Mutex::new(0),
+            blind: Mutex::new(0),
         }
     }
 
@@ -102,6 +111,11 @@ impl Backend for Fake {
 
     fn requery(&self) -> Result<Snapshot> {
         *self.requeries.lock().unwrap() += 1;
+        let mut blind = self.blind.lock().unwrap();
+        if *blind > 0 {
+            *blind -= 1;
+            return Err(anyhow!("the display server hung up"));
+        }
         self.inner.requery()
     }
 
@@ -145,6 +159,22 @@ impl Backend for Fake {
                     }
                 }
                 self.inner.apply(&rounded)
+            }
+            Next::Ignores => Ok(ApplyOutcome {
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+            Next::Unplugs(name) => {
+                let outcome = self.inner.apply(plan)?;
+                let mut snap = self.inner.query()?;
+                snap.outputs.retain(|o| o.name != name);
+                self.inner.set_state(snap);
+                Ok(outcome)
+            }
+            Next::Unread => {
+                *self.blind.lock().unwrap() += 1;
+                self.inner.apply(plan)
             }
         }
     }
@@ -1063,4 +1093,221 @@ fn the_wayland_revert_sh_hands_the_state_to_outlay_restore() {
     );
     rig.press_at("n", rig.countdown().blocked_until);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Settings with a `revert.sh` in a scratch directory of its own; the directory goes on drop.
+struct Scratch {
+    dir: PathBuf,
+}
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("outlay-apply-{tag}-{}", std::process::id()));
+        Scratch { dir }
+    }
+
+    fn revert_file(&self) -> PathBuf {
+        self.dir.join("revert.sh")
+    }
+
+    fn settings(&self) -> Settings {
+        Settings {
+            revert_file: Some(self.revert_file()),
+            ..Settings::default()
+        }
+    }
+
+    fn hint(&self) -> String {
+        format!("Run {} to restore it.", self.revert_file().display())
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn a_declined_revert_that_was_ignored_says_so() {
+    let scratch = Scratch::new("ignored");
+    let backend = Fake::demo().then(Next::Works).then(Next::Ignores);
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("3<A-l>a<Enter>");
+    rig.press_at("n", rig.countdown().blocked_until);
+    assert_eq!(backend.calls().len(), 2, "the revert was sent");
+    assert_eq!(edp_x(&backend), 2250, "and ignored");
+    assert_eq!(
+        rig.app().mode,
+        UiMode::Message(Message {
+            title: "Revert failed".to_owned(),
+            lines: vec![
+                "The revert did not restore everything:".to_owned(),
+                "  eDP-1 is at 1920x1080+2250+1440 instead of 1920x1080+2240+1440.".to_owned(),
+                scratch.hint(),
+            ],
+        })
+    );
+    assert!(!rig.status().contains("Reverted"), "{}", rig.status());
+    assert!(!rig.session.awaiting_answer());
+    assert!(!rig.session.kept);
+    // The editor shows what the screens show.
+    let snap = &rig.app().snap;
+    let edp = snap.outputs[snap.find("eDP-1").unwrap()]
+        .active
+        .as_ref()
+        .unwrap();
+    assert_eq!(edp.pos.x, 2250);
+}
+
+#[test]
+fn a_revert_that_xrandr_refuses_says_how_to_restore() {
+    let scratch = Scratch::new("refused");
+    let backend = Fake::demo().then(Next::Works).then(Next::Fails {
+        stderr: "xrandr: Configure crtc 0 failed\n",
+        changes: false,
+    });
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("3<A-l>a<Enter>");
+    rig.press_at("n", rig.countdown().blocked_until);
+    assert_eq!(
+        rig.message(),
+        format!(
+            "Revert failed: The revert failed: xrandr: Configure crtc 0 failed. | {}",
+            scratch.hint()
+        )
+    );
+}
+
+#[test]
+fn a_partial_revert_names_what_stayed() {
+    // DP-1-3 is turned on and eDP-1 moved; the revert skips DP-1-3, so only eDP-1 comes back.
+    let scratch = Scratch::new("partial");
+    let backend = Fake::demo().then(Next::Works).then(Next::Skips("DP-1-3"));
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("3<A-l>4 a<Enter>");
+    let c = rig.countdown();
+    rig.wait_until(c.deadline);
+    assert_eq!(edp_x(&backend), 2240);
+    assert_eq!(
+        rig.message(),
+        format!(
+            "Revert failed: The revert did not restore everything: |   DP-1-3 is still on. | {}",
+            scratch.hint()
+        )
+    );
+}
+
+#[test]
+fn a_revert_that_cannot_be_read_back_is_not_called_done() {
+    let scratch = Scratch::new("unread");
+    let backend = Fake::demo().then(Next::Works).then(Next::Unread);
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("3<A-l>a<Enter>");
+    let c = rig.countdown();
+    rig.wait_until(c.deadline);
+    assert_eq!(edp_x(&backend), 2240, "the revert itself worked");
+    assert_eq!(
+        rig.message(),
+        format!(
+            "Revert failed: The revert ran, but the state could not be read back: the display \
+             server hung up. | {}",
+            scratch.hint()
+        )
+    );
+    assert!(!rig.status().contains("Reverted"), "{}", rig.status());
+}
+
+#[test]
+fn a_display_unplugged_during_the_revert_is_named() {
+    let scratch = Scratch::new("unplugged");
+    let backend = Fake::wayland()
+        .then(Next::Works)
+        .then(Next::Unplugs("eDP-1"));
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("1<lt><lt>a<Enter>");
+    rig.press_at("n", rig.countdown().blocked_until);
+    assert_eq!(
+        rig.message(),
+        format!(
+            "Revert failed: The revert did not restore everything: |   eDP-1 is gone. | {}",
+            scratch.hint()
+        )
+    );
+    assert!(
+        rig.app().snap.find("eDP-1").is_none(),
+        "the editor saw it go"
+    );
+}
+
+#[test]
+fn a_failed_revert_on_a_signal_is_reported_before_quitting() {
+    let backend = Fake::demo().then(Next::Works).then(Next::Ignores);
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("3<A-l>a<Enter>");
+    rig.countdown();
+    rig.signal.store(true, Ordering::SeqCst);
+    rig.session.perform(&mut rig.input);
+    assert!(rig.session.quit);
+    assert!(
+        rig.message().starts_with("Revert failed: "),
+        "{}",
+        rig.message()
+    );
+
+    // Ctrl-C in the countdown reverts and quits the same way.
+    let backend = Fake::demo().then(Next::Works).then(Next::Ignores);
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("3<A-l>a<Enter>");
+    rig.press_at("<C-c>", rig.countdown().blocked_until);
+    assert!(rig.session.quit);
+    assert!(
+        rig.message().starts_with("Revert failed: "),
+        "{}",
+        rig.message()
+    );
+}
+
+#[test]
+fn a_failed_apply_and_a_failed_revert_make_one_report() {
+    let scratch = Scratch::new("both");
+    let backend = Fake::demo()
+        .then(Next::Fails {
+            stderr: "Configure crtc 2 failed\n",
+            changes: true,
+        })
+        .then(Next::Ignores);
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("3<A-l>a<Enter>");
+    assert_eq!(backend.calls().len(), 2, "apply, then revert");
+    assert_eq!(
+        rig.message(),
+        format!(
+            "Apply failed: xrandr reported an error. | xrandr: Configure crtc 2 failed | The revert \
+             did not restore everything: |   eDP-1 is at 1920x1080+2250+1440 instead of \
+             1920x1080+2240+1440. | {}",
+            scratch.hint()
+        )
+    );
+    assert!(!rig.session.awaiting_answer());
+}
+
+#[test]
+fn a_report_prints_its_lines_and_fails_with_its_title() {
+    let message = Message {
+        title: "Revert failed".to_owned(),
+        lines: vec![
+            "The revert did not restore everything:".to_owned(),
+            "  DP-1-3 is still on.".to_owned(),
+            "Run ~/.local/state/outlay/revert.sh to restore it.".to_owned(),
+        ],
+    };
+    let mut out = Vec::new();
+    let err = message.print(&mut out);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "The revert did not restore everything:\n  DP-1-3 is still on.\n\
+         Run ~/.local/state/outlay/revert.sh to restore it.\n"
+    );
+    assert_eq!(err.to_string(), "revert failed");
 }
