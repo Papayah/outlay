@@ -18,14 +18,14 @@ use ratatui::crossterm::event::Event;
 
 use crate::backend::{Backend, Plan, Verdict};
 use crate::files::{line_diff, write_atomic};
-use crate::model::layout::restore_mismatches;
+use crate::model::layout::{restore_mismatches, unplugged};
 use crate::model::validate::Severity;
 use crate::model::{Kind, Snapshot};
 use crate::profiles::ProfileStore;
 use crate::wayland;
 use crate::xrandr::command;
 
-use super::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, SavePlan};
+use super::app::{App, ApplyRequest, Effect, Message, ProfileItem, RevertReason, SavePlan, UiMode};
 
 /// Where input comes from, as far as the session cares: after an apply returns, keys pressed
 /// while the screens were dark are thrown away.
@@ -109,6 +109,10 @@ pub struct Session<'a> {
     pub quit: bool,
     /// Whether the last applied layout was kept.
     pub kept: bool,
+    /// The `revert.sh` the panic hook runs, if it is armed.
+    panic_revert: Option<PathBuf>,
+    /// How many reports had opened when the screen was last drawn.
+    drawn_reports: u64,
 }
 
 impl<'a> Session<'a> {
@@ -118,6 +122,7 @@ impl<'a> Session<'a> {
         settings: Settings,
         signal: Arc<AtomicBool>,
     ) -> Self {
+        let app_reports = app.reports();
         Self {
             app,
             backend,
@@ -128,7 +133,35 @@ impl<'a> Session<'a> {
             outbox: Vec::new(),
             quit: false,
             kept: false,
+            panic_revert: None,
+            drawn_reports: app_reports,
         }
+    }
+
+    /// The editor drew the screen: the report open now, if any, has been shown.
+    pub fn drawn(&mut self) {
+        self.drawn_reports = self.app.reports();
+    }
+
+    /// The report open now if the screen has not shown it: one made by the last effects or on
+    /// the way out, such as a revert on Ctrl-C or a signal that failed. The editor prints it
+    /// once the alternate screen has taken the popup away.
+    pub fn unseen_report(&self) -> Option<&Message> {
+        match &self.app.mode {
+            UiMode::Message(message) if self.app.reports() != self.drawn_reports => Some(message),
+            _ => None,
+        }
+    }
+
+    /// The `revert.sh` the panic hook runs now, if it is armed.
+    pub fn panic_revert(&self) -> Option<&Path> {
+        self.panic_revert.as_deref()
+    }
+
+    /// Arms (`Some`) or disarms the panic hook's revert, and remembers which.
+    fn arm_panic_revert(&mut self, script: Option<PathBuf>) {
+        self.panic_revert.clone_from(&script);
+        super::arm_panic_revert(script);
     }
 
     /// Hands one terminal event to the editor at time `now`.
@@ -371,7 +404,7 @@ impl<'a> Session<'a> {
                 );
                 return;
             }
-            super::arm_panic_revert(Some(path.clone()));
+            self.arm_panic_revert(Some(path.clone()));
         }
 
         let outcome = self.backend.apply(&request.plan);
@@ -426,7 +459,7 @@ impl<'a> Session<'a> {
                 };
                 self.revert_after_failure(applied, &mut problems);
             } else {
-                super::arm_panic_revert(None);
+                self.arm_panic_revert(None);
                 problems.push("Nothing changed.".to_owned());
             }
             self.app.report("Apply failed", problems);
@@ -459,9 +492,10 @@ impl<'a> Session<'a> {
         let reverted = self.revert_quietly(applied);
         let failures = self.redraw();
         match reverted {
-            Ok(snap) => {
+            Ok((snap, notes)) => {
                 self.app.adopt(snap);
                 problems.push("Reverted to the previous layout.".to_owned());
+                problems.extend(notes);
             }
             Err(failure) => {
                 if let Some(snap) = failure.snap {
@@ -478,7 +512,7 @@ impl<'a> Session<'a> {
         run_hooks(&self.settings.hooks, self.settings.hook_timeout)
     }
 
-    /// Adds hook failures to the status line, after what it already says.
+    /// Adds notes and hook failures to the status line, after what it already says.
     fn warn(&mut self, failures: &[String]) {
         if failures.is_empty() {
             return;
@@ -491,17 +525,25 @@ impl<'a> Session<'a> {
     }
 
     /// Restores the state from before the apply, reads it back and checks it against that
-    /// state: the display server's word that it worked is not enough. On failure the lines say
-    /// what is wrong and how to restore by hand.
-    fn revert_quietly(&mut self, applied: Applied) -> Result<Snapshot, RevertFailure> {
+    /// state: the display server's word that it worked is not enough. Returns the state read
+    /// back, with a note for each display unplugged meanwhile. On failure the lines say what is
+    /// wrong and how to restore by hand, and the panic hook still runs `revert.sh`.
+    fn revert_quietly(
+        &mut self,
+        applied: Applied,
+    ) -> Result<(Snapshot, Vec<String>), RevertFailure> {
         let outcome = self.backend.apply(&Plan::restore(&applied.before));
-        super::arm_panic_revert(None);
         let after = self.backend.requery();
         let (mut lines, snap) = match (outcome, after) {
             (Ok(o), Ok(snap)) if o.success => {
                 let mismatches = restore_mismatches(&applied.before, &snap);
                 if mismatches.is_empty() {
-                    return Ok(snap);
+                    self.arm_panic_revert(None);
+                    let notes = unplugged(&applied.before, &snap)
+                        .iter()
+                        .map(|name| format!("{name} was unplugged, so it is not back."))
+                        .collect();
+                    return Ok((snap, notes));
                 }
                 let mut lines = vec!["The revert did not restore everything:".to_owned()];
                 lines.extend(mismatches.iter().map(|m| format!("  {m}")));
@@ -536,10 +578,11 @@ impl<'a> Session<'a> {
         // Even a failed revert may have changed the screens.
         let failures = self.redraw();
         match reverted {
-            Ok(snap) => {
+            Ok((snap, mut notes)) => {
                 self.app
                     .reverted(snap, reason, self.settings.revert_seconds);
-                self.warn(&failures);
+                notes.extend(failures);
+                self.warn(&notes);
             }
             Err(failure) => {
                 // The editor shows what is on the screens now; the edits stay pending.
@@ -557,7 +600,7 @@ impl<'a> Session<'a> {
         let Some(applied) = self.applied.take() else {
             return;
         };
-        super::arm_panic_revert(None);
+        self.arm_panic_revert(None);
         self.kept = true;
         // Nothing changes on the screens, so the hooks do not run again.
         self.app.kept(applied.after);

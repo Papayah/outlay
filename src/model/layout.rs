@@ -736,8 +736,9 @@ impl Layout {
     /// How `snap`, the state re-read after applying this layout, differs from it: the enabled
     /// set, mode ids, rectangles, the Wayland scale within 0.01, the orientation (rotation and
     /// reflection, as the same picture: Wayland reads `reflect y` back as a turn and `reflect x`)
-    /// and, where there is one, the primary. Empty when the apply came out as asked. A compositor may round a scale: within
-    /// the tolerance, the rectangle is checked at the scale it chose.
+    /// and, where there is one, the primary. Empty when the apply came out as asked. A
+    /// compositor may round a scale: within the tolerance, the rectangle is checked at the scale
+    /// it chose.
     /// xrandr exits 0 even when it ignores an output, so the exit code alone proves nothing.
     pub fn mismatches(&self, snap: &Snapshot) -> Vec<String> {
         let same_outputs = snap.outputs.len() == self.len()
@@ -762,30 +763,53 @@ impl Layout {
 
 /// How `after`, the state re-read after a revert, differs from `before`, the state the revert
 /// restores: the outputs [`Plan::restore`](crate::backend::Plan::restore) covers, each compared
-/// as [`Layout::mismatches`] compares an apply. An output that was on and is no longer there was
-/// unplugged meanwhile; one that was off and is gone is still off. Empty when everything is back.
+/// as [`Layout::mismatches`] compares an apply. Empty when everything is back. An output that was
+/// on and has been [`unplugged`] meanwhile is not a mismatch, since no revert can bring it back;
+/// one that was off and is gone is still off.
 ///
 /// The positions are compared as they were read, not normalised as [`Layout::inferred`] does.
 pub fn restore_mismatches(before: &Snapshot, after: &Snapshot) -> Vec<String> {
     let mut found = Vec::new();
-    for out in before
-        .outputs
-        .iter()
-        .filter(|o| o.is_relevant() && !o.has_panning())
-    {
-        let want = state_from_output(out, before.caps);
-        match after.find(&out.name) {
-            Some(i) => found.extend(output_mismatches(
+    for out in restored(before) {
+        if let Some(i) = after.find(&out.name)
+            && !was_unplugged(out, &after.outputs[i])
+        {
+            let want = state_from_output(out, before.caps);
+            found.extend(output_mismatches(
                 &out.name,
                 &want,
                 &after.outputs[i],
                 after.caps,
-            )),
-            None if want.enabled => found.push(format!("{} is gone.", out.name)),
-            None => {}
+            ));
         }
     }
     found
+}
+
+/// The outputs that were on in `before`, among those a restore covers, and have since been
+/// unplugged: gone from `after`, or there but disconnected and off.
+pub fn unplugged(before: &Snapshot, after: &Snapshot) -> Vec<String> {
+    restored(before)
+        .filter(|out| out.active.is_some())
+        .filter(|out| match after.find(&out.name) {
+            None => true,
+            Some(i) => was_unplugged(out, &after.outputs[i]),
+        })
+        .map(|out| out.name.clone())
+        .collect()
+}
+
+/// The outputs [`Plan::restore`](crate::backend::Plan::restore) covers.
+fn restored(snap: &Snapshot) -> impl Iterator<Item = &Output> {
+    snap.outputs
+        .iter()
+        .filter(|o| o.is_relevant() && !o.has_panning())
+}
+
+/// Whether `out`, which was `then`, has been unplugged: it was on, and is now disconnected and
+/// off.
+fn was_unplugged(then: &Output, out: &Output) -> bool {
+    then.active.is_some() && !out.is_connected() && out.active.is_none()
 }
 
 /// How one output, as re-read, differs from the state asked of it: see [`Layout::mismatches`].

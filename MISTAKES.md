@@ -688,3 +688,12 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   (`"Configure crtc 2 failed\n"`) when the test compares the whole report;
   `a_failed_apply_that_changed_the_screens_is_reverted` gets away with it because it uses
   `contains`.
+
+## `pty_drive.py timeout` and `scale` print `reverted: False`
+
+- **Symptom:** `tools/pty_drive.py timeout -- --demo` prints `reverted: False` and `exit: None`;
+  `scale` prints `reverted: False`. It looks like a regression, and it is the same on `main`.
+- **Cause:** both scenarios wait for a short countdown and need the flag the script's header asks
+  for. With the default 15 s countdown, they read the screen before the revert happens.
+- **Fix:** `tools/pty_drive.py timeout -- --demo --revert-timeout 2` and
+  `tools/pty_drive.py scale -- --demo --revert-timeout 10`.

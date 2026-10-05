@@ -133,8 +133,9 @@ display 2.
 After xrandr returns, outlay reads the state back and checks it against the request (xrandr
 exits 0 even when it ignores an output). Then it asks "Keep this layout?" for 15 seconds: only
 `y` keeps it. A timeout, `n`, `Esc`, Ctrl-C, SIGHUP or SIGTERM revert to the previous layout,
-and outlay reads the state back again to check that the revert restored it. Keys pressed in the first second after xrandr returns are ignored, so one pressed while the
-screens were dark cannot answer. Before each apply, outlay writes the revert command to
+and outlay reads the state back again to check that the revert restored it. Keys pressed in the
+first second after xrandr returns are ignored, so one pressed while the screens were dark cannot
+answer. Before each apply, outlay writes the revert command to
 `$XDG_STATE_HOME/outlay/revert.sh`, so you can run it by hand if anything goes wrong; a revert
 that did not restore everything says so and points to it.
 

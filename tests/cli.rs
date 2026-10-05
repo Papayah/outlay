@@ -585,23 +585,16 @@ fn restore_applies_a_capture_at_once() {
     let (ok, _, stderr) = outlay_in(&["--demo=wayland", "restore", "-"], &config, &moved);
     assert!(ok, "from stdin: {stderr}");
 
-    // A head that is not there is a problem, and exits 1.
+    // A head that is not there is left out: one that was off is still off, and one that was on
+    // was unplugged, which no restore can undo. Neither is a failure.
     let gone = demo.replace("\"name\": \"DP-4\"", "\"name\": \"DP-9\"");
     let (ok, _, stderr) = outlay_in(&["--demo=wayland", "restore", "-"], &config, &gone);
-    assert!(!ok);
-    assert_eq!(
-        stderr,
-        "warning: output DP-9 not found; ignoring\noutlay: the restore left something out\n"
-    );
-    // The state is read back: a display that was on and is not there is named.
+    assert!(ok, "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
     let gone = demo.replace("\"name\": \"eDP-1\"", "\"name\": \"eDP-9\"");
     let (ok, _, stderr) = outlay_in(&["--demo=wayland", "restore", "-"], &config, &gone);
-    assert!(!ok);
-    assert_eq!(
-        stderr,
-        "warning: output eDP-9 not found; ignoring\neDP-9 is gone.\n\
-         outlay: the restore left something out\n"
-    );
+    assert!(ok, "{stderr}");
+    assert_eq!(stderr, "eDP-9 was unplugged, so it is not back.\n");
 
     let (ok, _, stderr) = outlay_in(&["--demo", "restore", "-"], &config, &demo);
     assert!(!ok);

@@ -2,8 +2,8 @@
 //! fixture backend.
 
 use outlay::backend::{Backend, FixtureBackend, Plan, PrimaryRule};
-use outlay::model::layout::{Layout, restore_mismatches};
-use outlay::model::{Reflection, Rotation, Snapshot};
+use outlay::model::layout::{Layout, restore_mismatches, unplugged};
+use outlay::model::{Connection, Reflection, Rotation, Snapshot};
 use outlay::wayland::capture::parse as parse_capture;
 use outlay::xrandr::command::argv_to_plan;
 use outlay::xrandr::{command, parse_verbose};
@@ -165,7 +165,20 @@ fn panning_outputs_are_left_alone() {
         command::command_line(&apply_args(&layout, &snap)),
         "xrandr --output HDMI-1 --mode 0x1c0 --pos 1920x0 --rotate normal --reflect normal"
     );
-    assert!(!revert_args(&snap).contains(&"eDP-1".to_owned()));
+    // The revert names eDP-1 only to give it the primary back.
+    assert!(
+        revert_args(&snap).ends_with(&[
+            "--output".to_owned(),
+            "eDP-1".to_owned(),
+            "--primary".to_owned()
+        ]),
+        "{:?}",
+        revert_args(&snap)
+    );
+    assert_eq!(
+        revert_args(&snap).iter().filter(|a| *a == "eDP-1").count(),
+        1
+    );
     // eDP-1 is primary and locked: it is left out, but it still counts, so no --noprimary.
     let plan = Plan::pending(&layout, &snap);
     assert!(plan.find("eDP-1").is_none());
@@ -422,7 +435,7 @@ fn a_restore_at_negative_positions_is_compared_as_read() {
 }
 
 #[test]
-fn a_restore_names_outputs_that_are_gone_or_changed() {
+fn a_restore_names_outputs_that_changed_and_those_unplugged() {
     let before = wayland_fixture("demo");
     let mut after = before.clone();
     // eDP-1 (on) and DP-4 (off) were unplugged; DP-3 was left turned off.
@@ -431,8 +444,72 @@ fn a_restore_names_outputs_that_are_gone_or_changed() {
         .retain(|o| o.name != "eDP-1" && o.name != "DP-4");
     let i = after.find("DP-3").unwrap();
     after.outputs[i].active = None;
+    // No restore can bring eDP-1 back, so it is not a mismatch; DP-4 is still off.
     assert_eq!(
         restore_mismatches(&before, &after),
-        ["eDP-1 is gone.", "DP-3 is off; it should be on."]
+        ["DP-3 is off; it should be on."]
     );
+    assert_eq!(unplugged(&before, &after), ["eDP-1"]);
+}
+
+#[test]
+fn an_x11_output_disconnected_and_off_was_unplugged() {
+    // xrandr keeps an unplugged connector, disconnected; an MST one goes altogether.
+    let before = fixture("demo");
+    let on: Vec<&str> = before
+        .outputs
+        .iter()
+        .filter(|o| o.active.is_some())
+        .map(|o| o.name.as_str())
+        .collect();
+    let mut after = before.clone();
+    let i = after.find(on[0]).unwrap();
+    after.outputs[i].connection = Connection::Disconnected;
+    after.outputs[i].active = None;
+    after.outputs[i].crtc = None;
+    after.outputs.retain(|o| o.name != on[1]);
+    assert!(restore_mismatches(&before, &after).is_empty());
+    assert_eq!(unplugged(&before, &after), [on[0], on[1]]);
+    // Still connected, but off: that is a mismatch, not an unplug.
+    let mut after = before.clone();
+    after.outputs[i].active = None;
+    assert_eq!(
+        restore_mismatches(&before, &after),
+        [format!("{} is off; it should be on.", on[0])]
+    );
+    assert!(unplugged(&before, &after).is_empty());
+}
+
+#[test]
+fn a_panned_primary_is_restored_as_primary() {
+    // eDP-1 has panning, so a restore leaves it out, but it was primary: the restore makes it
+    // primary again and changes nothing else about it.
+    let before = fixture("panning");
+    let backend = FixtureBackend::new(before.clone());
+    let (mut layout, _) = Layout::from_snapshot(&before);
+    let (edp, hdmi) = (
+        before.find("eDP-1").unwrap(),
+        before.find("HDMI-1").unwrap(),
+    );
+    layout.outputs[edp].primary = false;
+    layout.outputs[hdmi].primary = true;
+    backend.apply(&Plan::pending(&layout, &before)).unwrap();
+    let moved = backend.requery().unwrap();
+    assert!(moved.outputs[hdmi].primary);
+    assert_eq!(restore_mismatches(&before, &moved), ["HDMI-1 is primary."]);
+
+    let restore = Plan::restore(&before);
+    assert_eq!(restore.primary, PrimaryRule::Output("eDP-1".to_owned()));
+    assert!(restore.find("eDP-1").is_none());
+    assert_eq!(
+        command::command_line(&command::argv(&restore)),
+        "xrandr --output HDMI-1 --mode 0x1c0 --pos 1920x0 --rotate normal --reflect normal \
+         --transform none --output eDP-1 --primary"
+    );
+    let outcome = backend.apply(&restore).unwrap();
+    assert!(outcome.success && outcome.stderr.is_empty(), "{outcome:?}");
+    let after = backend.requery().unwrap();
+    assert!(restore_mismatches(&before, &after).is_empty());
+    assert!(after.outputs[edp].primary && !after.outputs[hdmi].primary);
+    assert_eq!(after.outputs[edp].active, before.outputs[edp].active);
 }

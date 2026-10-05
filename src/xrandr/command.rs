@@ -102,8 +102,10 @@ fn plan_args(plan: &Plan, form: Form) -> Vec<String> {
     for planned in &plan.outputs {
         output_args(planned, plan.form, form, &mut args);
     }
-    if plan.primary == PrimaryRule::Clear {
-        push(&mut args, &["--noprimary"]);
+    match &plan.primary {
+        PrimaryRule::Keep => {}
+        PrimaryRule::Clear => push(&mut args, &["--noprimary"]),
+        PrimaryRule::Output(name) => push(&mut args, &["--output", name, "--primary"]),
     }
     args
 }
@@ -132,10 +134,31 @@ struct Request {
     filter: Option<String>,
 }
 
+impl Request {
+    /// Whether the group sets nothing (`--primary` aside, which is kept apart).
+    fn is_empty(&self) -> bool {
+        matches!(
+            self,
+            Request {
+                off: false,
+                auto: false,
+                mode: None,
+                rate: None,
+                pos: None,
+                rotation: None,
+                reflection: None,
+                transform: None,
+                filter: None,
+            }
+        )
+    }
+}
+
 /// The plan an xrandr call carries out on `snapshot`, the way xrandr reads its arguments: an
 /// unknown output is planned with nothing set and its options are skipped; an unknown option, a
 /// malformed value or a mode the output lacks is an error, in xrandr's words. What the call does
-/// not mention keeps its live value. The plan has the `Apply` form.
+/// not mention keeps its live value, and `--output X --primary` alone only moves the primary.
+/// The plan has the `Apply` form.
 #[doc(hidden)]
 pub fn argv_to_plan(snapshot: &Snapshot, argv: &[String]) -> Result<Plan, String> {
     // Per output, in order of first mention; `None` for an unknown output.
@@ -227,11 +250,16 @@ pub fn argv_to_plan(snapshot: &Snapshot, argv: &[String]) -> Result<Plan, String
     }
 
     let mut outputs = Vec::new();
+    let mut primary_only = None;
     for (name, index, req) in requests {
         let Some(i) = index else {
             outputs.push(Planned { name, on: None });
             continue;
         };
+        if req.is_empty() && primary == Some(Some(i)) {
+            primary_only = Some(name);
+            continue;
+        }
         let on = if req.off {
             None
         } else {
@@ -241,10 +269,10 @@ pub fn argv_to_plan(snapshot: &Snapshot, argv: &[String]) -> Result<Plan, String
     }
     Ok(Plan {
         outputs,
-        primary: if primary == Some(None) {
-            PrimaryRule::Clear
-        } else {
-            PrimaryRule::Keep
+        primary: match (primary, primary_only) {
+            (_, Some(name)) => PrimaryRule::Output(name),
+            (Some(None), None) => PrimaryRule::Clear,
+            _ => PrimaryRule::Keep,
         },
         form: PlanForm::Apply,
     })

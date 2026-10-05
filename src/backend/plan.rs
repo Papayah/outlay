@@ -14,12 +14,15 @@ pub struct Plan {
 }
 
 /// What happens to the primary display besides the outputs marked primary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrimaryRule {
     /// Leave it: an output marked primary takes over, else nothing changes.
     Keep,
     /// No display is primary (X11 `--noprimary`).
     Clear,
+    /// This output becomes primary, and nothing else about it changes (X11 `--output NAME
+    /// --primary`): a restore leaves out a primary with panning, then gives it the primary back.
+    Output(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +90,7 @@ impl Plan {
 
     /// The restore of `live`, the state taken just before an apply: every connected or active
     /// output except those with panning, with each setting explicit. Outputs that were off are
-    /// turned off.
+    /// turned off. A primary with panning is left as it is but made primary again.
     pub fn restore(live: &Snapshot) -> Self {
         let outputs = live
             .outputs
@@ -98,10 +101,18 @@ impl Plan {
                 on: restore_on(out),
             })
             .collect();
-        let primary = live.outputs.iter().any(|o| o.primary && o.active.is_some());
+        let primary = match live
+            .outputs
+            .iter()
+            .find(|o| o.primary && o.active.is_some())
+        {
+            None => PrimaryRule::Clear,
+            Some(out) if out.has_panning() => PrimaryRule::Output(out.name.clone()),
+            Some(_) => PrimaryRule::Keep,
+        };
         Self {
             outputs,
-            primary: rule(!primary),
+            primary,
             form: PlanForm::Restore,
         }
     }

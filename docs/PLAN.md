@@ -329,9 +329,10 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
    - Revert on timeout, `n`/`Esc`, or Ctrl-C (which also quits).
    - On SIGHUP or SIGTERM, revert first, then restore the terminal and ignore EIO.
 6. **Afterwards.**
-   - **The revert is verified too.** Re-query after it and compare each output `Plan::restore` covers with the state from before the apply (`restore_mismatches`): on/off, XID, rectangle, orientation, primary; an output that was on and is gone was unplugged meanwhile. Positions are compared as read, not normalised. Neither the exit status nor a failed read-back counts as a restore.
-   - A revert that failed, did not restore everything, or cannot be read back is a "Revert failed" report: what is wrong, then "Run …/revert.sh to restore it." The editor takes in the state it read back, if any. After the automatic revert of a failed apply, the same lines go into the "Apply failed" report.
-   - `outlay apply` prints the report after the countdown, and the editor prints one still open when it closes (a revert on Ctrl-C or a signal), since the alternate screen takes it along.
+   - **The revert is verified too.** Re-query after it and compare each output `Plan::restore` covers with the state from before the apply (`restore_mismatches`): on/off, XID, rectangle, orientation, primary. Positions are compared as read, not normalised. Neither the exit status nor a failed read-back counts as a restore. An output that was on and is now gone, or disconnected and off, was unplugged meanwhile (`unplugged`): no revert can bring it back, so it is a note ("eDP-1 was unplugged, so it is not back."), not a failure.
+   - A primary with panning is left out of the restore like any panned output, but the restore makes it primary again (`--output eDP-1 --primary`, `PrimaryRule::Output`).
+   - A revert that failed, did not restore everything, or cannot be read back is a "Revert failed" report: what is wrong, then "Run …/revert.sh to restore it." The editor takes in the state it read back, if any, and the panic hook stays armed. After the automatic revert of a failed apply, the same lines go into the "Apply failed" report.
+   - `outlay apply` prints the report after the countdown. The editor prints a report the screen never showed (a revert on Ctrl-C or a signal), since the alternate screen takes it along, and exits 1, on a signal too; a report already on screen is not printed again.
    - After a revert, the user's edits stay pending.
    - After keep, keep the in-memory links if the re-queried geometry matches; otherwise re-infer.
    - **Hooks.** Run each `post_apply` hook with `sh -c` after every change outlay makes to the screens:
