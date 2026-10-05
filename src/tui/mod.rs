@@ -33,7 +33,7 @@ use ratatui::{DefaultTerminal, Terminal};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
 use crate::backend::Backend;
-use app::{App, Options};
+use app::{App, Options, UiMode};
 use session::{Input, Session, Settings};
 
 /// The loop never blocks longer than this, so it notices signals and redraws the countdown.
@@ -172,10 +172,15 @@ pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Resul
         std::mem::forget(terminal);
     }
     restore_terminal(enhanced);
+    // A report still open, such as a revert that failed on the way out, went with the screen.
+    let report = match &session.app.mode {
+        UiMode::Message(message) => Some(message.print(&mut std::io::stderr())),
+        _ => None,
+    };
     if session.signalled() {
         return Ok(());
     }
-    result
+    result.and(report.map_or(Ok(()), Err))
 }
 
 fn event_loop(

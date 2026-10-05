@@ -593,6 +593,15 @@ fn restore_applies_a_capture_at_once() {
         stderr,
         "warning: output DP-9 not found; ignoring\noutlay: the restore left something out\n"
     );
+    // The state is read back: a display that was on and is not there is named.
+    let gone = demo.replace("\"name\": \"eDP-1\"", "\"name\": \"eDP-9\"");
+    let (ok, _, stderr) = outlay_in(&["--demo=wayland", "restore", "-"], &config, &gone);
+    assert!(!ok);
+    assert_eq!(
+        stderr,
+        "warning: output eDP-9 not found; ignoring\neDP-9 is gone.\n\
+         outlay: the restore left something out\n"
+    );
 
     let (ok, _, stderr) = outlay_in(&["--demo", "restore", "-"], &config, &demo);
     assert!(!ok);

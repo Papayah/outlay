@@ -3,6 +3,7 @@
 //! without a terminal.
 
 use std::borrow::Cow;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -159,6 +160,18 @@ pub struct Countdown {
 pub struct Message {
     pub title: String,
     pub lines: Vec<String>,
+}
+
+impl Message {
+    /// Writes the lines to `out` and returns the title as the error (`revert failed`), where no
+    /// popup can show the report: in `outlay apply`, or after the editor has closed. Write errors
+    /// are ignored, since after a SIGHUP there is no terminal.
+    pub fn print(&self, out: &mut dyn Write) -> anyhow::Error {
+        for line in &self.lines {
+            let _ = writeln!(out, "{line}");
+        }
+        anyhow::anyhow!("{}", self.title.to_lowercase())
+    }
 }
 
 /// How long keys are ignored after xrandr returns.
@@ -1179,11 +1192,9 @@ impl App {
         self.say(Severity::Info, "Kept the new layout.");
     }
 
-    /// The previous layout is back, read as `snap` if the read worked. The edits stay pending.
-    pub fn reverted(&mut self, snap: Option<Snapshot>, reason: RevertReason, seconds: u64) {
-        if let Some(snap) = snap {
-            self.adopt(snap);
-        }
+    /// The previous layout is back, read and checked as `snap`. The edits stay pending.
+    pub fn reverted(&mut self, snap: Snapshot, reason: RevertReason, seconds: u64) {
+        self.adopt(snap);
         self.mode = UiMode::Normal;
         let text = match reason {
             RevertReason::Timeout => format!(

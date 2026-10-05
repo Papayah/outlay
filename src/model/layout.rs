@@ -760,6 +760,34 @@ impl Layout {
     }
 }
 
+/// How `after`, the state re-read after a revert, differs from `before`, the state the revert
+/// restores: the outputs [`Plan::restore`](crate::backend::Plan::restore) covers, each compared
+/// as [`Layout::mismatches`] compares an apply. An output that was on and is no longer there was
+/// unplugged meanwhile; one that was off and is gone is still off. Empty when everything is back.
+///
+/// The positions are compared as they were read, not normalised as [`Layout::inferred`] does.
+pub fn restore_mismatches(before: &Snapshot, after: &Snapshot) -> Vec<String> {
+    let mut found = Vec::new();
+    for out in before
+        .outputs
+        .iter()
+        .filter(|o| o.is_relevant() && !o.has_panning())
+    {
+        let want = state_from_output(out, before.caps);
+        match after.find(&out.name) {
+            Some(i) => found.extend(output_mismatches(
+                &out.name,
+                &want,
+                &after.outputs[i],
+                after.caps,
+            )),
+            None if want.enabled => found.push(format!("{} is gone.", out.name)),
+            None => {}
+        }
+    }
+    found
+}
+
 /// How one output, as re-read, differs from the state asked of it: see [`Layout::mismatches`].
 pub fn output_mismatches(name: &str, want: &OutputState, out: &Output, caps: Caps) -> Vec<String> {
     let mut found = Vec::new();
