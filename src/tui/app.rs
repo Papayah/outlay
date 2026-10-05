@@ -3,6 +3,7 @@
 //! without a terminal.
 
 use std::borrow::Cow;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -159,6 +160,18 @@ pub struct Countdown {
 pub struct Message {
     pub title: String,
     pub lines: Vec<String>,
+}
+
+impl Message {
+    /// Writes the lines to `out` and returns the title as the error (`revert failed`), where no
+    /// popup can show the report: in `outlay apply`, or after the editor has closed. Write errors
+    /// are ignored, since after a SIGHUP there is no terminal.
+    pub fn print(&self, out: &mut dyn Write) -> anyhow::Error {
+        for line in &self.lines {
+            let _ = writeln!(out, "{line}");
+        }
+        anyhow::anyhow!("{}", self.title.to_lowercase())
+    }
 }
 
 /// How long keys are ignored after xrandr returns.
@@ -369,6 +382,8 @@ pub struct App {
     watch: Option<Duration>,
     /// When the watch next re-reads the live state.
     next_watch: Instant,
+    /// How many reports have opened, so a new report can be told from one already on screen.
+    reports: u64,
 }
 
 impl App {
@@ -400,6 +415,7 @@ impl App {
             animation: None,
             watch: options.watch,
             next_watch: now + options.watch.unwrap_or_default(),
+            reports: 0,
         };
         app.focus = app.default_focus();
         app.revalidate();
@@ -1135,10 +1151,16 @@ impl App {
 
     /// Shows a report and leaves the pending edits alone.
     pub fn report(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.reports += 1;
         self.mode = UiMode::Message(Message {
             title: title.into(),
             lines,
         });
+    }
+
+    /// How many reports have opened so far.
+    pub fn reports(&self) -> u64 {
+        self.reports
     }
 
     /// Takes a fresh reading of the live state after an apply or a revert, without touching the
@@ -1179,11 +1201,9 @@ impl App {
         self.say(Severity::Info, "Kept the new layout.");
     }
 
-    /// The previous layout is back, read as `snap` if the read worked. The edits stay pending.
-    pub fn reverted(&mut self, snap: Option<Snapshot>, reason: RevertReason, seconds: u64) {
-        if let Some(snap) = snap {
-            self.adopt(snap);
-        }
+    /// The previous layout is back, read and checked as `snap`. The edits stay pending.
+    pub fn reverted(&mut self, snap: Snapshot, reason: RevertReason, seconds: u64) {
+        self.adopt(snap);
         self.mode = UiMode::Normal;
         let text = match reason {
             RevertReason::Timeout => format!(

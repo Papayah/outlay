@@ -2,8 +2,9 @@
 //! fixture backend.
 
 use outlay::backend::{Backend, FixtureBackend, Plan, PrimaryRule};
-use outlay::model::Snapshot;
-use outlay::model::layout::Layout;
+use outlay::model::layout::{Layout, restore_mismatches, unplugged};
+use outlay::model::{Connection, Reflection, Rotation, Snapshot};
+use outlay::wayland::capture::parse as parse_capture;
 use outlay::xrandr::command::argv_to_plan;
 use outlay::xrandr::{command, parse_verbose};
 
@@ -28,6 +29,14 @@ fn fixture(name: &str) -> Snapshot {
         env!("CARGO_MANIFEST_DIR")
     );
     parse_verbose(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn wayland_fixture(name: &str) -> Snapshot {
+    let path = format!(
+        "{}/tests/fixtures/wayland/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    parse_capture(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 /// The demo with DP-1-3 turned on, HDMI-1-0 one rate up and eDP-1 made primary.
@@ -156,7 +165,20 @@ fn panning_outputs_are_left_alone() {
         command::command_line(&apply_args(&layout, &snap)),
         "xrandr --output HDMI-1 --mode 0x1c0 --pos 1920x0 --rotate normal --reflect normal"
     );
-    assert!(!revert_args(&snap).contains(&"eDP-1".to_owned()));
+    // The revert names eDP-1 only to give it the primary back.
+    assert!(
+        revert_args(&snap).ends_with(&[
+            "--output".to_owned(),
+            "eDP-1".to_owned(),
+            "--primary".to_owned()
+        ]),
+        "{:?}",
+        revert_args(&snap)
+    );
+    assert_eq!(
+        revert_args(&snap).iter().filter(|a| *a == "eDP-1").count(),
+        1
+    );
     // eDP-1 is primary and locked: it is left out, but it still counts, so no --noprimary.
     let plan = Plan::pending(&layout, &snap);
     assert!(plan.find("eDP-1").is_none());
@@ -291,4 +313,203 @@ fn a_scale_is_written_only_where_it_changes() {
         "{line}"
     );
     assert!(!line.contains("--transform"), "{line}");
+}
+
+/// `layout` with output `name`'s orientation as asked; the rest as it is.
+fn oriented(layout: &Layout, name: &str, rotation: Rotation, reflection: Reflection) -> Layout {
+    let mut layout = layout.clone();
+    let i = layout.names.iter().position(|n| n == name).unwrap();
+    layout.outputs[i].rotation = rotation;
+    layout.outputs[i].reflection = reflection;
+    layout
+}
+
+#[test]
+fn verification_compares_the_orientation() {
+    // A turn by 180° and a reflection keep the rectangle, so only the orientation tells.
+    let x11 = fixture("demo");
+    let wayland = wayland_fixture("demo");
+    let cases = [
+        (
+            &x11,
+            Rotation::Inverted,
+            Reflection::Normal,
+            "eDP-1 is normal instead of inverted.",
+        ),
+        (
+            &x11,
+            Rotation::Normal,
+            Reflection::X,
+            "eDP-1 is normal instead of normal, reflect x.",
+        ),
+        (
+            &wayland,
+            Rotation::Inverted,
+            Reflection::Normal,
+            "eDP-1 is normal instead of 180 (inverted).",
+        ),
+        (
+            &wayland,
+            Rotation::Normal,
+            Reflection::X,
+            "eDP-1 is normal instead of flipped.",
+        ),
+    ];
+    for (snap, rotation, reflection, text) in cases {
+        let (layout, _) = Layout::from_snapshot(snap);
+        assert!(layout.mismatches(snap).is_empty());
+        let asked = oriented(&layout, "eDP-1", rotation, reflection);
+        assert_eq!(asked.mismatches(snap), [text]);
+    }
+}
+
+#[test]
+fn verification_accepts_the_same_picture_named_another_way() {
+    // Wayland has no reflection in y: `reflect xy` is sent as `180`, `reflect y` as
+    // `flipped-180`, and each reads back that way.
+    let snap = wayland_fixture("demo");
+    let (layout, _) = Layout::from_snapshot(&snap);
+    for (asked, read_back) in [
+        (Reflection::XY, (Rotation::Inverted, Reflection::Normal)),
+        (Reflection::Y, (Rotation::Inverted, Reflection::X)),
+    ] {
+        let want = oriented(&layout, "eDP-1", Rotation::Normal, asked);
+        let mut live = snap.clone();
+        let i = live.find("eDP-1").unwrap();
+        let active = live.outputs[i].active.as_mut().unwrap();
+        (active.rotation, active.reflection) = read_back;
+        assert!(
+            want.mismatches(&live).is_empty(),
+            "{:?}",
+            want.mismatches(&live)
+        );
+        let normal = oriented(&layout, "eDP-1", Rotation::Normal, Reflection::Normal);
+        assert_eq!(normal.mismatches(&live).len(), 1, "{asked:?}");
+    }
+}
+
+#[test]
+fn a_state_restores_onto_itself_without_mismatches() {
+    for name in ["demo", "scaled", "panning"] {
+        let snap = fixture(name);
+        assert!(restore_mismatches(&snap, &snap).is_empty(), "{name}");
+    }
+    for name in [
+        "demo",
+        "custom-mode",
+        "laptop-scaled",
+        "rotated",
+        "disabled-head",
+    ] {
+        let snap = wayland_fixture(name);
+        assert!(restore_mismatches(&snap, &snap).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_restore_at_negative_positions_is_compared_as_read() {
+    // A Wayland desk left of and above 0,0, restored exactly. `Layout::inferred` would move it
+    // to 0,0 and report every output as misplaced.
+    let mut before = wayland_fixture("demo");
+    for active in before.outputs.iter_mut().filter_map(|o| o.active.as_mut()) {
+        active.pos.x -= 5000;
+        active.pos.y -= 1500;
+    }
+    let backend = FixtureBackend::new(wayland_fixture("demo"));
+    let outcome = backend.apply(&Plan::restore(&before)).unwrap();
+    assert!(outcome.success, "{}", outcome.stderr);
+    let after = backend.requery().unwrap();
+    assert!(
+        restore_mismatches(&before, &after).is_empty(),
+        "{:?}",
+        restore_mismatches(&before, &after)
+    );
+    assert_eq!(
+        restore_mismatches(&before, &wayland_fixture("demo")),
+        [
+            "eDP-1 is at 1440x900+2480+1440 instead of 1440x900+-2520+-60.",
+            "DP-3 is at 2560x1440+1920+0 instead of 2560x1440+-3080+-1500.",
+            "HDMI-A-1 is at 1920x1080+0+360 instead of 1920x1080+-5000+-1140."
+        ]
+    );
+}
+
+#[test]
+fn a_restore_names_outputs_that_changed_and_those_unplugged() {
+    let before = wayland_fixture("demo");
+    let mut after = before.clone();
+    // eDP-1 (on) and DP-4 (off) were unplugged; DP-3 was left turned off.
+    after
+        .outputs
+        .retain(|o| o.name != "eDP-1" && o.name != "DP-4");
+    let i = after.find("DP-3").unwrap();
+    after.outputs[i].active = None;
+    // No restore can bring eDP-1 back, so it is not a mismatch; DP-4 is still off.
+    assert_eq!(
+        restore_mismatches(&before, &after),
+        ["DP-3 is off; it should be on."]
+    );
+    assert_eq!(unplugged(&before, &after), ["eDP-1"]);
+}
+
+#[test]
+fn an_x11_output_disconnected_and_off_was_unplugged() {
+    // xrandr keeps an unplugged connector, disconnected; an MST one goes altogether.
+    let before = fixture("demo");
+    let on: Vec<&str> = before
+        .outputs
+        .iter()
+        .filter(|o| o.active.is_some())
+        .map(|o| o.name.as_str())
+        .collect();
+    let mut after = before.clone();
+    let i = after.find(on[0]).unwrap();
+    after.outputs[i].connection = Connection::Disconnected;
+    after.outputs[i].active = None;
+    after.outputs[i].crtc = None;
+    after.outputs.retain(|o| o.name != on[1]);
+    assert!(restore_mismatches(&before, &after).is_empty());
+    assert_eq!(unplugged(&before, &after), [on[0], on[1]]);
+    // Still connected, but off: that is a mismatch, not an unplug.
+    let mut after = before.clone();
+    after.outputs[i].active = None;
+    assert_eq!(
+        restore_mismatches(&before, &after),
+        [format!("{} is off; it should be on.", on[0])]
+    );
+    assert!(unplugged(&before, &after).is_empty());
+}
+
+#[test]
+fn a_panned_primary_is_restored_as_primary() {
+    // eDP-1 has panning, so a restore leaves it out, but it was primary: the restore makes it
+    // primary again and changes nothing else about it.
+    let before = fixture("panning");
+    let backend = FixtureBackend::new(before.clone());
+    let (mut layout, _) = Layout::from_snapshot(&before);
+    let (edp, hdmi) = (
+        before.find("eDP-1").unwrap(),
+        before.find("HDMI-1").unwrap(),
+    );
+    layout.outputs[edp].primary = false;
+    layout.outputs[hdmi].primary = true;
+    backend.apply(&Plan::pending(&layout, &before)).unwrap();
+    let moved = backend.requery().unwrap();
+    assert!(moved.outputs[hdmi].primary);
+    assert_eq!(restore_mismatches(&before, &moved), ["HDMI-1 is primary."]);
+
+    let restore = Plan::restore(&before);
+    assert_eq!(restore.primary, PrimaryRule::Output("eDP-1".to_owned()));
+    assert!(restore.find("eDP-1").is_none());
+    assert_eq!(
+        command::command_line(&command::argv(&restore)),
+        "xrandr --output HDMI-1 --mode 0x1c0 --pos 1920x0 --rotate normal --reflect normal \
+         --transform none --output eDP-1 --primary"
+    );
+    let outcome = backend.apply(&restore).unwrap();
+    assert!(outcome.success && outcome.stderr.is_empty(), "{outcome:?}");
+    let after = backend.requery().unwrap();
+    assert!(restore_mismatches(&before, &after).is_empty());
+    assert!(after.outputs[edp].primary && !after.outputs[hdmi].primary);
+    assert_eq!(after.outputs[edp].active, before.outputs[edp].active);
 }

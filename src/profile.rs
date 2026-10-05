@@ -101,14 +101,12 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
     let layout = session.app.layout.clone();
     session.push(Effect::Apply(ApplyRequest { plan, layout }));
     session.perform(&mut Lines);
-    if let UiMode::Message(message) = &session.app.mode {
-        for line in &message.lines {
-            say(line);
-        }
-        bail!("{}", message.title.to_lowercase());
-    }
     if session.awaiting_answer() {
         countdown(&mut session, seconds);
+    }
+    // A failed apply, or a revert that failed, says so, and how to restore by hand.
+    if let UiMode::Message(message) = &session.app.mode {
+        return Err(message.print(&mut io::stderr()));
     }
     if let Some(status) = &session.app.status {
         say(&status.text);

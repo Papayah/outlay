@@ -452,6 +452,8 @@ pub struct On {
   - the enabled set;
   - the `ModeId`;
   - the rectangle;
+  - the orientation (rotation and reflection, as the same picture): both sides go through
+    `x_only`, because a reflection in `y` is sent, and read back, as one in `x` turned by 180°;
   - primary, only when `caps.primary`;
   - on Wayland, the scale within 0.01. A rounded scale within that tolerance is adopted.
 - **Choosing a backend.** `backend::detect(env)` replaces `check_session`, again as a pure choice
@@ -495,6 +497,10 @@ pub struct On {
     - It is dispatched **before `Config::load()`**, next to `Completions` (`src/main.rs:24-29`), so
       a broken config cannot block a revert at panic time.
     - It reads a capture, detects the live backend and applies `Plan::restore`.
+    - It leaves out outputs the live state no longer has. It reads the state back and compares
+      it with the capture (`restore_mismatches`, as the editor's revert does); every difference
+      is a problem. A display that was on and has been unplugged is named on stderr, but is not
+      a problem: no restore can bring it back.
     - It has no countdown, writes no revert file and runs no hooks.
     - It prints problems to stderr and exits 1 when there are any.
   - X11 `revert.sh` stays a plain xrandr script.

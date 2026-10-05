@@ -229,6 +229,11 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** none yet. To look at it, start outlay under gdb from the driver, or add a debug log to
   the event loop. When you exec `pty_drive.py` from another script, set `BIN` again afterwards:
   it comes from `__file__`, and a wrong path makes the child exit 1 at once.
+- **Clean-up:** every run leaves that `outlay --demo` spinning, and it ignores SIGTERM (the flag
+  is set, but the loop never reads it). After running the scenarios, `pgrep -x outlay -a`, then
+  `kill -9` the `--demo` PIDs (they never touch a display). Do not use `pkill -f outlay`: it
+  matches the Bash tool's own shell, whose command line holds the pattern, and kills it (exit
+  144). Still the same on 2026-10-05 at `4acff97`.
 
 ## Does `xrandr --current` see a hotplug without a probe? Yes, here
 
@@ -664,3 +669,31 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   would suspend the developer's machine.
 - **Fix:** never type plain `sleep`. Use `/usr/bin/sleep 20` (or `command sleep 20`), and check
   `type <cmd>` when a common command behaves oddly.
+
+## A Wayland capture's outputs are not in the JSON order
+
+- **Symptom:** a test that expects mismatches for `tests/fixtures/wayland/demo.json` in file
+  order (`HDMI-A-1`, `DP-3`, `eDP-1`) fails: they come out `eDP-1`, `DP-3`, `HDMI-A-1`.
+- **Cause:** `wayland::capture::parse` sorts the outputs (`head_order`), and everything that walks
+  `snap.outputs` (`mismatches`, `restore_mismatches`) follows that order.
+- **Fix:** look the order up with `snap.outputs.iter().map(|o| &o.name)`, or run the test once and
+  copy it, instead of reading it off the JSON.
+
+## A `Fake` stderr already starting with `xrandr:` is printed twice
+
+- **Symptom:** an "Apply failed" report reads `xrandr: xrandr: Configure crtc 2 failed`.
+- **Cause:** `Session::apply` prefixes every X11 stderr line with `xrandr: `. The revert's
+  "The revert failed: …" line does not.
+- **Fix:** in an apply's `Next::Fails`, give the stderr without the prefix
+  (`"Configure crtc 2 failed\n"`) when the test compares the whole report;
+  `a_failed_apply_that_changed_the_screens_is_reverted` gets away with it because it uses
+  `contains`.
+
+## `pty_drive.py timeout` and `scale` print `reverted: False`
+
+- **Symptom:** `tools/pty_drive.py timeout -- --demo` prints `reverted: False` and `exit: None`;
+  `scale` prints `reverted: False`. It looks like a regression, and it is the same on `main`.
+- **Cause:** both scenarios wait for a short countdown and need the flag the script's header asks
+  for. With the default 15 s countdown, they read the screen before the revert happens.
+- **Fix:** `tools/pty_drive.py timeout -- --demo --revert-timeout 2` and
+  `tools/pty_drive.py scale -- --demo --revert-timeout 10`.

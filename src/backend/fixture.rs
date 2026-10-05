@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 
 use super::{ApplyOutcome, Backend, Plan, PrimaryRule, ScalingChange};
 use crate::model::geometry::{Size, effective_size};
-use crate::model::{ActiveConfig, Kind, Scaling, Snapshot, Transform};
+use crate::model::{ActiveConfig, Kind, Scaling, Snapshot, Transform, x_only};
 use crate::wayland::{self, capture};
 use crate::xrandr::{DEMO, command, parse_verbose};
 
@@ -155,9 +155,16 @@ fn simulate(snapshot: &mut Snapshot, plan: &Plan) -> ApplyOutcome {
     let mut next = snapshot.clone();
     let mut warnings = String::new();
     // `Some(None)`: nobody is primary afterwards.
-    let mut primary = match plan.primary {
+    let mut primary = match &plan.primary {
         PrimaryRule::Keep => None,
         PrimaryRule::Clear => Some(None),
+        PrimaryRule::Output(name) => match next.find(name) {
+            Some(i) => Some(Some(i)),
+            None => {
+                warnings.push_str(&format!("warning: output {name} not found; ignoring\n"));
+                None
+            }
+        },
     };
     for planned in &plan.outputs {
         let Some(i) = next.find(&planned.name) else {
@@ -193,12 +200,17 @@ fn simulate(snapshot: &mut Snapshot, plan: &Plan) -> ApplyOutcome {
             scaling = Scaling::X11(Transform::identity());
         }
         let size: Size = effective_size(mode.size(), on.rotation, &scaling);
+        // A compositor reflects only in x: `reflect y` comes out, and reads back, as `flipped-180`.
+        let (rotation, reflection) = match next.caps.kind {
+            Kind::Wayland => x_only(on.rotation, on.reflection),
+            Kind::X11 => (on.rotation, on.reflection),
+        };
         out.active = Some(ActiveConfig {
             mode: mode.id,
             pos: on.pos,
             size,
-            rotation: on.rotation,
-            reflection: on.reflection,
+            rotation,
+            reflection,
             scaling,
             panning: old.and_then(|a| a.panning),
         });

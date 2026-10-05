@@ -1,13 +1,16 @@
 //! `outlay restore CAPTURE`: puts back, at once, the layout a capture describes. The Wayland
 //! `revert.sh` runs it with the state from before an apply. It reads no config file, so a broken
 //! one cannot block a revert, and it has no countdown, writes no revert file and runs no hooks.
+//! It reads the state back afterwards, and anything that did not come back is an error, except
+//! a display that was unplugged meanwhile.
 
 use std::io::{self, Read, Write};
 
 use anyhow::{Context, Result, bail};
 
-use crate::backend::{Plan, parse_capture};
+use crate::backend::{Plan, PrimaryRule, parse_capture};
 use crate::cli::Cli;
+use crate::model::layout::{restore_mismatches, unplugged};
 
 /// Restores the capture in the file `source`, or on stdin for `-`. Problems go to stderr, and
 /// any problem is an error.
@@ -31,7 +34,15 @@ pub fn restore(cli: &Cli, source: &str) -> Result<()> {
             live.caps.kind.name()
         );
     }
-    let outcome = backend.apply(&Plan::restore(&captured))?;
+    let mut plan = Plan::restore(&captured);
+    // A display unplugged since the capture cannot come back, and xrandr would warn about it.
+    plan.outputs.retain(|p| live.find(&p.name).is_some());
+    if let PrimaryRule::Output(name) = &plan.primary
+        && live.find(name).is_none()
+    {
+        plan.primary = PrimaryRule::Keep;
+    }
+    let outcome = backend.apply(&plan)?;
     let problems: Vec<&str> = outcome
         .stderr
         .lines()
@@ -45,7 +56,18 @@ pub fn restore(cli: &Cli, source: &str) -> Result<()> {
     if !outcome.success {
         bail!("the restore failed");
     }
-    if !problems.is_empty() {
+    // The display server's word is not enough: read the state back and compare.
+    let after = backend
+        .requery()
+        .context("the restore ran, but the state could not be read back")?;
+    for name in unplugged(&captured, &after) {
+        let _ = writeln!(io::stderr(), "{name} was unplugged, so it is not back.");
+    }
+    let mismatches = restore_mismatches(&captured, &after);
+    for mismatch in &mismatches {
+        let _ = writeln!(io::stderr(), "{mismatch}");
+    }
+    if !problems.is_empty() || !mismatches.is_empty() {
         bail!("the restore left something out");
     }
     Ok(())
