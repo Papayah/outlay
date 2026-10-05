@@ -2,8 +2,9 @@
 //! fixture backend.
 
 use outlay::backend::{Backend, FixtureBackend, Plan, PrimaryRule};
-use outlay::model::Snapshot;
 use outlay::model::layout::Layout;
+use outlay::model::{Reflection, Rotation, Snapshot};
+use outlay::wayland::capture::parse as parse_capture;
 use outlay::xrandr::command::argv_to_plan;
 use outlay::xrandr::{command, parse_verbose};
 
@@ -28,6 +29,14 @@ fn fixture(name: &str) -> Snapshot {
         env!("CARGO_MANIFEST_DIR")
     );
     parse_verbose(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn wayland_fixture(name: &str) -> Snapshot {
+    let path = format!(
+        "{}/tests/fixtures/wayland/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    parse_capture(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 /// The demo with DP-1-3 turned on, HDMI-1-0 one rate up and eDP-1 made primary.
@@ -291,4 +300,77 @@ fn a_scale_is_written_only_where_it_changes() {
         "{line}"
     );
     assert!(!line.contains("--transform"), "{line}");
+}
+
+/// `layout` with output `name`'s orientation as asked; the rest as it is.
+fn oriented(layout: &Layout, name: &str, rotation: Rotation, reflection: Reflection) -> Layout {
+    let mut layout = layout.clone();
+    let i = layout.names.iter().position(|n| n == name).unwrap();
+    layout.outputs[i].rotation = rotation;
+    layout.outputs[i].reflection = reflection;
+    layout
+}
+
+#[test]
+fn verification_compares_the_orientation() {
+    // A turn by 180° and a reflection keep the rectangle, so only the orientation tells.
+    let x11 = fixture("demo");
+    let wayland = wayland_fixture("demo");
+    let cases = [
+        (
+            &x11,
+            Rotation::Inverted,
+            Reflection::Normal,
+            "eDP-1 is normal instead of inverted.",
+        ),
+        (
+            &x11,
+            Rotation::Normal,
+            Reflection::X,
+            "eDP-1 is normal instead of normal, reflect x.",
+        ),
+        (
+            &wayland,
+            Rotation::Inverted,
+            Reflection::Normal,
+            "eDP-1 is normal instead of 180 (inverted).",
+        ),
+        (
+            &wayland,
+            Rotation::Normal,
+            Reflection::X,
+            "eDP-1 is normal instead of flipped.",
+        ),
+    ];
+    for (snap, rotation, reflection, text) in cases {
+        let (layout, _) = Layout::from_snapshot(snap);
+        assert!(layout.mismatches(snap).is_empty());
+        let asked = oriented(&layout, "eDP-1", rotation, reflection);
+        assert_eq!(asked.mismatches(snap), [text]);
+    }
+}
+
+#[test]
+fn verification_accepts_the_same_picture_named_another_way() {
+    // Wayland has no reflection in y: `reflect xy` is sent as `180`, `reflect y` as
+    // `flipped-180`, and each reads back that way.
+    let snap = wayland_fixture("demo");
+    let (layout, _) = Layout::from_snapshot(&snap);
+    for (asked, read_back) in [
+        (Reflection::XY, (Rotation::Inverted, Reflection::Normal)),
+        (Reflection::Y, (Rotation::Inverted, Reflection::X)),
+    ] {
+        let want = oriented(&layout, "eDP-1", Rotation::Normal, asked);
+        let mut live = snap.clone();
+        let i = live.find("eDP-1").unwrap();
+        let active = live.outputs[i].active.as_mut().unwrap();
+        (active.rotation, active.reflection) = read_back;
+        assert!(
+            want.mismatches(&live).is_empty(),
+            "{:?}",
+            want.mismatches(&live)
+        );
+        let normal = oriented(&layout, "eDP-1", Rotation::Normal, Reflection::Normal);
+        assert_eq!(normal.mismatches(&live).len(), 1, "{asked:?}");
+    }
 }

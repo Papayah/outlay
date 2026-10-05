@@ -734,8 +734,9 @@ fn rect_text(r: Rect) -> String {
 
 impl Layout {
     /// How `snap`, the state re-read after applying this layout, differs from it: the enabled
-    /// set, mode ids, rectangles, the Wayland scale within 0.01 and, where there is one, the
-    /// primary. Empty when the apply came out as asked. A compositor may round a scale: within
+    /// set, mode ids, rectangles, the Wayland scale within 0.01, the orientation (rotation and
+    /// reflection, as the same picture: Wayland reads `reflect y` back as a turn and `reflect x`)
+    /// and, where there is one, the primary. Empty when the apply came out as asked. A compositor may round a scale: within
     /// the tolerance, the rectangle is checked at the scale it chose.
     /// xrandr exits 0 even when it ignores an output, so the exit code alone proves nothing.
     pub fn mismatches(&self, snap: &Snapshot) -> Vec<String> {
@@ -796,6 +797,13 @@ pub fn output_mismatches(name: &str, want: &OutputState, out: &Output, caps: Cap
                     "{name} is at {} instead of {}.",
                     rect_text(live.rect()),
                     rect_text(rect)
+                ));
+            }
+            if x_only(live.rotation, live.reflection) != x_only(want.rotation, want.reflection) {
+                found.push(format!(
+                    "{name} is {} instead of {}.",
+                    orientation::label(caps.kind, live.rotation, live.reflection),
+                    orientation::label(caps.kind, want.rotation, want.reflection)
                 ));
             }
             if caps.primary && want.primary != out.primary {

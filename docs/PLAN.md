@@ -320,7 +320,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
    - Live apply and revert always pass `--mode 0xXID`. Scripts and `y` use name + `--rate`.
 4. **Verify.**
    - xrandr exits 0 even for `warning: output X not found; ignoring`, so the exit code is not enough.
-   - Re-query with `xrandr --verbose --current` and compare with the request: enabled set, XIDs, rectangles, primary.
+   - Re-query with `xrandr --verbose --current` and compare with the request: enabled set, XIDs, rectangles, orientation (rotation and reflection, as the same picture), primary. A turn by 180° or a reflection keeps the rectangle, so only the orientation shows that it was ignored.
    - A mismatch or a non-zero exit is a failure: show stderr and the diff, and revert if the live state changed.
 5. **Countdown.**
    - A popup with a shrinking `LineGauge`: "Keep this layout? y keep · n/Esc revert · 15s".

@@ -452,6 +452,8 @@ pub struct On {
   - the enabled set;
   - the `ModeId`;
   - the rectangle;
+  - the orientation (rotation and reflection, as the same picture): both sides go through
+    `x_only`, because a reflection in `y` is sent, and read back, as one in `x` turned by 180°;
   - primary, only when `caps.primary`;
   - on Wayland, the scale within 0.01. A rounded scale within that tolerance is adopted.
 - **Choosing a backend.** `backend::detect(env)` replaces `check_session`, again as a pure choice

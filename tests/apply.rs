@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow};
 use common::{ix, keys, unplugged};
 use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan, Verdict};
 use outlay::model::Snapshot;
-use outlay::model::{Rotation, Scaling};
+use outlay::model::{Reflection, Rotation, Scaling};
 use outlay::tui::app::{App, ApplyRequest, Effect, Options, UiMode, WATCH_INTERVAL};
 use outlay::tui::session::{Input, Session, Settings};
 use outlay::xrandr::command;
@@ -430,6 +430,25 @@ fn verification_catches_what_xrandr_ignored() {
         message.contains("Reverted to the previous layout."),
         "{message}"
     );
+}
+
+#[test]
+fn verification_catches_an_ignored_turn() {
+    // xrandr exits 0 but skips eDP-1, whose only change is a turn: the rectangle stays the same.
+    let backend = Fake::demo().then(Next::Skips("eDP-1"));
+    let mut rig = Rig::new(&backend, Settings::default());
+    let before = backend.query().unwrap();
+    rig.press("3:rotate inverted<Enter>a<Enter>");
+    assert_eq!(backend.calls().len(), 1, "nothing to revert");
+    assert_eq!(backend.query().unwrap(), before);
+    let message = rig.message();
+    assert!(message.starts_with("Apply failed"), "{message}");
+    assert!(
+        message.contains("eDP-1 is normal instead of inverted."),
+        "{message}"
+    );
+    assert!(message.contains("Nothing changed."), "{message}");
+    assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
 }
 
 #[test]
@@ -895,6 +914,22 @@ fn a_wayland_layout_reverts_without_an_answer() {
     assert_eq!(calls[1], Plan::restore(&before));
     assert_eq!(backend.query().unwrap(), before);
     assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
+}
+
+#[test]
+fn a_wayland_reflection_in_y_verifies_as_the_same_picture() {
+    // Wayland reflects only in x: `reflect y` goes out, and reads back, as `flipped-180`.
+    let backend = Fake::wayland();
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1:reflect y<Enter>a<Enter>");
+    let c = rig.countdown();
+    let live = edp(&backend);
+    assert_eq!(
+        (live.rotation, live.reflection),
+        (Rotation::Inverted, Reflection::X)
+    );
+    rig.press_at("y", c.blocked_until);
+    assert_eq!(rig.status(), "Kept the new layout.");
 }
 
 #[test]
