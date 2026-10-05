@@ -367,7 +367,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   - One `--output` per line, joined with ` \` continuations.
   - Every other known output gets `--off`.
   - Mirrors get identical `--pos` values, as arandr writes them.
-  - Write atomically (a fresh, exclusively created temp file, then rename), through a symlinked destination: the link stays and its target gets the text. This holds for every file outlay writes, `revert.sh` included. Show a diff and ask before overwriting.
+  - Write atomically (a fresh, exclusively created, hidden temp file, then rename; a profile is synced to disk, `revert.sh` is not), through a symlinked destination: the link stays and its target gets the text. A link that another user planted is not followed, and no directory is made at a link's far end. This holds for every file outlay writes, `revert.sh` included. Show a diff and ask before overwriting.
   - Preserve non-xrandr lines byte-for-byte.
 - **Parse.**
   1. Strip comments and join continuations.
