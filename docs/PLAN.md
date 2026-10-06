@@ -422,13 +422,13 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   - It warns when the directory is not on `PATH`, when another `outlay` comes first on `PATH`, and when `xrandr` is missing. It never edits shell rc files.
   - `--uninstall` removes the binary and the completions, and keeps `$XDG_CONFIG_HOME/outlay` and `$XDG_STATE_HOME/outlay`.
 - **License:** GPL-3.0-or-later.
-- **Later:** an AUR package, planned in its own session. It waits for the AUR account.
+- **Later:** an AUR package (`ROADMAP.md`).
 
 ## Architecture
 
 ```
 outlay/
-  Cargo.toml  README.md  CLAUDE.md  MISTAKES.md  LICENSE  docs/PLAN.md  docs/screenshots/
+  Cargo.toml  README.md  CLAUDE.md  MISTAKES.md  ROADMAP.md  LICENSE  docs/PLAN.md  docs/screenshots/
   install.sh           curl | sh installer and updater (POSIX sh)
   .github/workflows/ci.yml  .github/workflows/release.yml
   src/
