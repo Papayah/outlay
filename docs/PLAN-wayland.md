@@ -817,13 +817,8 @@ real compositor.
 
 ### Later, unscheduled
 
-- Mirroring through compositor extensions:
-  - COSMIC `zcosmic_output_manager_v1`, which also gives exact scales;
-  - Hyprland `hl.monitor{ mirror = … }` through `hyprctl eval`.
-- A VRR toggle (`set_adaptive_sync`).
-- Custom modes from `:mode` on Wayland.
-- shikane profiles.
-- Profiles on GNOME and KDE.
+The unscheduled work (mirroring, VRR, custom modes, shikane, profiles on GNOME and KDE) is in
+[`ROADMAP.md`](../ROADMAP.md).
 
 ## Verification
 
