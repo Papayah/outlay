@@ -17,7 +17,7 @@ use base64::engine::general_purpose::STANDARD;
 use ratatui::crossterm::event::Event;
 
 use crate::backend::{Backend, Plan, Verdict};
-use crate::files::{line_diff, write_atomic};
+use crate::files::{line_diff, write_atomic_unsynced};
 use crate::model::validate::Severity;
 use crate::model::{Kind, Snapshot};
 use crate::profiles::ProfileStore;
@@ -352,7 +352,7 @@ impl<'a> Session<'a> {
                     )
                 }
             };
-            if let Err(err) = write_atomic(path, &text, 0o755) {
+            if let Err(err) = write_atomic_unsynced(path, &text, 0o755) {
                 self.app.report(
                     "Apply failed",
                     vec![format!(
