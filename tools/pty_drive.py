@@ -8,7 +8,7 @@ Every check prints "name: value"; the exit status is 1 when a check is False. ke
 nudge display N (default 3) to the right.
 
 Scenarios: keep, timeout (pass --revert-timeout 2), scale (> on the focused display, pass
---revert-timeout 10), sigterm, sighup, keys, hold (a held Alt-l;
+--revert-timeout 10), sigterm, sighup, hangup-idle, keys, hold (a held Alt-l;
 PTY_DUMP=1 prints the screen), profiles (pass --layouts-dir with copies of tv-home.sh and
 home-setup.sh; it saves desk.sh there), refresh (R with an edit pending). With --demo or -n
 nothing reaches the X server. Without them the apply is real: ask the user first.
@@ -208,7 +208,11 @@ def main():
         out = send(fd, "\r", 1.0)
         check("countdown", "Keep this layout?" in out)
         os.close(fd)                # the terminal goes away
-        check("exit", wait_or_kill(pid, 3.0))
+        check("exit", wait_or_kill(pid, 6.0))   # the watchdog needs 3 s
+    elif scenario == "hangup-idle":
+        # No key at all: crossterm spins in event::poll, so only the signal watchdog can end it.
+        os.close(fd)
+        check("exit", wait_or_kill(pid, 6.0))
     elif scenario == "keys":
         out = send(fd, "?", 0.5)
         check("help", "Layout" in out and "Snap-move" in out)

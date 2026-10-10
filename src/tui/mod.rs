@@ -11,11 +11,12 @@ pub mod session;
 pub mod theme;
 pub mod ui;
 
-use std::io::{Write, stdout};
+use std::io::{self, Write, stdout};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -31,6 +32,7 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::{DefaultTerminal, Terminal};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 
 use crate::backend::Backend;
 use app::{App, Options};
@@ -41,9 +43,28 @@ const IDLE_POLL: Duration = Duration::from_millis(250);
 const COUNTDOWN_POLL: Duration = Duration::from_millis(100);
 /// About 60 frames a second while displays glide.
 const ANIMATION_POLL: Duration = Duration::from_millis(16);
+/// After a signal, how often the watchdog looks at whether the loop is stuck in a terminal read.
+const WATCHDOG_CHECK: Duration = Duration::from_millis(100);
+/// How long a terminal read may last after a signal before it counts as stuck: over crossterm's
+/// 2 s timeout for the keyboard-enhancement query, the longest a healthy read takes (a bare pty
+/// answers neither `CSI ? u` nor DA1; the loop's own polls last at most [`IDLE_POLL`]).
+const WATCHDOG_GRACE: Duration = Duration::from_secs(3);
 
 /// The `revert.sh` the panic hook runs while an applied layout waits for its answer.
 static PANIC_REVERT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Counts the entries to and exits from a crossterm input call: odd while one is running. The
+/// watchdog tells a stuck call (the same odd value for [`WATCHDOG_GRACE`]) from a loop that merely
+/// polls most of the time (the value keeps changing).
+static TERMINAL_READS: AtomicU64 = AtomicU64::new(0);
+
+/// Runs a crossterm input call (`event::poll`, `event::read`) so the watchdog can see it.
+fn in_terminal_read<T>(call: impl FnOnce() -> T) -> T {
+    TERMINAL_READS.fetch_add(1, Ordering::SeqCst);
+    let out = call();
+    TERMINAL_READS.fetch_add(1, Ordering::SeqCst);
+    out
+}
 
 /// Arms (`Some`) or disarms the panic hook's revert.
 pub fn arm_panic_revert(script: Option<PathBuf>) {
@@ -91,6 +112,45 @@ pub fn install_panic_hook(pop_keyboard_flags: bool) {
     }));
 }
 
+/// Sets `signal` on SIGHUP, SIGTERM or SIGINT, from a thread of its own, and then watches the
+/// event loop. The default action (die on the spot, leaving an unconfirmed layout) is replaced:
+/// the loop notices the flag between its polls, reverts, and returns.
+///
+/// But when the terminal goes away, crossterm 0.29 spins forever inside `event::poll` (its unix
+/// reader retries a read that returns EOF or EIO without end, crossterm#793), so the loop never
+/// looks at the flag. If the main thread stays in such a call for [`WATCHDOG_GRACE`] after the
+/// signal, the watchdog reverts what is armed and exits. Nothing is mid-apply then: an apply
+/// is not a terminal read. Like the panic hook, this emergency path only runs `revert.sh`: the
+/// `post_apply` hooks are not re-run (accepted trade-off).
+fn handle_signals(signal: Arc<AtomicBool>) -> io::Result<()> {
+    let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
+    thread::spawn(move || {
+        if signals.forever().next().is_none() {
+            return;
+        }
+        signal.store(true, Ordering::SeqCst);
+        let mut seen = TERMINAL_READS.load(Ordering::SeqCst);
+        let mut stuck_for = Duration::ZERO;
+        loop {
+            thread::sleep(WATCHDOG_CHECK);
+            let now = TERMINAL_READS.load(Ordering::SeqCst);
+            if now == seen && !now.is_multiple_of(2) {
+                stuck_for += WATCHDOG_CHECK;
+                if stuck_for >= WATCHDOG_GRACE {
+                    // The terminal is gone, so no printing and no restoring it. The status is
+                    // that of the normal path (`run` returns Ok after a signal).
+                    run_armed_revert();
+                    std::process::exit(0);
+                }
+            } else {
+                seen = now;
+                stuck_for = Duration::ZERO;
+            }
+        }
+    });
+    Ok(())
+}
+
 /// Cell height over cell width from the terminal's pixel size, or `None` when the terminal does
 /// not report pixels (tmux reports 0).
 pub fn detect_cell_aspect() -> Option<f64> {
@@ -108,8 +168,8 @@ struct TerminalInput;
 
 impl Input for TerminalInput {
     fn drain(&mut self) {
-        while matches!(event::poll(Duration::ZERO), Ok(true)) {
-            if event::read().is_err() {
+        while matches!(in_terminal_read(|| event::poll(Duration::ZERO)), Ok(true)) {
+            if in_terminal_read(event::read).is_err() {
                 break;
             }
         }
@@ -138,12 +198,8 @@ pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Resul
     let (options, settings) = confine(backend, options, settings);
     let fixed_aspect = options.cell_aspect;
     let app = App::new(backend.query()?, options);
-    // The loop polls with a timeout, so it notices these flags; the default action (die on the
-    // spot, leaving an unconfirmed layout) is replaced.
     let signal = Arc::new(AtomicBool::new(false));
-    for sig in [SIGHUP, SIGTERM, SIGINT] {
-        signal_hook::flag::register(sig, Arc::clone(&signal))?;
-    }
+    handle_signals(Arc::clone(&signal))?;
     let mut session = Session::new(app, backend, settings, signal);
 
     // Set up by hand rather than with ratatui::init, whose panic hook prints (see above).
@@ -157,7 +213,8 @@ pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Resul
         }
     };
     // The alternate screen is on; only now push the keyboard flags, and only where supported.
-    let enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+    // It reads the terminal's answer through the same crossterm loop, so the watchdog must see it.
+    let enhanced = matches!(in_terminal_read(supports_keyboard_enhancement), Ok(true));
     if enhanced {
         execute!(
             stdout(),
@@ -223,12 +280,12 @@ fn event_loop(
         } else {
             IDLE_POLL
         };
-        if !event::poll(timeout)? {
+        if !in_terminal_read(|| event::poll(timeout))? {
             session.tick(Instant::now());
             continue;
         }
         loop {
-            let event = event::read()?;
+            let event = in_terminal_read(event::read)?;
             if matches!(event, Event::Resize(..))
                 && fixed_aspect.is_none()
                 && let Some(aspect) = detect_cell_aspect()
@@ -237,7 +294,7 @@ fn event_loop(
             }
             session.handle_event(&event, Instant::now());
             // Stop at the first effect so it is drawn ("applying…") before it runs.
-            if session.has_work() || !event::poll(Duration::ZERO)? {
+            if session.has_work() || !in_terminal_read(|| event::poll(Duration::ZERO))? {
                 break;
             }
         }

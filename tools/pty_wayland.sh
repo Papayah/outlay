@@ -82,6 +82,11 @@ expect "revert.sh hands a capture to outlay restore" \
     "$(grep -c "restore - <<'OUTLAY-CAPTURE'" "$XDG_STATE_HOME/outlay/revert.sh")" 1
 python3 "$here/pty_drive.py" timeout --display 1 -- --revert-timeout 2 || failed=1
 expect "reverted to" "$(x_of HEADLESS-1)" 1290
+# The terminal hangs up during the countdown: the watchdog hangs up on the compositor, runs
+# revert.sh and exits, so the nudged output is back where it was.
+python3 "$here/pty_drive.py" sighup --display 1 -- || failed=1
+expect "reverted after the hangup to" "$(x_of HEADLESS-1)" 1290
+expect "HEADLESS-2 stays at" "$(x_of HEADLESS-2)" 0
 
 if [ "$failed" -ne 0 ]; then
     echo "sway's log:" >&2

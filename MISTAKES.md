@@ -226,19 +226,25 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 
 ## `pty_drive.py sighup` prints `exit: None`
 
-- **Symptom:** `tools/pty_drive.py sighup -- --demo` ends with `exit: None`, on `main` as well
-  (seen 2026-09-26 at f7a81b7). The process is still there 10 s after the pty master closes, in
-  state `R`, using the CPU, instead of reverting and exiting.
-- **Cause:** not found. There is no `strace` or `perf` here, and `kernel.yama.ptrace_scope = 1`
-  stops `gdb -p` from attaching to a process that is not its child.
-- **Fix:** none yet. To look at it, start outlay under gdb from the driver, or add a debug log to
-  the event loop. When you exec `pty_drive.py` from another script, set `BIN` again afterwards:
-  it comes from `__file__`, and a wrong path makes the child exit 1 at once.
-- **Clean-up:** every run leaves that `outlay --demo` spinning, and it ignores SIGTERM (the flag
-  is set, but the loop never reads it). After running the scenarios, `pgrep -x outlay -a`, then
-  `kill -9` the `--demo` PIDs (they never touch a display). Do not use `pkill -f outlay`: it
-  matches the Bash tool's own shell, whose command line holds the pattern, and kills it (exit
-  144). Still the same on 2026-10-05 at `4acff97`.
+- **Symptom:** `tools/pty_drive.py sighup -- --demo` ended with `exit: None`: after the terminal
+  closed, outlay ran on at 100% CPU (state `R`) instead of reverting and exiting.
+- **Cause:** crossterm 0.29's unix reader loops forever on a hung-up tty (a read that returns EOF
+  or EIO is retried without end, crossterm-rs/crossterm#793), so `event::poll` never returns. The
+  old `signal_hook::flag` handler only set a flag the loop checks between polls, so the signal
+  was caught and never acted on.
+- **Fix:** `tui::handle_signals` handles the signals on a thread of its own. It sets the flag
+  and, if the main thread stays inside a crossterm input call for 3 s (`in_terminal_read`
+  marks them), runs the armed `revert.sh` and exits 0. Wrap any new `event::poll`/`event::read`
+  (or `supports_keyboard_enhancement`) in `in_terminal_read`. `pty_drive.py sighup` and
+  `hangup-idle` check it. When you run `pty_drive.py` from another script, set `OUTLAY_BIN` (the
+  script honours it) rather than relying on `__file__`: a wrong path makes the child exit 1 at
+  once.
+- **Clean-up:** before this fix, every run left that `outlay --demo` spinning, and it ignored
+  SIGTERM (the flag was set, but the loop never read it). Both scenarios now `kill -9` a child
+  still alive after 6 s, so a regression leaves no orphan; still check `pgrep -x outlay -a`
+  after a failed run and `kill -9` the `--demo` PIDs (they never touch a display). Do not use
+  `pkill -f outlay`: it matches the Bash tool's own shell, whose command line holds the pattern,
+  and kills it (exit 144).
 
 ## Does `xrandr --current` see a hotplug without a probe? Yes, here
 
