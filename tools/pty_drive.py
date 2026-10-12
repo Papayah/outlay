@@ -135,6 +135,14 @@ def wait(pid, seconds=3.0):
     return None
 
 
+def wait_or_kill(pid, seconds):
+    """wait, but a child still alive is killed, so a regression leaves no spinning orphan."""
+    code = wait(pid, seconds)
+    if code is None:
+        os.kill(pid, signal.SIGKILL)
+    return code
+
+
 def main():
     scenario = sys.argv[1]
     own = sys.argv[2:sys.argv.index("--")]
@@ -195,11 +203,12 @@ def main():
         check("left the alternate screen", "\x1b[?1049l" in out)
         check("exit", wait(pid))
     elif scenario == "sighup":
-        send(fd, "3\x1bl")
+        send(fd, display + "\x1bl")
         send(fd, "a", 0.5)
-        send(fd, "\r", 1.0)
+        out = send(fd, "\r", 1.0)
+        check("countdown", "Keep this layout?" in out)
         os.close(fd)                # the terminal goes away
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid, 3.0))
     elif scenario == "keys":
         out = send(fd, "?", 0.5)
         check("help", "Layout" in out and "Snap-move" in out)
