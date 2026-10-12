@@ -60,27 +60,32 @@ fn restore_terminal(pop_keyboard_flags: bool) {
     let _ = execute!(stdout(), LeaveAlternateScreen);
 }
 
+/// Runs the armed `revert.sh`, if any. Before it, it hangs up on a Wayland compositor (see
+/// [`crate::wayland::client::hang_up`]). It never prints, and does not touch the terminal.
+fn run_armed_revert() {
+    let armed = PANIC_REVERT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(script) = armed {
+        crate::wayland::client::hang_up();
+        let _ = Command::new("sh")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 /// Wraps the current panic hook so a panic first pops the keyboard flags, runs `revert.sh`
-/// during a countdown, and restores the terminal, then reports as usual. Before `revert.sh`, it
-/// hangs up on a Wayland compositor (see [`crate::wayland::client::hang_up`]). It never prints
-/// on its own: ratatui's hook does, and `eprintln!` panics when the terminal is gone, which turns
-/// the panic into an abort.
+/// during a countdown, and restores the terminal, then reports as usual. It never prints on its
+/// own: ratatui's hook does, and `eprintln!` panics when the terminal is gone, which turns the
+/// panic into an abort.
 pub fn install_panic_hook(pop_keyboard_flags: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let armed = PANIC_REVERT
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if let Some(script) = armed {
-            crate::wayland::client::hang_up();
-            let _ = Command::new("sh")
-                .arg(script)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+        run_armed_revert();
         restore_terminal(pop_keyboard_flags);
         previous(info);
     }));
