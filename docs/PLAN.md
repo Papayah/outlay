@@ -38,7 +38,7 @@ They are list- and menu-driven. None of them has any of the features that define
 | Sticking | **Persistent links.** A stuck display follows its target when the target's mode, rotation or position changes. Links are inferred from touching edges at load. |
 | Direction keys | **Vim `h j k l`** plus the arrow keys. Plain key = focus, Shift = snap-move, Alt = nudge. This matches the pattern of the user's i3 bindings. The four letters can be changed in the config. |
 | Hosting | **GitHub, private repo `Papayah/outlay`**, created with `gh` (logged in as Papayah over SSH). Licensed **GPL-3.0-or-later** (`LICENSE` holds the text from gnu.org; every dependency is MIT or Apache-2.0). |
-| Git identity | **Author and committer: `Papayah <maciej.chmiest@gmail.com>`.** The global git identity is the work one and must never appear in this repo. See Session rules. |
+| Git identity | **The maintainer's commits: author and committer `Papayah <maciej.chmiest@gmail.com>`.** The global git identity on the maintainer's machine is the work one and must never appear in this repo. Contributors commit under their own identity. See Session rules. |
 | Delivery | **Three sessions, one PR each.** A = phases 0–2, B = phases 3–4, C = phases 5–6. The user merges each PR before starting the next session. |
 
 ## Environment facts (verified 2026-09-26 on the developer's laptop)
@@ -589,7 +589,7 @@ outlay/
 
 ## Session rules (implementation session)
 
-- **Git identity, before the first commit:**
+- **Git identity, before the first commit** (the maintainer's clone only; elsewhere follow "Git identity" in `CLAUDE.md`):
   - Run `git config user.name "Papayah"` and `git config user.email "maciej.chmiest@gmail.com"` (local, never `--global`).
   - Check the result with `git config user.email`.
   - After **every** commit, `git log -1 --format='%an <%ae> | %cn <%ce>'` must show Papayah and the gmail address in both places.

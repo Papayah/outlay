@@ -56,10 +56,14 @@ cargo test
 - **Headless sway** may run without asking, but only the way `tests/common/sway.rs` and
   `tools/pty_wayland.sh` run it: `WLR_BACKENDS=headless`, without `DISPLAY` or `WAYLAND_DISPLAY`,
   in a short private runtime dir. Nested sway (`WLR_BACKENDS=x11`) opens a window: ask first.
-- **Git identity.** Author and committer must be `Papayah <maciej.chmiest@gmail.com>`. The global
-  git identity is a work address that must never appear in this repo. The local config is set in
-  `.git/config`; check `git config user.email` before committing and
-  `git log -1 --format='%an <%ae> | %cn <%ce>'` after every commit.
+- **Git identity.** This rule is for the maintainer's own clone only. Before committing, run
+  `git config --local user.email`:
+  - `maciej.chmiest@gmail.com`: the maintainer's clone. Author and committer must be
+    `Papayah <maciej.chmiest@gmail.com>`; the global git identity there is a work address that
+    must never appear in this repo. Check `git log -1 --format='%an <%ae> | %cn <%ce>'` after
+    every commit.
+  - Another address: a contributor's clone. Commit under that identity.
+  - Nothing: ask the user which identity to use. Never set Papayah's on your own.
 - **Keys.** The keymap table in `src/tui/keys.rs` is the only source of keys. Dispatch, the hint
   line, `?` help and `outlay keys` are all generated from it; never hard-code a key elsewhere.
 - **Commits.** Conventional commits (`feat:`, `fix:`, `docs:` …), one commit per plan phase.
