@@ -729,3 +729,26 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** do everything else first (rebase, fixes, tests), then ask the user to run the push
   themselves with `! <command>` in the prompt, or to allow it. Use `--force-with-lease` pinned
   to the SHA the PR had (`gh pr view N --json headRefOid`).
+
+## `pty_drive.py sighup` on live X prints `countdown: False`
+
+- **Symptom:** `tools/pty_drive.py sighup --display 1 --` (a real apply, no `--demo`) prints
+  `countdown: False` and exits 1, yet `exit: 0` and the layout is back as before.
+- **Cause:** the scenario waits a fixed 1.0 s after Enter. On the work laptop (NVIDIA, a feh
+  `post_apply` hook) Enter to countdown takes about 1.3 s, so the hang-up lands during the
+  apply and the input drain, not during the countdown, and the final state cannot show that
+  anything moved.
+- **Fix:** for a live run, read until `Keep this layout?` is on screen (up to 10 s) before
+  closing the terminal, and log `xrandr --listmonitors` every 0.2 s in a thread: on 2026-10-28
+  eDP-1 moved +2560 → +2570 at 3.8 s, the countdown showed at 4.7 s, and the watchdog's
+  `revert.sh` put it back at 8.8 s. The emergency revert runs no hooks: re-run the feh hook after.
+
+## Importing `tools/pty_drive.py` runs a scenario
+
+- **Symptom:** `import pty_drive` from another script starts outlay with the importer's
+  arguments, or fails on `sys.argv.index("--")`.
+- **Cause:** the file ends with a bare `main()` and `sys.exit(...)`, with no
+  `if __name__ == "__main__"` guard.
+- **Fix:** load the helpers without the tail:
+  `src = open("tools/pty_drive.py").read().rsplit("\nmain()\n", 1)[0]`, then `exec` it into a
+  `types.ModuleType`, with `OUTLAY_BIN` set.
