@@ -708,3 +708,24 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   for. With the default 15 s countdown, they read the screen before the revert happens.
 - **Fix:** `tools/pty_drive.py timeout -- --demo --revert-timeout 2` and
   `tools/pty_drive.py scale -- --demo --revert-timeout 10`.
+
+## A pty scenario fails right after testing other commits
+
+- **Symptom:** `tools/pty_wayland.sh` prints `exit: None` and `reverted after the hangup to:
+  False` (or `pty_drive.py sighup` hangs) on a branch whose own run passed minutes before.
+- **Cause:** the pty scripts run `target/release/outlay`, not the checkout. Building other
+  commits (`git switch --detach C && cargo build --release`) leaves that binary at the last one
+  built; switching back does not rebuild it, and `cargo test` builds only the dev profile.
+- **Fix:** `cargo build --release` after switching back, before any pty script. To compare
+  commits, copy each build out (`cp target/release/outlay $DIR/outlay-C`) and run the HEAD
+  copy of `pty_drive.py` with `OUTLAY_BIN=$DIR/outlay-C`.
+
+## Force-pushing a rebased contributor PR is denied in auto mode
+
+- **Symptom:** `git push --force-with-lease=BRANCH:OLD https://github.com/OWNER/outlay.git
+  HEAD:BRANCH` (a fork's PR branch, `maintainerCanModify` true) is refused by Claude Code's
+  auto mode classifier ("Git Destructive"), even when the user asked for the push.
+- **Cause:** a force push rewrites someone else's branch; auto mode will not run it on its own.
+- **Fix:** do everything else first (rebase, fixes, tests), then ask the user to run the push
+  themselves with `! <command>` in the prompt, or to allow it. Use `--force-with-lease` pinned
+  to the SHA the PR had (`gh pr view N --json headRefOid`).
