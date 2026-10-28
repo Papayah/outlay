@@ -234,17 +234,17 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   was caught and never acted on.
 - **Fix:** `tui::handle_signals` handles the signals on a thread of its own. It sets the flag
   and, if the main thread stays inside a crossterm input call for 3 s (`in_terminal_read`
-  marks them), runs the armed `revert.sh` and exits 0. Wrap any new `event::poll`/`event::read`
-  (or `supports_keyboard_enhancement`) in `in_terminal_read`. `pty_drive.py sighup` and
-  `hangup-idle` check it. When you run `pty_drive.py` from another script, set `OUTLAY_BIN` (the
-  script honours it) rather than relying on `__file__`: a wrong path makes the child exit 1 at
-  once.
+  marks them), runs the armed `revert.sh`, restores the terminal and exits (1 when `revert.sh`
+  fails). Wrap any new `event::poll`/`event::read` (or `supports_keyboard_enhancement`) in
+  `in_terminal_read`. `pty_drive.py sighup` and `hangup-idle` check it. When you run
+  `pty_drive.py` from another script, set `OUTLAY_BIN` (the script honours it) rather than
+  relying on `__file__`: a wrong path makes the child exit 1 at once.
 - **Clean-up:** before this fix, every run left that `outlay --demo` spinning, and it ignored
-  SIGTERM (the flag was set, but the loop never read it). Both scenarios now `kill -9` a child
-  still alive after 6 s, so a regression leaves no orphan; still check `pgrep -x outlay -a`
-  after a failed run and `kill -9` the `--demo` PIDs (they never touch a display). Do not use
-  `pkill -f outlay`: it matches the Bash tool's own shell, whose command line holds the pattern,
-  and kills it (exit 144).
+  SIGTERM (the flag was set, but the loop never read it). Every scenario now `SIGKILL`s a child
+  still alive when it stops waiting for the exit, so a regression leaves no orphan; still check
+  `pgrep -x outlay -a` after a failed run and `kill -9` the `--demo` PIDs (they never touch a
+  display). Do not use `pkill -f outlay`: it matches the Bash tool's own shell, whose command
+  line holds the pattern, and kills it (exit 144).
 
 ## Does `xrandr --current` see a hotplug without a probe? Yes, here
 

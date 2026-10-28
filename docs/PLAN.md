@@ -327,7 +327,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
    - After xrandr returns, **drain queued input and ignore keys for 1 s**, so a key pressed while the screens were black cannot confirm.
    - Only `y` keeps; `Enter` does not.
    - Revert on timeout, `n`/`Esc`, or Ctrl-C (which also quits).
-   - On SIGHUP or SIGTERM, revert first, then restore the terminal and ignore EIO.
+   - On SIGHUP, SIGTERM or SIGINT, revert first, then restore the terminal and ignore EIO.
 6. **Afterwards.**
    - **The revert is verified too.** Re-query after it and compare each output `Plan::restore` covers with the state from before the apply (`restore_mismatches`): on/off, XID, rectangle, orientation, primary. Positions are compared as read, not normalised. Neither the exit status nor a failed read-back counts as a restore. An output that was on and is now gone, or disconnected and off, was unplugged meanwhile (`unplugged`): no revert can bring it back, so it is a note ("eDP-1 was unplugged, so it is not back."), not a failure.
    - A primary with panning is left out of the restore like any panned output, but the restore makes it primary again (`--output eDP-1 --primary`, `PrimaryRule::Output`).
@@ -339,11 +339,12 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
      - once an apply passes verification, **before** the countdown; the input drain, the 1 s block and the countdown start when the hooks are done;
      - after **every** revert: timeout, `n`/`Esc`, Ctrl-C, a signal, the revert on exit, and the automatic revert after a failed apply (even when the revert itself fails);
      - **not** on keep (nothing changes), and **not** after a failed apply that changed nothing.
+     - **not** after an emergency revert: the hang-up watchdog's (see 7), like the panic hook's, runs only `revert.sh`, with no hooks and no read-back. A failed revert leaves `revert.sh` armed, so a hang-up while "Revert failed" is on screen runs it once more, as a last try.
    - Each hook runs with no terminal, stdin and stdout discarded, and a `post_apply_timeout` limit (10 s by default). Do not wait for background programs a hook leaves holding stderr: after the hook exits, give its stderr 200 ms, then move on.
    - Report failures (the first stderr line) after the status line's text, or as extra lines in an "Apply failed"/"Revert failed" report.
    - A simulated backend (`--demo`, `--from-file`, `-n`) runs no hooks and writes no `revert.sh`: `tui::confine` clears both.
 7. **Event loop.**
-   - Always poll with a timeout: at most 250 ms when idle and 16 ms while animating. The loop must never block, because the signal handling replaces the default SIGHUP/SIGTERM/SIGINT action: a signal thread sets the flag the loop checks between polls. When the terminal hangs up, crossterm 0.29 spins inside `event::poll` for good (crossterm#793) and the loop never looks, so the thread also runs a watchdog: a crossterm input call (`in_terminal_read`) still running 3 s after a signal makes it run the armed `revert.sh` and exit 0.
+   - Always poll with a timeout: at most 250 ms when idle and 16 ms while animating. The loop must never block, because the signal handling replaces the default SIGHUP/SIGTERM/SIGINT action: a signal thread sets the flag the loop checks between polls. When the terminal hangs up, crossterm 0.29 spins inside `event::poll` for good (crossterm#793) and the loop never looks, so the thread also runs a watchdog: a crossterm input call (`in_terminal_read`) still running 3 s after a signal makes it run the armed `revert.sh`, restore the terminal (every error ignored) and exit: 0, or 1 when `revert.sh` failed or could not run, as the normal path fails with an unseen "Revert failed" report.
    - **Hotplug.** Every 2 s in normal mode, `App::tick` asks for `Effect::Refresh { probe: false }`, a `--current` re-query (about 5 ms; it does not probe, so it never wakes the NVIDIA GPU). Checked live: `--current` sees HDMI and USB-C plugs on both providers.
      - Never during the countdown, while applying or with a popup open (they hold output indices), never in `outlay apply`, and never for a simulated backend (`tui::confine`).
      - An identical reading does nothing. Otherwise `Layout::remapped` moves the pending layout and every undo step onto the new outputs by name: edits stay, links to outputs that are gone are dropped, and a newly relevant output gets the lowest free number.
@@ -450,7 +451,7 @@ outlay/
     model/snap.rs        swap, alignment stops, nudge, spatial focus
     model/validate.rs    errors and warnings
     model/history.rs     undo/redo (Layout clones, capped at 200)
-    tui/mod.rs           init/restore, event loop, ticks, signals, keyboard flags, panic hook
+    tui/mod.rs           init/restore, event loop, ticks, signals + hang-up watchdog, keyboard flags, panic hook
     tui/app.rs           App + UiMode; handle_key(KeyEvent) -> Vec<Effect>   (pure)
     tui/keys.rs          keymap table + normaliser
     tui/canvas.rs        layout widget + sticky viewport

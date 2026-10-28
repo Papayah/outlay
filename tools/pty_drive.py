@@ -135,7 +135,7 @@ def wait(pid, seconds=3.0):
     return None
 
 
-def wait_or_kill(pid, seconds):
+def wait_or_kill(pid, seconds=3.0):
     """wait, but a child still alive is killed, so a regression leaves no spinning orphan."""
     code = wait(pid, seconds)
     if code is None:
@@ -163,7 +163,7 @@ def main():
         send(fd, "y", 0.5)
         check("kept", "Kept the new layout." in SCREEN.text())
         send(fd, "q", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "timeout":
         send(fd, display + "\x1bl")
         send(fd, "a", 0.5)
@@ -173,7 +173,7 @@ def main():
         send(fd, "q", 0.5)
         check("asks to quit with pending edits", "Discard 1 pending change and quit?" in SCREEN.text())
         send(fd, "\r", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "scale":
         # run with --revert-timeout 10: > on the focused display, apply, let the countdown run out.
         send(fd, ">", 0.5)
@@ -192,16 +192,16 @@ def main():
             print(SCREEN.text())
         send(fd, "q", 0.5)
         send(fd, "\r", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "sigterm":
-        send(fd, "3\x1bl")
+        send(fd, display + "\x1bl")
         send(fd, "a", 0.5)
         out = send(fd, "\r", 1.0)
         check("countdown", "Keep this layout?" in out)
         os.kill(pid, signal.SIGTERM)
         out = read_for(fd, 1.0)
         check("left the alternate screen", "\x1b[?1049l" in out)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "sighup":
         send(fd, display + "\x1bl")
         send(fd, "a", 0.5)
@@ -223,7 +223,7 @@ def main():
         out = send(fd, "\x1b", 0.3)
         check("Esc does not quit", wait(pid, 0.3) is None)
         send(fd, "q", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "hold":
         # Alt-l every 40 ms for 1.2 s, as a key held with a 25 Hz autorepeat sends it.
         send(fd, "3", 0.3)
@@ -243,7 +243,7 @@ def main():
         send(fd, "u", 0.3)
         check("one undo restores it", "no changes" in SCREEN.text())
         send(fd, "q", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "profiles":
         send(fd, "e", 0.5)
         check("picker", "profiles · " in SCREEN.text())
@@ -261,7 +261,7 @@ def main():
             print(SCREEN.text())
         send(fd, "q", 0.3)
         send(fd, "\r", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     elif scenario == "refresh":
         send(fd, "3\x1bl")
         send(fd, "R", 0.5)
@@ -272,7 +272,7 @@ def main():
         send(fd, "u", 0.3)
         check("the undo stays", "no changes" in SCREEN.text())
         send(fd, "q", 0.3)
-        check("exit", wait(pid))
+        check("exit", wait_or_kill(pid))
     else:
         print("unknown scenario")
         os.kill(pid, signal.SIGKILL)

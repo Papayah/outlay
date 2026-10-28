@@ -58,6 +58,10 @@ static PANIC_REVERT: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// polls most of the time (the value keeps changing).
 static TERMINAL_READS: AtomicU64 = AtomicU64::new(0);
 
+/// Whether the editor pushed the keyboard flags, so the watchdog pops them when it restores the
+/// terminal.
+static KEYBOARD_FLAGS_PUSHED: AtomicBool = AtomicBool::new(false);
+
 /// Runs a crossterm input call (`event::poll`, `event::read`) so the watchdog can see it.
 fn in_terminal_read<T>(call: impl FnOnce() -> T) -> T {
     TERMINAL_READS.fetch_add(1, Ordering::SeqCst);
@@ -83,20 +87,23 @@ fn restore_terminal(pop_keyboard_flags: bool) {
 
 /// Runs the armed `revert.sh`, if any. Before it, it hangs up on a Wayland compositor (see
 /// [`crate::wayland::client::hang_up`]). It never prints, and does not touch the terminal.
-fn run_armed_revert() {
+/// Returns false when an armed `revert.sh` failed or could not run.
+fn run_armed_revert() -> bool {
     let armed = PANIC_REVERT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    if let Some(script) = armed {
-        crate::wayland::client::hang_up();
-        let _ = Command::new("sh")
-            .arg(script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
+    let Some(script) = armed else {
+        return true;
+    };
+    crate::wayland::client::hang_up();
+    Command::new("sh")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Wraps the current panic hook so a panic first pops the keyboard flags, runs `revert.sh`
@@ -119,9 +126,9 @@ pub fn install_panic_hook(pop_keyboard_flags: bool) {
 /// But when the terminal goes away, crossterm 0.29 spins forever inside `event::poll` (its unix
 /// reader retries a read that returns EOF or EIO without end, crossterm#793), so the loop never
 /// looks at the flag. If the main thread stays in such a call for [`WATCHDOG_GRACE`] after the
-/// signal, the watchdog reverts what is armed and exits. Nothing is mid-apply then: an apply
-/// is not a terminal read. Like the panic hook, this emergency path only runs `revert.sh`: the
-/// `post_apply` hooks are not re-run (accepted trade-off).
+/// signal, the watchdog reverts what is armed, restores the terminal and exits. Nothing is
+/// mid-apply then: an apply is not a terminal read. Like the panic hook, this emergency path
+/// only runs `revert.sh`: no `post_apply` hooks and no read-back (accepted trade-off).
 fn handle_signals(signal: Arc<AtomicBool>) -> io::Result<()> {
     let mut signals = Signals::new([SIGHUP, SIGTERM, SIGINT])?;
     thread::spawn(move || {
@@ -137,10 +144,12 @@ fn handle_signals(signal: Arc<AtomicBool>) -> io::Result<()> {
             if now == seen && !now.is_multiple_of(2) {
                 stuck_for += WATCHDOG_CHECK;
                 if stuck_for >= WATCHDOG_GRACE {
-                    // The terminal is gone, so no printing and no restoring it. The status is
-                    // that of the normal path (`run` returns Ok after a signal).
-                    run_armed_revert();
-                    std::process::exit(0);
+                    // The terminal is most likely gone, so no printing; restoring it ignores
+                    // every error, and covers a live one. The status is that of the normal path,
+                    // where `run` returns the unseen "Revert failed" report as an error.
+                    let reverted = run_armed_revert();
+                    restore_terminal(KEYBOARD_FLAGS_PUSHED.load(Ordering::SeqCst));
+                    std::process::exit(if reverted { 0 } else { 1 });
                 }
             } else {
                 seen = now;
@@ -220,6 +229,7 @@ pub fn run(backend: &dyn Backend, options: Options, settings: Settings) -> Resul
             stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
+        KEYBOARD_FLAGS_PUSHED.store(true, Ordering::SeqCst);
     }
     install_panic_hook(enhanced);
     session
@@ -341,5 +351,29 @@ mod tests {
         assert!(kept.revert_file.is_some());
         assert_eq!(kept.hooks, ["true"]);
         assert_eq!(opts.watch, Some(app::WATCH_INTERVAL));
+    }
+
+    /// The watchdog exits 1 when this returns false. No other test here arms the revert.
+    #[test]
+    fn the_emergency_revert_says_whether_revert_sh_worked() {
+        let dir = std::env::temp_dir().join(format!("outlay-emergency-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            path
+        };
+
+        arm_panic_revert(None);
+        assert!(run_armed_revert(), "nothing armed, nothing failed");
+        arm_panic_revert(Some(script("good.sh", "exit 0")));
+        assert!(run_armed_revert());
+        arm_panic_revert(Some(script("bad.sh", "exit 1")));
+        assert!(!run_armed_revert(), "revert.sh failed");
+        arm_panic_revert(Some(dir.join("gone.sh")));
+        assert!(!run_armed_revert(), "revert.sh is not there");
+
+        arm_panic_revert(None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
