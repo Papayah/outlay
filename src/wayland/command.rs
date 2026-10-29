@@ -69,7 +69,7 @@ mod tests {
     use super::*;
     use crate::backend::{On, PlanForm, PrimaryRule, ScalingChange};
     use crate::model::geometry::Point;
-    use crate::model::{Reflection, Rotation, Scaling};
+    use crate::model::{PhysicalSize, Reflection, Rotation, Scaling};
     use crate::wayland::capture::mode;
 
     fn on(mode: Mode, rotation: Rotation, reflection: Reflection, scale: f64) -> Option<On> {
@@ -121,6 +121,7 @@ mod tests {
                 },
             ],
             primary: PrimaryRule::Clear,
+            physical: PhysicalSize::default(),
             form: PlanForm::Apply,
         };
         assert_eq!(

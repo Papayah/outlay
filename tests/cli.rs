@@ -146,6 +146,38 @@ fn apply_n_prints_the_command_only() {
 }
 
 #[test]
+fn apply_n_and_save_n_keep_the_dpi_of_a_profile() {
+    let dir = layouts("dpi", &["no-setup", "work-setup-monitors-only"]);
+    let d = dir.to_str().unwrap();
+    let (ok, stdout, stderr) = outlay(&["--demo", "--layouts-dir", d, "apply", "no-setup", "-n"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stderr, "", "no warning that --dpi is ignored");
+    assert_eq!(
+        stdout,
+        "xrandr --dpi 96 --output HDMI-1-0 --off --output DP-1-2 --off \
+         --output eDP-1 --mode 0x1cf --pos 0x0 --rotate normal --reflect normal \
+         --output DP-1-3 --off --noprimary\n"
+    );
+
+    let args = [
+        "--demo",
+        "--layouts-dir",
+        d,
+        "save",
+        "work-setup-monitors-only",
+        "-n",
+    ];
+    let (ok, stdout, stderr) = outlay(&args);
+    assert!(ok, "{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines[2].starts_with("xrandr --dpi 96 --output HDMI-1-0 "),
+        "{stdout}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn apply_keeps_at_once_without_a_countdown_and_remaps_missing_outputs() {
     let dir = layouts("apply-keep", &["home-setup"]);
     let d = dir.to_str().unwrap();

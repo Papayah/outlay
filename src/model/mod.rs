@@ -170,6 +170,30 @@ pub struct ScreenLimits {
     pub max: Size,
 }
 
+/// The X11 screen's physical size, as a profile sets it with `--dpi` or `--fbmm`. Without either,
+/// xrandr scales the screen's millimetres with its pixels, which fails when they are 0.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PhysicalSize {
+    pub dpi: Option<Dpi>,
+    /// `--fbmm WxH`, in millimetres. xrandr prefers it to `--dpi`.
+    pub mm: Option<(u32, u32)>,
+}
+
+impl PhysicalSize {
+    pub fn is_empty(&self) -> bool {
+        self.dpi.is_none() && self.mm.is_none()
+    }
+}
+
+/// The value of xrandr's `--dpi`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dpi {
+    /// `--dpi 96`
+    Value(f64),
+    /// `--dpi eDP-1`: the DPI of that output.
+    Output(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Connection {
     Connected,

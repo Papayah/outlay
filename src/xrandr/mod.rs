@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 use crate::backend::{ApplyOutcome, Backend, Plan};
-use crate::model::{Snapshot, Transform};
+use crate::model::{Dpi, Snapshot, Transform};
 pub use parse::{ParseError, parse_verbose};
 
 /// The built-in fixture behind `--demo`.
@@ -126,6 +126,23 @@ pub fn install_hint(os_release: &str) -> String {
     format!("Install it with: {command}")
 }
 
+/// `--dpi`: a positive number, or else, as xrandr reads it, an output name.
+pub(crate) fn parse_dpi_arg(value: &str) -> Option<Dpi> {
+    match value.parse::<f64>() {
+        Ok(dpi) if dpi.is_finite() && dpi > 0.0 => Some(Dpi::Value(dpi)),
+        Ok(_) => None,
+        Err(_) if value.is_empty() => None,
+        Err(_) => Some(Dpi::Output(value.to_owned())),
+    }
+}
+
+/// `--fbmm`: `WxH` in millimetres, both positive.
+pub(crate) fn parse_fbmm_arg(value: &str) -> Option<(u32, u32)> {
+    let (w, h) = value.split_once('x')?;
+    let (w, h): (u32, u32) = (w.parse().ok()?, h.parse().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
 /// `none`, or nine comma-separated numbers.
 pub(crate) fn parse_transform_arg(value: &str) -> Option<Transform> {
     if value == "none" {
@@ -168,5 +185,22 @@ mod tests {
         assert!(hint("ID=void\n").ends_with("xbps-install xrandr"));
         assert!(hint("ID=alpine\n").ends_with("apk add xrandr"));
         assert_eq!(hint(""), "Install your distribution's xrandr package.");
+    }
+
+    #[test]
+    fn screen_size_arguments() {
+        assert_eq!(parse_dpi_arg("96"), Some(Dpi::Value(96.0)));
+        assert_eq!(parse_dpi_arg("120.5"), Some(Dpi::Value(120.5)));
+        assert_eq!(
+            parse_dpi_arg("eDP-1"),
+            Some(Dpi::Output("eDP-1".to_owned()))
+        );
+        for bad in ["0", "-96", "inf", "NaN", ""] {
+            assert_eq!(parse_dpi_arg(bad), None, "{bad}");
+        }
+        assert_eq!(parse_fbmm_arg("1354x381"), Some((1354, 381)));
+        for bad in ["1354", "0x381", "-1x2", "1354x381mm", "x"] {
+            assert_eq!(parse_fbmm_arg(bad), None, "{bad}");
+        }
     }
 }
