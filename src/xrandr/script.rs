@@ -37,6 +37,8 @@ const UNDERSTOOD: &[&str] = &[
     "--right-of",
     "--above",
     "--below",
+    "--dpi",
+    "--fbmm",
 ];
 
 /// Options outlay ignores, with how many values each takes, so the values are skipped too.
@@ -53,9 +55,7 @@ const IGNORED: &[(&str, usize)] = &[
     ("--screen", 1),
     ("-s", 1),
     ("--size", 1),
-    ("--dpi", 1),
     ("--fb", 1),
-    ("--fbmm", 1),
     ("--crtc", 1),
     ("--panning", 1),
     ("--gamma", 1),
@@ -267,6 +267,25 @@ impl Profile {
                     self.primary = Some(None);
                     continue;
                 }
+                // The whole screen's: they may come anywhere.
+                "--dpi" => {
+                    match super::parse_dpi_arg(&value) {
+                        Some(dpi) => self.physical.dpi = Some(dpi),
+                        None => self
+                            .warnings
+                            .push(format!("--dpi: {value:?} is not a valid DPI; ignored.")),
+                    }
+                    continue;
+                }
+                "--fbmm" => {
+                    match super::parse_fbmm_arg(&value) {
+                        Some(mm) => self.physical.mm = Some(mm),
+                        None => self
+                            .warnings
+                            .push(format!("--fbmm: {value:?} is not a valid size; ignored.")),
+                    }
+                    continue;
+                }
                 _ => {}
             }
             let Some(name) = current.clone() else {
@@ -437,6 +456,7 @@ pub fn save_text(old: Option<&str>, command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Dpi, PhysicalSize};
 
     #[test]
     fn logical_lines_cover_the_text_and_join_continuations() {
@@ -490,12 +510,37 @@ mod tests {
         assert_eq!(b.relative, Some((Side::RightOf, "A".to_owned())));
         assert_eq!(p.entries[2].relative, Some((Side::Same, "A".to_owned())));
         assert_eq!(p.primary, Some(Some("A".to_owned())));
+        assert_eq!(p.physical.dpi, Some(Dpi::Value(96.0)));
+        assert_eq!(p.warnings, ["Unknown option --frob; ignored."]);
+    }
+
+    #[test]
+    fn screen_options_may_come_anywhere_and_later_ones_win() {
+        let p = Profile::parse(
+            "xrandr --dpi 120 --output A --auto --fbmm 600x340 --fb 3840x1080\n\
+             xrandr --output A --dpi B --dpi 0 --fbmm 600 --scale-from 1920x1080\n",
+        );
+        assert_eq!(
+            p.physical,
+            PhysicalSize {
+                dpi: Some(Dpi::Output("B".to_owned())),
+                mm: Some((600, 340)),
+            }
+        );
         assert_eq!(
             p.warnings,
             [
-                "--dpi is not supported; ignored.",
-                "Unknown option --frob; ignored."
+                "--fb is not supported; ignored.",
+                "--dpi: \"0\" is not a valid DPI; ignored.",
+                "--fbmm: \"600\" is not a valid size; ignored.",
+                "--scale-from is not supported; ignored."
             ]
+        );
+        assert!(
+            Profile::parse("xrandr --output A --auto")
+                .physical
+                .is_empty(),
+            "nothing unless the script asks"
         );
     }
 

@@ -3,7 +3,7 @@
 
 use outlay::backend::{Backend, FixtureBackend, Plan, PrimaryRule};
 use outlay::model::layout::{Layout, restore_mismatches, unplugged};
-use outlay::model::{Connection, Reflection, Rotation, Snapshot};
+use outlay::model::{Connection, Dpi, PhysicalSize, Reflection, Rotation, Snapshot};
 use outlay::wayland::capture::parse as parse_capture;
 use outlay::xrandr::command::argv_to_plan;
 use outlay::xrandr::{command, parse_verbose};
@@ -125,6 +125,44 @@ fn script_of_the_demo() {
 }
 
 #[test]
+fn dpi_and_fbmm_come_first_and_the_revert_has_neither() {
+    let snap = fixture("demo");
+    let (mut layout, _) = Layout::from_snapshot(&snap);
+    layout.physical = PhysicalSize {
+        dpi: Some(Dpi::Value(96.0)),
+        mm: Some((1354, 381)),
+    };
+    let apply = command::command_line(&apply_args(&layout, &snap));
+    assert!(
+        apply.starts_with("xrandr --dpi 96 --fbmm 1354x381 --output HDMI-1-0 --mode 0x1c3 "),
+        "{apply}"
+    );
+    let copied = command::command_line(&portable_args(&layout, &snap));
+    assert!(
+        copied.starts_with("xrandr --dpi 96 --fbmm 1354x381 --output HDMI-1-0 --mode 1920x1080 "),
+        "{copied}"
+    );
+    let script = command::script(&layout);
+    assert!(
+        script.contains("\nxrandr --dpi 96 --fbmm 1354x381 --output HDMI-1-0 --mode 1920x1080 "),
+        "on the first line, as a hand-written script has it:\n{script}"
+    );
+    assert_eq!(script.matches("--dpi").count(), 1, "{script}");
+    // xrandr cannot read the screen's millimetres back, and keeps the DPI the apply left.
+    assert!(!command::command_line(&revert_args(&snap)).contains("--dpi"));
+
+    layout.physical = PhysicalSize {
+        dpi: Some(Dpi::Output("eDP-1".to_owned())),
+        mm: None,
+    };
+    let apply = command::command_line(&apply_args(&layout, &snap));
+    assert!(apply.starts_with("xrandr --dpi eDP-1 --output "), "{apply}");
+    layout.physical.dpi = Some(Dpi::Value(120.5));
+    let apply = command::command_line(&apply_args(&layout, &snap));
+    assert!(apply.starts_with("xrandr --dpi 120.5 --output "), "{apply}");
+}
+
+#[test]
 fn scale_in_revert_script_and_reset() {
     let snap = fixture("scaled");
     let (mut layout, _) = Layout::from_snapshot(&snap);
@@ -243,6 +281,12 @@ fn plans_round_trip_through_xid_arguments() {
             cases.push((snap.clone(), layout));
         }
     }
+    let (snap, mut layout) = edited_demo();
+    layout.physical = PhysicalSize {
+        dpi: Some(Dpi::Output("eDP-1".to_owned())),
+        mm: Some((1354, 381)),
+    };
+    cases.push((snap, layout));
     for (snap, layout) in cases {
         let plan = Plan::pending(&layout, &snap);
         let argv = command::argv(&plan);

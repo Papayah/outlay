@@ -35,6 +35,15 @@ displays." today.
 - Custom modes from `:mode`.
 - shikane profiles.
 
+## X11
+
+- **A screen of 0x0 mm.** On 2026-10-29 the X screen on the dock lost its physical size
+  (`xdpyinfo`: `0x0 millimeters`). Then every xrandr call that changes the screen's pixel size
+  fails with BadValue on `RRSetScreenSize`, unless it has `--dpi` or `--fbmm`. outlay keeps the
+  profile's `--dpi`. It could also detect the state and add `--dpi 96`, or say what to do.
+  `xrandr --verbose` does not show the millimetres: it needs `XDisplayWidthMM` (the X protocol)
+  or `xdpyinfo`. The cause of the 0 mm state is not known.
+
 ## Distribution
 
 - An AUR package, planned in its own session. It waits for the AUR account.

@@ -11,7 +11,8 @@ use super::geometry::{Dir, Point, Rect, Size, bbox, effective_size};
 use super::links::{Align, Link, Restore, Side};
 use super::orientation;
 use super::{
-    Cap, Caps, Kind, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot, x_only,
+    Cap, Caps, Kind, Mode, ModeId, Output, PhysicalSize, Reflection, Rotation, Scaling, Snapshot,
+    x_only,
 };
 
 /// The scales the picker and `<`/`>` offer. Each is exact in X11's 16.16 and Wayland's 24.8
@@ -63,6 +64,9 @@ pub struct Layout {
     pub locked: Vec<bool>,
     /// What the display server can do, copied from the snapshot.
     pub caps: Caps,
+    /// The physical size the apply gives the screen: what a loaded profile asks for, else
+    /// nothing.
+    pub physical: PhysicalSize,
 }
 
 /// What an edit did besides the edit itself.
@@ -129,6 +133,7 @@ impl Layout {
             numbers: (0..n).map(|i| snap.number_of(i)).collect(),
             locked: snap.outputs.iter().map(Output::has_panning).collect(),
             caps: snap.caps,
+            physical: PhysicalSize::default(),
         };
         layout.infer_links();
         let min = layout.min_corner();
@@ -201,7 +206,7 @@ impl Layout {
     ///   live state with no link;
     /// - an output that is no longer relevant loses its number, and a newly relevant one gets
     ///   the lowest free number, so the numbers of the others stay fixed;
-    /// - `locked` comes from `new`.
+    /// - `locked` comes from `new`, and the physical size stays.
     pub fn remapped(&self, old: &Snapshot, new: &Snapshot) -> Layout {
         let n = new.outputs.len();
         let from: Vec<Option<usize>> = new
@@ -219,6 +224,7 @@ impl Layout {
             numbers: vec![None; n],
             locked: new.outputs.iter().map(Output::has_panning).collect(),
             caps: new.caps,
+            physical: self.physical.clone(),
         };
         for (j, out) in new.outputs.iter().enumerate() {
             // An output that was not relevant cannot have been edited: when it is on now, it

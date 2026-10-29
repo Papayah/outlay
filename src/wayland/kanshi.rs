@@ -725,8 +725,8 @@ impl Reader {
                 open: d.open.unwrap_or(d.lines.end),
                 profile: Profile {
                     entries,
-                    primary: None,
                     warnings,
+                    ..Profile::default()
                 },
                 outputs,
             });

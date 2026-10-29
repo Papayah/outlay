@@ -10,7 +10,7 @@ mod common;
 use common::sway::Sway;
 use outlay::backend::{Backend, On, Plan, PlanForm, Planned, PrimaryRule, ScalingChange};
 use outlay::model::geometry::{Point, Size};
-use outlay::model::{Mode, Reflection, Rotation, Scaling, Snapshot};
+use outlay::model::{Mode, PhysicalSize, Reflection, Rotation, Scaling, Snapshot};
 use outlay::wayland::WlrBackend;
 use outlay::wayland::capture::mode;
 
@@ -42,6 +42,7 @@ fn plan(outputs: Vec<Planned>) -> Plan {
     Plan {
         outputs,
         primary: PrimaryRule::Clear,
+        physical: PhysicalSize::default(),
         form: PlanForm::Apply,
     }
 }

@@ -315,6 +315,8 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
      - `--off` for outputs that were off, including ones the apply turns on;
      - `--primary`, or `--noprimary` if nothing was primary.
    - Write it to `$XDG_STATE_HOME/outlay/revert.sh` (mode 0755) before applying.
+   - No `--dpi`: `xrandr --verbose` does not show the screen's millimetres, so the old ones
+     cannot be restored. Without the option, xrandr keeps the DPI that the apply left.
 3. **Execute.**
    - Run xrandr with `std::process::Command`: stdin set to null, output captured.
    - Live apply and revert always pass `--mode 0xXID`. Scripts and `y` use name + `--rate`.
@@ -374,13 +376,22 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
   - Mirrors get identical `--pos` values, as arandr writes them.
   - Write atomically (a fresh, exclusively created, hidden temp file, then rename; a profile is synced to disk, `revert.sh` is not), through a symlinked destination: the link stays and its target gets the text. A link that another user planted is not followed, and no directory is made at a link's far end. This holds for every file outlay writes, `revert.sh` included. Show a diff and ask before overwriting.
   - Preserve non-xrandr lines byte-for-byte.
+  - `--dpi` and `--fbmm` go on the first line, before the first `--output`: the ones of the layout
+    (a loaded profile's), else the ones of the script that the save overwrites.
 - **Parse.**
   1. Strip comments and join continuations.
   2. Tokenise each `xrandr` invocation with `shell-words`.
-  3. Understand: `--output --mode --rate/--refresh --pos --rotate --reflect --primary --off --auto --scale --same-as --left-of --right-of --above --below`. The relative options become links, and `--same-as` becomes `Same`.
+  3. Understand: `--output --mode --rate/--refresh --pos --rotate --reflect --primary --off --auto --scale --same-as --left-of --right-of --above --below --dpi --fbmm`. The relative options become links, and `--same-as` becomes `Same`.
   4. If an output repeats, the later options win.
   5. `--rate` picks the nearest available rate for that mode name, as xrandr does (60.00 → 59.94). Without `--rate`, take the first listed mode with that name.
-  6. Unknown options produce a warning.
+  6. `--dpi N` (or `--dpi OUTPUT`) and `--fbmm WxH` set the screen's physical size; they may come
+     anywhere in the call. The loaded layout keeps them (a remap renames a `--dpi OUTPUT`), and
+     an apply sends them before the first `--output`. Without either, xrandr scales the screen's
+     millimetres with its pixels, so a screen that reports 0x0 mm gets 0 mm again and
+     `RRSetScreenSize` fails with BadValue: `--dpi 96` in the profile is the fix, and outlay must
+     not drop it. `--fbmm` is kept as written too, although it is a fixed size: after an edit that
+     changes the screen's pixels, it gives a different DPI. `--dpi` has no such problem.
+  7. Unknown options produce a warning.
 - **Remap on load.** Profile outputs that are not connected (e.g. `eDP-2`) open a remap dialog: pick a free connected output or skip. The pre-selection is a free output with the same connector prefix.
 
 ### Portability and environment checks

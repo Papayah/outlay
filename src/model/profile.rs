@@ -6,7 +6,9 @@
 use super::geometry::{Point, Rect};
 use super::layout::{Layout, OutputState};
 use super::links::{Align, Link, Side, place};
-use super::{Kind, Mode, ModeId, Output, Reflection, Rotation, Scaling, Snapshot};
+use super::{
+    Dpi, Kind, Mode, ModeId, Output, PhysicalSize, Reflection, Rotation, Scaling, Snapshot,
+};
 
 /// Which output an entry is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +111,8 @@ pub struct Profile {
     pub entries: Vec<Entry>,
     /// `Some(Some(name))` for `--primary`, `Some(None)` for `--noprimary`.
     pub primary: Option<Option<String>>,
+    /// The screen's physical size: `--dpi` and `--fbmm`.
+    pub physical: PhysicalSize,
     pub warnings: Vec<String>,
 }
 
@@ -530,8 +534,18 @@ impl Profile {
             notes.push("The profile turns every display off; keeping the live layout.".to_owned());
             return (live, notes);
         }
-        let (layout, more) = Layout::from_states(snap, states, &sticks);
+        let (mut layout, more) = Layout::from_states(snap, states, &sticks);
         notes.extend(more);
+        layout.physical = self.physical.clone();
+        if let Some(Dpi::Output(name)) = &self.physical.dpi {
+            match self.index_of(snap, remap, name) {
+                Some(i) => layout.physical.dpi = Some(Dpi::Output(snap.outputs[i].name.clone())),
+                None => {
+                    notes.push(format!("--dpi {name}: {name} is not connected; ignored."));
+                    layout.physical.dpi = None;
+                }
+            }
+        }
         (layout, notes)
     }
 }

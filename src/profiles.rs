@@ -218,13 +218,25 @@ impl ProfileStore {
     }
 
     /// What saving `layout`, on `snap`, as profile `name` would write. An existing file keeps
-    /// everything but the profile itself.
+    /// everything but the profile itself. An existing script also keeps its `--dpi` and
+    /// `--fbmm` unless the layout sets its own.
     pub fn save(&self, name: &str, layout: &Layout, snap: &Snapshot) -> Result<Save, ReadError> {
         match self {
             Self::Screenlayout(dir) => {
                 let path = script::profile_path(dir, name);
                 let old = read_optional(&path)?;
-                let text = script::save_text(old.as_deref(), &command::script_command(layout));
+                let kept = old
+                    .as_deref()
+                    .map(|text| Profile::parse(text).physical)
+                    .filter(|_| layout.physical.is_empty());
+                let command = match kept {
+                    Some(physical) => command::script_command(&Layout {
+                        physical,
+                        ..layout.clone()
+                    }),
+                    None => command::script_command(layout),
+                };
+                let text = script::save_text(old.as_deref(), &command);
                 Ok(Save {
                     name: script::profile_name(&path),
                     path,

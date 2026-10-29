@@ -6,7 +6,7 @@
 use crate::backend::{On, Plan, PlanForm, Planned, PrimaryRule, ScalingChange, shell_words};
 use crate::model::geometry::Point;
 use crate::model::layout::Layout;
-use crate::model::{ModeId, Reflection, Rotation, Scaling, Snapshot, Transform};
+use crate::model::{Dpi, ModeId, PhysicalSize, Reflection, Rotation, Scaling, Snapshot, Transform};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Form {
@@ -96,9 +96,22 @@ fn transform_args(scaling: &Scaling, args: &mut Vec<String>) {
     }
 }
 
+/// `--dpi` and `--fbmm`, which apply to the whole screen.
+fn physical_args(physical: &PhysicalSize, args: &mut Vec<String>) {
+    match &physical.dpi {
+        Some(Dpi::Value(dpi)) => push(args, &["--dpi", &dpi.to_string()]),
+        Some(Dpi::Output(name)) => push(args, &["--dpi", name]),
+        None => {}
+    }
+    if let Some((w, h)) = physical.mm {
+        push(args, &["--fbmm", &format!("{w}x{h}")]);
+    }
+}
+
 /// The arguments of one xrandr call that carries out `plan`.
 fn plan_args(plan: &Plan, form: Form) -> Vec<String> {
     let mut args = Vec::new();
+    physical_args(&plan.physical, &mut args);
     for planned in &plan.outputs {
         output_args(planned, plan.form, form, &mut args);
     }
@@ -165,6 +178,7 @@ pub fn argv_to_plan(snapshot: &Snapshot, argv: &[String]) -> Result<Plan, String
     let mut requests: Vec<(String, Option<usize>, Request)> = Vec::new();
     // `Some(None)` for `--noprimary`.
     let mut primary: Option<Option<usize>> = None;
+    let mut physical = PhysicalSize::default();
     // The request the options belong to.
     let mut current: Option<usize> = None;
     let mut args = argv.iter();
@@ -194,6 +208,21 @@ pub fn argv_to_plan(snapshot: &Snapshot, argv: &[String]) -> Result<Plan, String
             }
             "--noprimary" => {
                 primary = Some(None);
+                continue;
+            }
+            "--dpi" => {
+                let v = value("a DPI")?;
+                physical.dpi = Some(
+                    super::parse_dpi_arg(&v).ok_or_else(|| format!("xrandr: invalid dpi {v}\n"))?,
+                );
+                continue;
+            }
+            "--fbmm" => {
+                let v = value("a size")?;
+                physical.mm = Some(
+                    super::parse_fbmm_arg(&v)
+                        .ok_or_else(|| format!("xrandr: failed to parse '{v}' as fbmm\n"))?,
+                );
                 continue;
             }
             _ => {}
@@ -274,6 +303,7 @@ pub fn argv_to_plan(snapshot: &Snapshot, argv: &[String]) -> Result<Plan, String
             (Some(None), None) => PrimaryRule::Clear,
             _ => PrimaryRule::Keep,
         },
+        physical,
         form: PlanForm::Apply,
     })
 }
@@ -348,12 +378,15 @@ pub fn script(layout: &Layout) -> String {
 }
 
 /// The xrandr call of [`script`], without a final newline: `xrandr --output … \` and one more
-/// line per output.
+/// line per output. `--dpi` and `--fbmm` go on the first line.
 pub fn script_command(layout: &Layout) -> String {
     let plan = Plan::whole(layout);
     let mut groups: Vec<Vec<String>> = Vec::new();
-    for planned in &plan.outputs {
+    for (k, planned) in plan.outputs.iter().enumerate() {
         let mut args = Vec::new();
+        if k == 0 {
+            physical_args(&plan.physical, &mut args);
+        }
         output_args(planned, plan.form, Form::Script, &mut args);
         groups.push(args);
     }

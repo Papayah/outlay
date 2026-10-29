@@ -149,6 +149,8 @@ in the config point elsewhere), so arandr and outlay read each other's files; on
 scale; opening one makes its layout the pending one (one `u` undoes it), and `a` applies it as
 usual. `w` saves the pending layout: an existing script keeps
 every line that is not an xrandr call, and outlay shows a diff and asks before overwriting it.
+A script's `--dpi` or `--fbmm` is kept too: outlay applies it with the profile and writes it back
+when it saves over the script.
 When a profile names an output that is not connected (`eDP-2` on a laptop that now calls its
 panel `eDP-1`), a dialog asks where it goes, starting from a free output of the same kind.
 

@@ -3,13 +3,15 @@
 
 use crate::model::geometry::Point;
 use crate::model::layout::{Layout, OutputState};
-use crate::model::{Kind, Mode, Output, Reflection, Rotation, Scaling, Snapshot};
+use crate::model::{Kind, Mode, Output, PhysicalSize, Reflection, Rotation, Scaling, Snapshot};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     /// Only the outputs to set; the others stay as they are.
     pub outputs: Vec<Planned>,
     pub primary: PrimaryRule,
+    /// The screen's physical size; only X11 sets it.
+    pub physical: PhysicalSize,
     pub form: PlanForm,
 }
 
@@ -84,13 +86,15 @@ impl Plan {
         Self {
             outputs,
             primary: rule(layout.primary().is_none()),
+            physical: layout.physical.clone(),
             form: PlanForm::Apply,
         }
     }
 
     /// The restore of `live`, the state taken just before an apply: every connected or active
     /// output except those with panning, with each setting explicit. Outputs that were off are
-    /// turned off. A primary with panning is left as it is but made primary again.
+    /// turned off. A primary with panning is left as it is but made primary again. The physical
+    /// size is not restored: xrandr cannot read it, and keeps the DPI the apply left.
     pub fn restore(live: &Snapshot) -> Self {
         let outputs = live
             .outputs
@@ -113,6 +117,7 @@ impl Plan {
         Self {
             outputs,
             primary,
+            physical: PhysicalSize::default(),
             form: PlanForm::Restore,
         }
     }
@@ -137,6 +142,7 @@ impl Plan {
         Self {
             outputs,
             primary: rule(layout.primary().is_none()),
+            physical: layout.physical.clone(),
             form: PlanForm::Apply,
         }
     }
