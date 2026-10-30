@@ -23,6 +23,7 @@ use crate::model::validate::Severity;
 use crate::model::{Kind, Snapshot};
 use crate::profiles::ProfileStore;
 use crate::wayland;
+use crate::wm::{Focus, Wm};
 use crate::xrandr::command;
 
 use super::app::{App, ApplyRequest, Effect, Message, ProfileItem, RevertReason, SavePlan, UiMode};
@@ -52,6 +53,9 @@ pub struct Settings {
     /// The program a Wayland `revert.sh` runs (`PROGRAM restore -`): outlay itself. Unset, it
     /// is `outlay` on `PATH`.
     pub restore_program: Option<PathBuf>,
+    /// The window manager (i3 or sway) that gets the keyboard focus back after each change to
+    /// the screens. Never set for a simulated backend.
+    pub wm: Option<Wm>,
 }
 
 impl Default for Settings {
@@ -64,6 +68,7 @@ impl Default for Settings {
             layouts_dir: None,
             kanshi_config: None,
             restore_program: None,
+            wm: None,
         }
     }
 }
@@ -407,6 +412,8 @@ impl<'a> Session<'a> {
             self.arm_panic_revert(Some(path.clone()));
         }
 
+        // The window the apply was asked for in: the editor's, or the terminal of `outlay apply`.
+        let focused = self.focused();
         let outcome = self.backend.apply(&request.plan);
         // Keys pressed while the screens were dark must not answer the countdown.
         input.drain();
@@ -441,7 +448,7 @@ impl<'a> Session<'a> {
                     before: before.clone(),
                     after: before,
                 };
-                self.revert_after_failure(applied, &mut problems);
+                self.revert_after_failure(applied, focused, &mut problems);
                 self.app.report("Apply failed", problems);
                 return;
             }
@@ -457,7 +464,7 @@ impl<'a> Session<'a> {
                     before,
                     after: after.clone(),
                 };
-                self.revert_after_failure(applied, &mut problems);
+                self.revert_after_failure(applied, focused, &mut problems);
             } else {
                 self.arm_panic_revert(None);
                 problems.push("Nothing changed.".to_owned());
@@ -468,7 +475,7 @@ impl<'a> Session<'a> {
 
         self.applied = Some(Applied { before, after });
         // Redraw the wallpaper first, so the layout is judged as it will look.
-        let failures = self.redraw();
+        let failures = self.redraw(focused);
         // The countdown and its input block start once the hooks are done.
         input.drain();
         let now = Instant::now();
@@ -487,10 +494,15 @@ impl<'a> Session<'a> {
     }
 
     /// The automatic revert after a failed apply that changed the screens; what happened goes
-    /// into the report.
-    fn revert_after_failure(&mut self, applied: Applied, problems: &mut Vec<String>) {
+    /// into the report. `focused` had the keyboard focus before the apply.
+    fn revert_after_failure(
+        &mut self,
+        applied: Applied,
+        focused: Option<Focus>,
+        problems: &mut Vec<String>,
+    ) {
         let reverted = self.revert_quietly(applied);
-        let failures = self.redraw();
+        let failures = self.redraw(focused);
         match reverted {
             Ok((snap, notes)) => {
                 self.app.adopt(snap);
@@ -507,9 +519,21 @@ impl<'a> Session<'a> {
         problems.extend(failures);
     }
 
-    /// Runs the `post_apply` hooks after the screens changed. Returns one message per failure.
-    fn redraw(&mut self) -> Vec<String> {
-        run_hooks(&self.settings.hooks, self.settings.hook_timeout)
+    /// After the screens changed: runs the `post_apply` hooks, then gives the keyboard focus
+    /// back to `focused`, what had it before the change. Returns one message per hook failure.
+    fn redraw(&mut self, focused: Option<Focus>) -> Vec<String> {
+        let failures = run_hooks(&self.settings.hooks, self.settings.hook_timeout);
+        if let (Some(wm), Some(focus)) = (&self.settings.wm, focused) {
+            // A window that is gone or a window manager that does not answer only leaves the
+            // focus where the change put it.
+            let _ = wm.focus(&focus);
+        }
+        failures
+    }
+
+    /// What has the keyboard focus (a window or a workspace), if the window manager says.
+    fn focused(&self) -> Option<Focus> {
+        self.settings.wm.as_ref()?.focused().ok()
     }
 
     /// Adds notes and hook failures to the status line, after what it already says.
@@ -574,9 +598,15 @@ impl<'a> Session<'a> {
             return;
         };
         self.kept = false;
+        // Whoever has the focus keeps it: the editor after `n`, or the window the user went to
+        // while the countdown ran out. A signal ends outlay, so the focus is left alone.
+        let focused = match reason {
+            RevertReason::Signal => None,
+            RevertReason::Timeout | RevertReason::Declined => self.focused(),
+        };
         let reverted = self.revert_quietly(applied);
         // Even a failed revert may have changed the screens.
-        let failures = self.redraw();
+        let failures = self.redraw(focused);
         match reverted {
             Ok((snap, mut notes)) => {
                 self.app

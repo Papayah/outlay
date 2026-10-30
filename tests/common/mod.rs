@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod sway;
+pub mod wm;
 
 use outlay::model::geometry::{Point, Rect, Size, effective_size};
 use outlay::model::layout::Layout;

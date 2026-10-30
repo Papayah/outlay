@@ -52,6 +52,7 @@ impl Sway {
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("WAYLAND_SOCKET")
             .env_remove("SWAYSOCK")
+            .env_remove("I3SOCK")
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("WLR_BACKENDS", "headless")
             .env("WLR_RENDERER", "pixman")
@@ -111,6 +112,7 @@ impl Sway {
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
         cmd.env_remove("DISPLAY")
+            .env_remove("I3SOCK")
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env("WAYLAND_DISPLAY", &self.display)
             .env("SWAYSOCK", &self.swaysock)
