@@ -139,6 +139,12 @@ answer. Before each apply, outlay writes the revert command to
 `$XDG_STATE_HOME/outlay/revert.sh`, so you can run it by hand if anything goes wrong; a revert
 that did not restore everything says so and points to it.
 
+A layout change can move the keyboard focus: the window manager moves the workspaces of a
+display that goes off, and the window that ends up under the pointer takes the focus. On i3 and
+sway, outlay puts the focus back where it was before each change (the window it runs in, after
+an apply), so `y` and `n` reach it. On other window managers, a `post_apply` command can do it,
+e.g. `xdotool windowactivate $WINDOWID` (if your terminal sets `WINDOWID`).
+
 ![The countdown after an apply](docs/screenshots/countdown.png)
 
 ## Profiles

@@ -187,8 +187,8 @@ impl Input for TerminalInput {
 
 /// Options and settings made safe for `backend`. A simulated backend (`--demo`, `--from-file`,
 /// `-n`) must never reach the real desktop: no `revert.sh` that would change the real screens,
-/// and no `post_apply` hook that would redraw the real wallpaper. Its state only changes through
-/// outlay, so there is nothing to watch either.
+/// no `post_apply` hook that would redraw the real wallpaper, and no window manager to move the
+/// focus in. Its state only changes through outlay, so there is nothing to watch either.
 pub fn confine(
     backend: &dyn Backend,
     mut options: Options,
@@ -198,6 +198,7 @@ pub fn confine(
         options.watch = None;
         settings.revert_file = None;
         settings.hooks.clear();
+        settings.wm = None;
     }
     (options, settings)
 }
@@ -315,9 +316,10 @@ fn event_loop(
 mod tests {
     use super::*;
     use crate::backend::FixtureBackend;
+    use crate::wm::Wm;
 
     #[test]
-    fn a_simulated_backend_gets_no_revert_file_no_hooks_and_no_watch() {
+    fn a_simulated_backend_gets_no_revert_file_no_hooks_no_wm_and_no_watch() {
         let options = || Options {
             watch: Some(app::WATCH_INTERVAL),
             nudge_step: 5,
@@ -327,6 +329,7 @@ mod tests {
             revert_file: Some(PathBuf::from("/state/outlay/revert.sh")),
             hooks: vec!["feh --bg-fill ~/wall/*".to_owned()],
             revert_seconds: 7,
+            wm: Some(Wm::new("/run/user/1000/i3/ipc-socket.1")),
             ..Settings::default()
         };
         let backend = FixtureBackend::demo();
@@ -334,22 +337,25 @@ mod tests {
         let (opts, confined) = confine(&backend, options(), settings);
         assert_eq!(confined.revert_file, None);
         assert!(confined.hooks.is_empty());
+        assert_eq!(confined.wm, None);
         assert_eq!(opts.watch, None);
         assert_eq!(confined.revert_seconds, 7, "the rest stays");
         assert_eq!(opts.nudge_step, 5, "the rest stays");
 
-        // The live backend keeps all three; nothing here runs xrandr.
+        // The live backend keeps them all; nothing here runs xrandr.
         let live = crate::xrandr::XrandrCli::new();
         let (_, kept) = confine(&live, options(), confined.clone());
         assert_eq!(kept.hooks, confined.hooks);
         let settings = Settings {
             revert_file: Some(PathBuf::from("/state/outlay/revert.sh")),
             hooks: vec!["true".to_owned()],
+            wm: Some(Wm::new("/run/user/1000/i3/ipc-socket.1")),
             ..Settings::default()
         };
         let (opts, kept) = confine(&live, options(), settings);
         assert!(kept.revert_file.is_some());
         assert_eq!(kept.hooks, ["true"]);
+        assert!(kept.wm.is_some());
         assert_eq!(opts.watch, Some(app::WATCH_INTERVAL));
     }
 

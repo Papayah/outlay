@@ -10,12 +10,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use common::wm::{FakeWm, GONE};
 use common::{ix, keys, unplugged};
 use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan, Verdict};
 use outlay::model::Snapshot;
 use outlay::model::{Reflection, Rotation, Scaling};
 use outlay::tui::app::{App, ApplyRequest, Effect, Message, Options, UiMode, WATCH_INTERVAL};
 use outlay::tui::session::{Input, Session, Settings};
+use outlay::wm::{Focus, Wm};
 use outlay::xrandr::command;
 use ratatui::crossterm::event::Event;
 
@@ -52,6 +54,8 @@ struct Fake {
     requeries: Mutex<usize>,
     /// How many of the next re-queries fail.
     blind: Mutex<usize>,
+    /// Runs on every apply, as the window manager reacts to the changed screens.
+    on_apply: Option<Box<dyn Fn() + Send>>,
 }
 
 impl Fake {
@@ -64,6 +68,7 @@ impl Fake {
             probes: Mutex::new(0),
             requeries: Mutex::new(0),
             blind: Mutex::new(0),
+            on_apply: None,
         }
     }
 
@@ -86,6 +91,12 @@ impl Fake {
             *self.probes.lock().unwrap(),
             *self.requeries.lock().unwrap(),
         )
+    }
+
+    /// Runs `f` on every apply, the revert's too.
+    fn on_apply(mut self, f: impl Fn() + Send + 'static) -> Self {
+        self.on_apply = Some(Box::new(f));
+        self
     }
 
     fn then(self, next: Next) -> Self {
@@ -130,6 +141,9 @@ impl Backend for Fake {
 
     fn apply(&self, plan: &Plan) -> Result<ApplyOutcome> {
         self.calls.lock().unwrap().push(plan.clone());
+        if let Some(f) = &self.on_apply {
+            f();
+        }
         let next = self.next.lock().unwrap().pop_front().unwrap_or(Next::Works);
         match next {
             Next::Works => self.inner.apply(plan),
@@ -716,6 +730,137 @@ fn the_countdown_starts_once_the_hooks_are_done() {
         c.started - before
     );
     assert_eq!(rig.status(), "Simulated: nothing was sent to the displays.");
+}
+
+/// The editor's window is 7. Every apply, the revert's too, moves the focus to window 3, as a
+/// changed screen can; the hook writes into the window manager's log.
+fn focus_rig<'a>(backend: &'a Fake, wm: &FakeWm) -> Rig<'a> {
+    let settings = Settings {
+        hooks: vec![wm.hook()],
+        wm: Some(wm.wm()),
+        ..Settings::default()
+    };
+    Rig::new(backend, settings)
+}
+
+#[test]
+fn the_focus_goes_back_to_the_editor_after_the_apply() {
+    let wm = FakeWm::start("apply", 7);
+    let backend = Fake::demo().on_apply(wm.mover(3));
+    let mut rig = focus_rig(&backend, &wm);
+    rig.press("3<A-l>a<Enter>");
+    rig.countdown();
+    assert_eq!(wm.focused(), 7, "y and n go to the editor");
+    // After the hooks, which might move it as well.
+    assert_eq!(wm.log(), ["get_tree", "hook", "[con_id=7] focus"]);
+
+    rig.press_at("y", rig.countdown().blocked_until);
+    assert_eq!(wm.log().len(), 3, "keeping changes nothing");
+}
+
+#[test]
+fn a_revert_leaves_the_focus_where_it_was() {
+    for how in ["n", "timeout", "signal", "exit"] {
+        let wm = FakeWm::start(how, 7);
+        let backend = Fake::demo().on_apply(wm.mover(3));
+        let mut rig = focus_rig(&backend, &wm);
+        rig.press("3<A-l>a<Enter>");
+        assert_eq!(wm.log().len(), 3, "{how}: the apply");
+        match how {
+            "n" => rig.press_at("n", rig.countdown().blocked_until),
+            "timeout" => {
+                // The user went to window 5 to try the layout and did not come back in time.
+                wm.set_focus(5);
+                rig.wait_until(rig.countdown().deadline);
+            }
+            "signal" => {
+                rig.signal.store(true, Ordering::SeqCst);
+                rig.session.perform(&mut rig.input);
+            }
+            _ => rig.session.revert_if_waiting(),
+        }
+        assert_eq!(backend.calls().len(), 2, "{how} reverts");
+        let after = &wm.log()[3..];
+        match how {
+            "n" => assert_eq!(after, ["get_tree", "hook", "[con_id=7] focus"]),
+            "timeout" => assert_eq!(after, ["get_tree", "hook", "[con_id=5] focus"]),
+            // outlay ends: its window may be gone, and the focus is not its business.
+            _ => {
+                assert_eq!(after, ["hook"], "{how}");
+                assert_eq!(wm.focused(), 3, "{how}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_focus_goes_back_after_the_revert_of_a_failed_apply() {
+    let wm = FakeWm::start("failed", 7);
+    let backend = Fake::demo().on_apply(wm.mover(3)).then(Next::Fails {
+        stderr: "xrandr: Configure crtc 2 failed\n",
+        changes: true,
+    });
+    let mut rig = focus_rig(&backend, &wm);
+    rig.press("3<A-l>a<Enter>");
+    assert!(rig.message().starts_with("Apply failed"));
+    // The focus from before the apply: the editor, where the report is.
+    assert_eq!(wm.log(), ["get_tree", "hook", "[con_id=7] focus"]);
+    assert_eq!(wm.focused(), 7);
+
+    let wm = FakeWm::start("unchanged", 7);
+    let backend = Fake::demo().then(Next::Fails {
+        stderr: "xrandr: cannot find mode\n",
+        changes: false,
+    });
+    let mut rig = focus_rig(&backend, &wm);
+    rig.press("3<A-l>a<Enter>");
+    assert!(rig.message().contains("Nothing changed."));
+    assert_eq!(
+        wm.log(),
+        ["get_tree"],
+        "nothing changed, nothing to put back"
+    );
+}
+
+#[test]
+fn without_a_window_manager_the_apply_goes_on() {
+    // The window is gone by the time the focus goes back.
+    let wm = FakeWm::start("gone", GONE);
+    let backend = Fake::demo();
+    let mut rig = focus_rig(&backend, &wm);
+    rig.press("3<A-l>a<Enter>");
+    rig.countdown();
+    assert_eq!(wm.log().last().unwrap(), &format!("[con_id={GONE}] focus"));
+    assert_eq!(rig.status(), "Simulated: nothing was sent to the displays.");
+
+    // Nothing listens on the socket.
+    let settings = Settings {
+        wm: Some(Wm::new(std::env::temp_dir().join("outlay-no-such-socket"))),
+        ..Settings::default()
+    };
+    let mut rig = Rig::new(&backend, settings);
+    rig.press("3<A-l>a<Enter>");
+    rig.countdown();
+    assert_eq!(rig.status(), "Simulated: nothing was sent to the displays.");
+}
+
+#[test]
+fn the_window_manager_says_why_the_focus_did_not_move() {
+    let wm = FakeWm::start("client", 7);
+    assert_eq!(wm.wm().focused().unwrap(), Focus::Container(7));
+    wm.wm().focus(&Focus::Container(9)).unwrap();
+    assert_eq!(wm.wm().focused().unwrap(), Focus::Container(9));
+    let err = wm.wm().focus(&Focus::Container(GONE)).unwrap_err();
+    assert_eq!(err.to_string(), "No matching node.");
+    assert_eq!(
+        wm.log(),
+        [
+            "get_tree",
+            "[con_id=9] focus",
+            "get_tree",
+            "[con_id=404] focus"
+        ]
+    );
 }
 
 #[test]

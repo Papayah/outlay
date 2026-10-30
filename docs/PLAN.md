@@ -330,6 +330,10 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
    - Only `y` keeps; `Enter` does not.
    - Revert on timeout, `n`/`Esc`, or Ctrl-C (which also quits).
    - On SIGHUP, SIGTERM or SIGINT, revert first, then restore the terminal and ignore EIO.
+   - **The keyboard focus stays where it was.** A changed screen can move it (i3 and sway move the workspaces of an output that goes off; the window that ends up under the pointer takes it), and then `y` would go to another window. On i3 and sway (`$SWAYSOCK`, else `$I3SOCK`), `src/wm.rs` asks the window manager over its IPC socket what has the focus just before each change, and gives it back after the hooks: `[con_id=N] focus` for a window, `workspace --no-auto-back-and-forth "NAME"` for an empty workspace (sway's criteria do not match workspaces).
+     - Before an apply, that is the editor's window (or, for `outlay apply`, the terminal it runs in). Before a revert on timeout or `n`, it is whatever has the focus then: a user who went to another window to try the layout stays there.
+     - Not after a revert on a signal or on exit: outlay ends, and its window may be gone.
+     - Best effort: no window manager, one that does not answer within 500 ms, or a window that is gone leaves the focus where the change put it, with no message. A simulated backend never asks: `tui::confine` clears `Settings::wm`.
 6. **Afterwards.**
    - **The revert is verified too.** Re-query after it and compare each output `Plan::restore` covers with the state from before the apply (`restore_mismatches`): on/off, XID, rectangle, orientation, primary. Positions are compared as read, not normalised. Neither the exit status nor a failed read-back counts as a restore. An output that was on and is now gone, or disconnected and off, was unplugged meanwhile (`unplugged`): no revert can bring it back, so it is a note ("eDP-1 was unplugged, so it is not back."), not a failure.
    - A primary with panning is left out of the restore like any panned output, but the restore makes it primary again (`--output eDP-1 --primary`, `PrimaryRule::Output`).

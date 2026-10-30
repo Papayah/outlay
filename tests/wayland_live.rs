@@ -13,6 +13,7 @@ use outlay::model::geometry::{Point, Size};
 use outlay::model::{Mode, PhysicalSize, Reflection, Rotation, Scaling, Snapshot};
 use outlay::wayland::WlrBackend;
 use outlay::wayland::capture::mode;
+use outlay::wm::{Focus, Wm};
 
 fn connect(sway: &Sway) -> WlrBackend {
     WlrBackend::connect(&sway.socket)
@@ -608,4 +609,37 @@ fn hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on() {
         sway.log()
     );
     assert_eq!(connect(&sway).query().unwrap(), before, "{}", sway.log());
+}
+
+#[test]
+fn the_focus_moves_through_sways_ipc() {
+    let Some(sway) = Sway::start(2) else { return };
+    let wm = Wm::new(&sway.swaysock);
+    // One workspace per head, with no windows: a workspace has the focus. (name, head, focused)
+    let workspaces = |sway: &Sway| -> Vec<(String, String, bool)> {
+        let list: Vec<serde_json::Value> =
+            serde_json::from_str(&sway.swaymsg(&["-t", "get_workspaces", "-r"])).unwrap();
+        list.iter()
+            .map(|w| {
+                let text = |key: &str| w[key].as_str().unwrap().to_owned();
+                (text("name"), text("output"), w["focused"] == true)
+            })
+            .collect()
+    };
+    let list = workspaces(&sway);
+    assert_eq!(list.len(), 2, "{list:?}");
+    let (first, second) = (list[0].clone(), list[1].clone());
+
+    sway.swaymsg(&["focus", "output", &second.1]);
+    assert_eq!(wm.focused().unwrap(), Focus::Workspace(second.0.clone()));
+    wm.focus(&Focus::Workspace(first.0.clone())).unwrap();
+    assert_eq!(wm.focused().unwrap(), Focus::Workspace(first.0.clone()));
+    assert!(workspaces(&sway).contains(&(first.0, first.1, true)));
+    // Focusing it again stays there, even with workspace_auto_back_and_forth.
+    sway.swaymsg(&["workspace_auto_back_and_forth", "yes"]);
+    wm.focus(&wm.focused().unwrap()).unwrap();
+    assert!(workspaces(&sway).iter().any(|w| w.2 && w.1 == list[0].1));
+
+    let err = wm.focus(&Focus::Container(999_999)).unwrap_err();
+    assert_eq!(err.to_string(), "No matching node.");
 }

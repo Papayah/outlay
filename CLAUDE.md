@@ -96,6 +96,8 @@ cargo test
   or a display server.
 - `src/profiles.rs`: `ProfileStore`, screenlayout scripts on X11 or the kanshi config on
   Wayland, picked from the snapshot's kind. `src/files.rs`: atomic writes and line diffs.
+  `src/wm.rs`: the keyboard focus over the i3/sway IPC socket, put back after each change to
+  the screens.
 - `src/profile.rs`: `outlay apply` and `outlay save`; the apply reuses the editor's `Session`.
   `src/restore.rs`: the hidden `outlay restore` a Wayland `revert.sh` runs.
 - `src/tui/`: the editor. `app.rs` holds the state and `handle_key` (pure: it returns effects),
@@ -110,7 +112,8 @@ cargo test
   `tests/scenarios.rs` holds golden desk layouts, `tests/properties.rs` the proptest invariants,
   `tests/commands.rs` the golden apply/revert/script commands, `tests/tui.rs` key sequences
   and insta screen snapshots (`tests/snapshots/`; review `.snap.new` files before renaming them),
-  `tests/apply.rs` the apply flow with a fake backend, clock and signal flag,
+  `tests/apply.rs` the apply flow with a fake backend, clock and signal flag (and the focus,
+  with the fake i3 IPC socket in `tests/common/wm.rs`),
   `tests/profiles.rs` the user's scripts (copied into `tests/fixtures/screenlayout/`) on the
   fixtures, the remap, the round trip, and `w`/`e` through the session with temporary dirs,
   `tests/install.rs` `install.sh` piped into `sh -s --` against a `file://` fake release, with a

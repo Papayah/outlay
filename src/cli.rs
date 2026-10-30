@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::tui::app::{Options, WATCH_INTERVAL};
 use crate::tui::session::{Settings, default_revert_file};
 use crate::tui::theme::Theme;
+use crate::wm::Wm;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -164,6 +165,7 @@ impl Cli {
             layouts_dir: Some(self.layouts_dir(config)),
             kanshi_config: self.kanshi_config(config),
             restore_program: Some(restore_program()),
+            wm: Wm::from_env(&|name| std::env::var(name).ok()),
         };
         Ok((options, settings))
     }
