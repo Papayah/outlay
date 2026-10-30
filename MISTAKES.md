@@ -752,3 +752,37 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** load the helpers without the tail:
   `src = open("tools/pty_drive.py").read().rsplit("\nmain()\n", 1)[0]`, then `exec` it into a
   `types.ModuleType`, with `OUTLAY_BIN` set.
+
+## `pkill -f PATTERN` kills the Bash tool's own shell (exit 144)
+
+- **Symptom:** a Bash tool call that ends a test process with `pkill -f "i3 -c $S/config"`
+  returns exit code 144 and prints nothing after that line; the processes it started later in
+  the same call never run.
+- **Cause:** the tool's shell runs the whole command as `zsh -c '…'`, so the shell's own command
+  line contains the pattern, and `pkill -f` kills it.
+- **Fix:** save each background PID (`cmd & echo $! > x.pid`) and `kill $(cat x.pid)`, or match
+  the exact program name with `pgrep -x`/`pkill -x`. On this machine `pgrep -x i3` also lists
+  the developer's own i3: never kill by name.
+
+## Checking i3 IPC without the developer's i3
+
+- **Symptom:** an i3 started on Xvfb with `ipc-socket` in the scratchpad dir runs, but the
+  socket never appears; `i3-msg` without `-s` answers anyway, from the developer's real i3.
+- **Cause:** a Unix socket path is limited to 108 bytes, and the scratchpad path alone is close
+  to that. `i3-msg` takes the socket from `$I3SOCK`, which points at the session's i3.
+- **Fix:** `Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &`, then
+  `env -u I3SOCK -u SWAYSOCK DISPLAY=:99 i3 -c CONFIG &` with
+  `ipc-socket /run/user/1000/outlay-i3probe.sock` in CONFIG, windows from
+  `DISPLAY=:99 xterm -class probeA -e /usr/bin/sleep 600 &`, and always `i3-msg -s SOCKET`.
+  Nothing shows on the developer's screens. Remove the socket and kill the saved PIDs after.
+
+## sway's `[con_id=N]` does not match a workspace
+
+- **Symptom:** `[con_id=N] focus`, with N the id of an empty focused workspace from
+  `get_tree`, fails on sway with "No matching node."
+- **Cause:** sway's criteria match containers only. A window's `[con_id=N] focus` works on both
+  sway and i3.
+- **Fix:** `src/wm.rs` keeps a focused workspace by name and gives the focus back with
+  `workspace --no-auto-back-and-forth "NAME"`; without the flag, `workspace_auto_back_and_forth`
+  moves away from a workspace that already has the focus. `the_focus_moves_through_sways_ipc`
+  checks both against headless sway.

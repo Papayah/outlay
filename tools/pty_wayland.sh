@@ -49,7 +49,8 @@ while :; do
     sleep 0.05
 done
 
-unset DISPLAY
+# No I3SOCK: outlay must not reach the window manager of the session around this one.
+unset DISPLAY I3SOCK
 export XDG_RUNTIME_DIR="$rt" WAYLAND_DISPLAY="$display" SWAYSOCK="$rt/$ipc"
 export XDG_CONFIG_HOME="$rt/home/config" XDG_STATE_HOME="$rt/home/state"
 export OUTLAY_BIN="${OUTLAY_BIN:-$here/../target/release/outlay}"
