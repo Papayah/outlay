@@ -28,9 +28,23 @@
                 ./src
                 ./tests
               ])
-              ./tests/install.rs;
+              (lib.fileset.maybeMissing ./tests/install.rs);
           };
           cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [
+            pkgs.installShellFiles
+            pkgs.makeWrapper
+          ];
+          postInstall = ''
+            installShellCompletion --cmd outlay \
+              --bash <($out/bin/outlay completions bash) \
+              --zsh <($out/bin/outlay completions zsh) \
+              --fish <($out/bin/outlay completions fish)
+          '';
+          # --suffix, so a user's own xrandr still wins.
+          postFixup = ''
+            wrapProgram $out/bin/outlay --suffix PATH : ${lib.makeBinPath [pkgs.xrandr]}
+          '';
           meta = {
             description = "Keyboard-driven monitor layout editor for X11 and wlroots Wayland compositors";
             homepage = "https://github.com/Papayah/outlay";
@@ -52,6 +66,10 @@
           clippy
           rustfmt
           rust-analyzer
+          python3
+          shellcheck
+          sway
+          wlr-randr
         ];
       };
     });
