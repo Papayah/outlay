@@ -170,8 +170,12 @@ fn apply_n_and_save_n_keep_the_dpi_of_a_profile() {
     let (ok, stdout, stderr) = outlay(&args);
     assert!(ok, "{stderr}");
     let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[2],
+        "# outlay: HDMI-1-0 = Philips Philips FTV 16843009"
+    );
     assert!(
-        lines[2].starts_with("xrandr --dpi 96 --output HDMI-1-0 "),
+        lines[6].starts_with("xrandr --dpi 96 --output HDMI-1-0 "),
         "{stdout}"
     );
     std::fs::remove_dir_all(dir).unwrap();

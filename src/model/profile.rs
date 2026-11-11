@@ -113,6 +113,9 @@ pub struct Profile {
     pub primary: Option<Option<String>>,
     /// The screen's physical size: `--dpi` and `--fbmm`.
     pub physical: PhysicalSize,
+    /// The monitor each connector held when the profile was saved: connector name →
+    /// [`description`]. Screenlayout scripts keep them in `# outlay: NAME = TEXT` lines.
+    pub identities: Vec<(String, String)>,
     pub warnings: Vec<String>,
 }
 
