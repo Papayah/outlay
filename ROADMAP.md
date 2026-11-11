@@ -44,6 +44,25 @@ displays." today.
   `xrandr --verbose` does not show the millimetres: it needs `XDisplayWidthMM` (the X protocol)
   or `xdpyinfo`. The cause of the 0 mm state is not known.
 
+## Automatic layouts
+
+[Issue #23](https://github.com/Papayah/outlay/issues/23), from NikodemMarek: outlay applies the
+screen layouts on its own, as autorandr does on X11.
+
+- A systemd user service watches displays connect and disconnect.
+- It works with the layouts already saved in configuration files (screenlayout scripts, the kanshi
+  config).
+- It finds the layout set earlier for the connected displays. It recognises the monitors
+  themselves (EDID vendor, model and serial), not only the connectors they are on.
+- It applies that layout. If the apply fails, it reverts to the layout from before the change.
+- A change made by hand in outlay wins over the service's changes.
+- **Fail-safe:** when the last external display disconnects, the service turns on the laptop's
+  built-in display at its preferred mode, also when no saved layout matches. A panel that was off
+  on the desk then does not stay dark, and nobody has to turn it on blind.
+- Open: on Wayland kanshi already switches profiles, so the service must not fight it (only the
+  fail-safe there, or nothing while kanshi runs). How long a change by hand wins: until the
+  displays change again?
+
 ## Distribution
 
 - An AUR package, planned in its own session. It waits for the AUR account.
