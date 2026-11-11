@@ -10,6 +10,7 @@ pub mod profiles;
 pub mod restore;
 pub mod show;
 pub mod tui;
+pub mod watch;
 pub mod wayland;
 pub mod wm;
 pub mod xrandr;

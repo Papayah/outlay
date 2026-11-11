@@ -20,10 +20,10 @@ use crate::model::validate::{Severity, validate};
 use crate::profiles::{ProfileStore, Save};
 use crate::tui::app::{App, ApplyRequest, Effect, ProfileItem, RevertReason, UiMode};
 use crate::tui::confine;
-use crate::tui::session::{Input, Session, tilde};
+use crate::tui::session::{Input, Session, Settings, tilde};
 
 /// Writes a line to stderr. After a SIGHUP there is no terminal, and `eprintln!` would panic.
-fn say(text: impl AsRef<str>) {
+pub(crate) fn say(text: impl AsRef<str>) {
     let _ = writeln!(io::stderr(), "{}", text.as_ref());
 }
 
@@ -90,13 +90,25 @@ pub fn apply(cli: &Cli, config: &Config, backend: &dyn Backend, name: &str) -> R
     // Any work from `tick` ends the countdown below, so nothing else may ask for it.
     options.watch = None;
     let (options, settings) = confine(backend, options, settings);
-    let seconds = settings.revert_seconds;
     let mut app = App::new(snap, options);
     app.load_profile(&item, &remap);
     let signal = Arc::new(AtomicBool::new(false));
     for sig in [SIGHUP, SIGTERM, SIGINT] {
         signal_hook::flag::register(sig, Arc::clone(&signal))?;
     }
+    carry_out(app, plan, backend, settings, signal)
+}
+
+/// Applies `app.layout` with `plan` through a [`Session`]: verified, the hooks run, and reverted
+/// unless kept. A countdown on the terminal asks unless `settings.revert_seconds` is 0.
+pub(crate) fn carry_out(
+    app: App,
+    plan: Plan,
+    backend: &dyn Backend,
+    settings: Settings,
+    signal: Arc<AtomicBool>,
+) -> Result<()> {
+    let seconds = settings.revert_seconds;
     let mut session = Session::new(app, backend, settings, signal);
     let layout = session.app.layout.clone();
     session.push(Effect::Apply(ApplyRequest { plan, layout }));

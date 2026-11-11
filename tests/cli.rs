@@ -649,3 +649,49 @@ fn restore_applies_a_capture_at_once() {
     assert!(!help.contains("restore"), "hidden:\n{help}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn watch_once_n_prints_the_decision_and_the_command() {
+    let dir = layouts("watch-once", &[]);
+    let d = dir.to_str().unwrap();
+    let capture = fixture("active-disconnected");
+    let args = [
+        "--from-file",
+        &capture,
+        "--layouts-dir",
+        d,
+        "-n",
+        "watch",
+        "--once",
+    ];
+    let (ok, stdout, stderr) = outlay(&args);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stderr,
+        "No profile fits. DP-1 is disconnected but still active; turning it off.\n"
+    );
+    assert!(
+        stdout.starts_with("xrandr --output eDP-1 ") && stdout.ends_with("--output DP-1 --off\n"),
+        "{stdout}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn watch_prints_a_systemd_unit() {
+    let (ok, stdout, stderr) = outlay(&["watch", "--print-unit"]);
+    assert!(ok, "{stderr}");
+    let exe = env!("CARGO_BIN_EXE_outlay");
+    assert!(
+        stdout.contains(&format!("ExecStart=\"{exe}\" watch\n")),
+        "{stdout}"
+    );
+    for line in [
+        "Restart=on-failure",
+        "PartOf=graphical-session.target",
+        "WantedBy=graphical-session.target",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "{line} in {stdout}");
+    }
+    assert!(!outlay(&["watch", "--once", "--print-unit"]).0);
+}
