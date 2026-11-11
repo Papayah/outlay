@@ -77,6 +77,8 @@ outlay list                 list outputs, then resolutions with their rates
 outlay apply <profile>      apply ~/.screenlayout/<profile>.sh or a path; on Wayland, a kanshi profile
                             (-n prints the command only)
 outlay save <profile>       save the live layout as an arandr-compatible script, or a kanshi profile
+outlay watch                apply the saved layout that fits whenever displays change
+                            (--once: decide once and exit; --print-unit: a systemd user unit)
 outlay keys                 print the keymap
 outlay dump                 print the state as read (xrandr --verbose, or JSON on Wayland)
 outlay completions <shell>  print a completion script
@@ -166,6 +168,48 @@ From the shell, `outlay apply home` applies `~/.screenlayout/home.sh` with the s
 and countdown (type `y` and Enter to keep it; `--revert-timeout 0` keeps it without asking, for
 key bindings), and `outlay save home` saves the live layout (`-f` overwrites a different file
 without asking). With `-n`, both only print what they would run or write.
+
+## Automatic layouts
+
+`outlay watch` applies a saved layout when displays are plugged in or unplugged, as autorandr
+does. Run it as a systemd user service:
+
+```sh
+outlay watch --print-unit > ~/.config/systemd/user/outlay.service
+systemctl --user enable --now outlay
+```
+
+The unit starts with `graphical-session.target`. A plain i3 session does not start that target or
+pass `DISPLAY` to systemd; there, start the service from the i3 config instead:
+
+```
+exec --no-startup-id outlay watch
+```
+
+Every 2 s it reads which monitors are connected. When two readings in a row show a new set, it
+picks the layout and applies it at once, with no countdown (a failed apply still reverts):
+
+- **A profile that fits.** A script saved by outlay records the monitor on each output, one line
+  per connected output: `# outlay: DP-1-3 = Dell DELL U2719D 7K5VQ93` (make, model, serial). It
+  fits when exactly these monitors are connected, on any ports: a monitor that moved to another
+  port gets the script's place for it. A script without these lines (arandr's, or an older
+  outlay's) fits when the outputs it turns on are exactly the connected ones. When several fit,
+  the first by name wins, and the log names the others. Save the script again with `w` to add
+  the lines.
+- **No profile fits:** outputs whose monitor was unplugged are turned off; nothing else changes.
+- **Fail-safe:** when the laptop panel is the only display left, it is turned on at its
+  preferred mode, even if a fitting profile leaves it off. A panel that was off on the desk never
+  stays dark.
+
+It reacts to plugging only: a layout you change by hand, in outlay or anywhere else, stays until
+a display comes or goes. It starts as if the displays had just changed, so restarting the service
+applies the fitting profile again. Before each apply it writes
+`$XDG_STATE_HOME/outlay/watch-revert.sh`, beside the editor's `revert.sh`, and the `post_apply`
+hooks run after it.
+
+On Wayland, kanshi switches the profiles, and `outlay watch` keeps only the fail-safe.
+`outlay watch --once` decides for the displays as they are, applies, and exits; with `-n` it only
+prints the decision and the command.
 
 ## Wayland
 
