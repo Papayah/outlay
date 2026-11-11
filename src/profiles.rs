@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::files::write_atomic;
 use crate::model::layout::Layout;
-use crate::model::profile::Profile;
+use crate::model::profile::{Profile, description};
 use crate::model::{Kind, Snapshot};
 use crate::wayland::kanshi;
 use crate::xrandr::{command, script};
@@ -236,7 +236,13 @@ impl ProfileStore {
                     }),
                     None => command::script_command(layout),
                 };
-                let text = script::save_text(old.as_deref(), &command);
+                let identities: Vec<(String, String)> = snap
+                    .outputs
+                    .iter()
+                    .filter(|o| o.is_connected())
+                    .map(|o| (o.name.clone(), description(o)))
+                    .collect();
+                let text = script::save_text(old.as_deref(), &identities, &command);
                 Ok(Save {
                     name: script::profile_name(&path),
                     path,

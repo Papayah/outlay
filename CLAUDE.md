@@ -44,7 +44,8 @@ cargo test
 ## Rules
 
 - **Live displays.** The developer's screens are live. Never run an xrandr command that changes
-  state (`--output`, `--auto`, `--off`, a layout script, an outlay apply) without asking first.
+  state (`--output`, `--auto`, `--off`, a layout script, an outlay apply, `outlay watch` without
+  `-n` or a fixture) without asking first.
   Always allowed: `xrandr --verbose`, `--query`, `--current`, `--listmonitors`, `--listproviders`.
   Tests never call the real `xrandr`; they use `FixtureBackend` or captured fixtures.
 - **`~/.screenlayout` is read-only.** Copy scripts into `tests/fixtures/screenlayout/`, and point
@@ -99,7 +100,9 @@ cargo test
   `src/wm.rs`: the keyboard focus over the i3/sway IPC socket, put back after each change to
   the screens.
 - `src/profile.rs`: `outlay apply` and `outlay save`; the apply reuses the editor's `Session`.
-  `src/restore.rs`: the hidden `outlay restore` a Wayland `revert.sh` runs.
+  `src/restore.rs`: the hidden `outlay restore` a Wayland `revert.sh` runs. `src/watch.rs`:
+  `outlay watch`, the service that applies the first fitting profile when displays change
+  (`decide` is pure; `Watch::step` is one round of the poll), with the panel fail-safe.
 - `src/tui/`: the editor. `app.rs` holds the state and `handle_key` (pure: it returns effects),
   `session.rs` carries the effects out (test → apply → verify → countdown → keep/revert, hooks,
   OSC 52, profiles) behind the `Backend` and `Input` traits, `mod.rs` owns the terminal, signals
@@ -119,5 +122,6 @@ cargo test
   `tests/install.rs` `install.sh` piped into `sh -s --` against a `file://` fake release, with a
   cleared environment and a sandboxed home, `tests/kanshi.rs` the kanshi configs in
   `tests/fixtures/kanshi/` (parse, criteria, remap, byte-keeping saves, the session),
-  `tests/wayland_fixtures.rs` the captures in `tests/fixtures/wayland/`, and
+  `tests/wayland_fixtures.rs` the captures in `tests/fixtures/wayland/`, `tests/watch.rs` the
+  service's decisions and its loop on `FixtureBackend::set_state`, and
   `tests/wayland_live.rs` the backend against headless sway (`tests/common/sway.rs`).

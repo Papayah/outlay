@@ -88,6 +88,16 @@ pub enum Command {
     /// Print the state as the backend reads it (`xrandr --verbose`, or JSON on Wayland), for bug
     /// reports and --from-file
     Dump,
+    /// Apply the first saved layout that fits whenever displays are plugged in or unplugged, and
+    /// turn the laptop panel on when it is the only display left; with -n, print the commands only
+    Watch {
+        /// Decide for the displays as they are, apply, and exit
+        #[arg(long)]
+        once: bool,
+        /// Print a systemd user unit that runs the service
+        #[arg(long, conflicts_with = "once")]
+        print_unit: bool,
+    },
     /// Print a shell completion script
     Completions { shell: clap_complete::Shell },
     /// Apply the layout a capture describes, at once (what a Wayland revert.sh runs)

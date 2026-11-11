@@ -7,7 +7,7 @@ use clap::{CommandFactory, Parser};
 use outlay::cli::{Cli, Command};
 use outlay::config::Config;
 use outlay::show;
-use outlay::{profile, restore, tui};
+use outlay::{profile, restore, tui, watch};
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
@@ -34,6 +34,14 @@ fn run(cli: Cli) -> Result<()> {
     if let Some(Command::Keys) = &cli.command {
         return print_stdout(&config.keymap()?.reference_text());
     }
+    match &cli.command {
+        Some(Command::Watch {
+            print_unit: true, ..
+        }) => return print_stdout(&watch::unit()?),
+        // A fresh backend each round, so not the one below.
+        Some(Command::Watch { once, .. }) => return watch::watch(&cli, &config, *once),
+        _ => {}
+    }
     let backend = cli.backend()?;
     let Some(command) = cli.command.clone() else {
         let (options, settings) = cli.tui_options(&config)?;
@@ -52,7 +60,10 @@ fn run(cli: Cli) -> Result<()> {
         ),
         Command::List => show::list(&backend.query()?),
         Command::Dump => backend.dump()?,
-        Command::Keys | Command::Completions { .. } | Command::Restore { .. } => {
+        Command::Keys
+        | Command::Completions { .. }
+        | Command::Restore { .. }
+        | Command::Watch { .. } => {
             unreachable!("handled above")
         }
     };
