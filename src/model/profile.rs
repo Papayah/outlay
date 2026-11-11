@@ -330,6 +330,64 @@ impl Profile {
             .collect()
     }
 
+    /// Whether this profile fits the monitors connected on `snap`, and if so the remap that puts
+    /// each entry on its monitor. With identity lines, the connected monitors must be exactly
+    /// the monitors of the lines, and every entry that turns an output on needs a line; a
+    /// monitor on another port gets a remap row. Without them, the connected outputs must be
+    /// exactly the outputs the on-entries match: a profile never turns off a monitor it does
+    /// not know.
+    pub fn fit(&self, snap: &Snapshot) -> Option<Remap> {
+        let connected: Vec<usize> = (0..snap.outputs.len())
+            .filter(|&i| snap.outputs[i].is_connected())
+            .collect();
+        if self.identities.is_empty() {
+            let mut on: Vec<usize> = Vec::new();
+            for (e, found) in self.entries.iter().zip(self.matches(snap)) {
+                if e.turns_on() {
+                    on.push(found?);
+                }
+            }
+            on.sort_unstable();
+            return (on == connected).then(Vec::new);
+        }
+        if connected.len() != self.identities.len() {
+            return None;
+        }
+        let mut place: Vec<Option<usize>> = vec![None; self.identities.len()];
+        // The same connector first, so two monitors that swapped ports do not steal each other's.
+        for same_port in [true, false] {
+            for (k, (name, desc)) in self.identities.iter().enumerate() {
+                if place[k].is_some() {
+                    continue;
+                }
+                place[k] = connected.iter().copied().find(|&i| {
+                    let out = &snap.outputs[i];
+                    (!same_port || out.name == *name)
+                        && !place.contains(&Some(i))
+                        && description(out) == *desc
+                });
+            }
+        }
+        let mut remap = Remap::new();
+        for e in &self.entries {
+            let Target::Name(name) = &e.target else {
+                return None;
+            };
+            let Some(k) = self.identities.iter().position(|(n, _)| n == name) else {
+                if e.turns_on() {
+                    return None;
+                }
+                continue;
+            };
+            let i = place[k]?;
+            if snap.outputs[i].name != *name {
+                remap.push((name.clone(), Some(i)));
+            }
+        }
+        // Every line found its monitor and the counts agree: the sets are equal.
+        place.iter().all(Option::is_some).then_some(remap)
+    }
+
     /// The output a profile name stands for on `snap`, after the remap.
     fn index_of(&self, snap: &Snapshot, remap: &Remap, name: &str) -> Option<usize> {
         if let Some((_, to)) = remap.iter().find(|(from, _)| from == name) {

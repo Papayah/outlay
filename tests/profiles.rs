@@ -14,11 +14,12 @@ use outlay::backend::{Backend, FixtureBackend, Plan};
 use outlay::model::geometry::{Dir, Rect};
 use outlay::model::layout::Layout;
 use outlay::model::links::{Align, Side};
+use outlay::model::profile::description;
 use outlay::model::{Dpi, Snapshot};
 use outlay::tui::app::{App, Options, UiMode};
 use outlay::tui::session::{Input, Session, Settings};
-use outlay::xrandr::command;
 use outlay::xrandr::script::{Profile, Remap};
+use outlay::xrandr::{command, script};
 use ratatui::crossterm::event::Event;
 
 fn capture(name: &str) -> Snapshot {
@@ -672,4 +673,96 @@ fn profile_errors_are_reported() {
     assert_eq!(status(&s), "Type a name for the profile.");
     assert!(matches!(s.app.mode, UiMode::SavePrompt(_)));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The profile `ProfileStore::save` would write for the layout `snap` shows.
+fn saved(snap: &Snapshot) -> Profile {
+    let ids: Vec<(String, String)> = snap
+        .outputs
+        .iter()
+        .filter(|o| o.is_connected())
+        .map(|o| (o.name.clone(), description(o)))
+        .collect();
+    let command = command::script_command(&Layout::inferred(snap));
+    Profile::parse(&script::save_text(None, &ids, &command))
+}
+
+/// `snap` with the monitors on outputs `a` and `b` swapped.
+fn swapped(snap: &Snapshot, a: &str, b: &str) -> Snapshot {
+    let mut snap = snap.clone();
+    let (a, b) = (snap.find(a).unwrap(), snap.find(b).unwrap());
+    let id = snap.outputs[a].identity.take();
+    snap.outputs[a].identity = std::mem::replace(&mut snap.outputs[b].identity, id);
+    snap
+}
+
+#[test]
+fn fit_the_same_monitors_on_the_same_ports() {
+    let demo = capture("demo");
+    assert_eq!(saved(&demo).fit(&demo), Some(vec![]));
+}
+
+#[test]
+fn fit_a_monitor_on_another_port_is_remapped() {
+    let demo = capture("demo");
+    let three = common::unplugged(&demo, "DP-1-3");
+    let p = saved(&three);
+    // The Dell moves from DP-1-2 to DP-1-3.
+    let moved = common::unplugged(&swapped(&demo, "DP-1-2", "DP-1-3"), "DP-1-2");
+    let found = p.fit(&moved).unwrap();
+    assert_eq!(found, remap(&moved, &[("DP-1-2", Some("DP-1-3"))]));
+    let (layout, _) = p.layout(&moved, &found);
+    let was = Layout::inferred(&three);
+    let i = moved.find("DP-1-3").unwrap();
+    assert!(layout.outputs[i].enabled);
+    assert_eq!(
+        layout.outputs[i].pos,
+        was.outputs[three.find("DP-1-2").unwrap()].pos
+    );
+}
+
+#[test]
+fn fit_two_monitors_that_swapped_ports() {
+    let demo = capture("demo");
+    let p = saved(&demo);
+    let other = swapped(&demo, "HDMI-1-0", "DP-1-2");
+    let found = p.fit(&other).unwrap();
+    assert_eq!(
+        found,
+        remap(
+            &other,
+            &[("HDMI-1-0", Some("DP-1-2")), ("DP-1-2", Some("HDMI-1-0"))]
+        )
+    );
+}
+
+#[test]
+fn fit_needs_the_same_monitor_on_a_port() {
+    let demo = capture("demo");
+    let p = saved(&demo);
+    let mut other = demo.clone();
+    let i = other.find("DP-1-2").unwrap();
+    other.outputs[i].identity.as_mut().unwrap().serial = Some("ANOTHER".to_owned());
+    assert_eq!(p.fit(&other), None);
+}
+
+#[test]
+fn fit_needs_exactly_the_saved_monitors() {
+    let demo = capture("demo");
+    let three = common::unplugged(&demo, "DP-1-3");
+    assert_eq!(saved(&three).fit(&demo), None, "one monitor more");
+    assert_eq!(saved(&demo).fit(&three), None, "one monitor less");
+}
+
+#[test]
+fn fit_a_legacy_script_only_on_exactly_its_outputs() {
+    let demo = capture("demo");
+    let two = common::unplugged(&common::unplugged(&demo, "HDMI-1-0"), "DP-1-3");
+    let panel_off = Profile::parse("xrandr --output eDP-1 --off --output DP-1-2 --auto");
+    assert_eq!(panel_off.fit(&two), None);
+    let both = Profile::parse(
+        "xrandr --output eDP-1 --auto --output DP-1-2 --auto --output HDMI-1-0 --off",
+    );
+    assert_eq!(both.fit(&two), Some(vec![]));
+    assert_eq!(both.fit(&demo), None, "a new monitor is not turned off");
 }
