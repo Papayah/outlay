@@ -812,3 +812,15 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   `tests/common/mod.rs` for a new test file.
 - **Cause:** `tests/common/mod.rs` starts with `#![allow(dead_code)]` already.
 - **Fix:** write a bare `mod common;` in the new test file.
+
+## A laptop panel goes black for a second when the screen shrinks
+
+- **Symptom:** unplugging a TV above the panel, outlay's apply (`--output HDMI-1-0 --off`, the
+  panel moved from `+0+1440` to `+0+0`) blacks the panel out for about a second; plugging the TV
+  back only blinks it.
+- **Cause:** xrandr's `apply()` turns off every CRTC that stays on but does not fit the new,
+  smaller screen at its old place (`/* if it fits, skip it */ … crtc_disable`), sets the screen
+  size, then turns it on again. A growing screen keeps the CRTCs on.
+- **Fix:** `XrandrCli::apply` runs a shrinking apply twice: first with `--fb` big enough for both
+  layouts (the displays only move), then the same call, which only shrinks the screen.
+  `xrandr --dryrun --verbose …` prints the `crtc N: disable` lines without applying anything.

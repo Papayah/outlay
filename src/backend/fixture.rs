@@ -151,7 +151,7 @@ fn failure(stderr: String) -> ApplyOutcome {
 
 /// Applies a plan to a snapshot the way xrandr would. A failed apply changes nothing; an output
 /// the snapshot does not know is a warning and is skipped.
-fn simulate(snapshot: &mut Snapshot, plan: &Plan) -> ApplyOutcome {
+pub(crate) fn simulate(snapshot: &mut Snapshot, plan: &Plan) -> ApplyOutcome {
     let mut next = snapshot.clone();
     let mut warnings = String::new();
     // `Some(None)`: nobody is primary afterwards.

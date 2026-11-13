@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
+use crate::backend::fixture::simulate;
 use crate::backend::{ApplyOutcome, Backend, Plan};
 use crate::model::{Dpi, Snapshot, Transform};
 pub use parse::{ParseError, parse_verbose};
@@ -71,6 +72,27 @@ impl XrandrCli {
     fn read(&self, args: &[&str]) -> Result<Snapshot> {
         parse_verbose(&self.text(args)?).context("could not read the xrandr output")
     }
+
+    /// When `plan` shrinks the screen, a size (`WxH`) that holds both the live layout and the
+    /// one `plan` makes; `None` when one call does no harm, or when that cannot be worked out.
+    fn room_for(&self, plan: &Plan) -> Option<String> {
+        let now = self.requery().ok()?;
+        // The simulation does not follow panning.
+        if now
+            .outputs
+            .iter()
+            .any(|o| o.active.as_ref().is_some_and(|a| a.panning.is_some()))
+        {
+            return None;
+        }
+        let mut after = now.clone();
+        if !simulate(&mut after, plan).success {
+            return None;
+        }
+        let (now, after) = (now.screen?.current, after.screen?.current);
+        (after.w < now.w || after.h < now.h)
+            .then(|| format!("{}x{}", now.w.max(after.w), now.h.max(after.h)))
+    }
 }
 
 impl Backend for XrandrCli {
@@ -85,7 +107,20 @@ impl Backend for XrandrCli {
     fn apply(&self, plan: &Plan) -> Result<ApplyOutcome> {
         let argv = command::argv(plan);
         let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-        self.run(&args)
+        // Before xrandr shrinks the screen, it turns off every display that stays on but does not
+        // fit the smaller screen at its old place, and turns it on again after: a second of black
+        // on a laptop panel. So first move the displays on a screen that holds both layouts; the
+        // same call then only shrinks it.
+        let Some(fb) = self.room_for(plan) else {
+            return self.run(&args);
+        };
+        let first = self.run(&[&args[..], &["--fb", &fb]].concat())?;
+        if !first.success {
+            return Ok(first);
+        }
+        let mut out = self.run(&args)?;
+        out.stderr = first.stderr + &out.stderr;
+        Ok(out)
     }
 
     fn dump(&self) -> Result<String> {
@@ -185,6 +220,69 @@ mod tests {
         assert!(hint("ID=void\n").ends_with("xbps-install xrandr"));
         assert!(hint("ID=alpine\n").ends_with("apk add xrandr"));
         assert_eq!(hint(""), "Install your distribution's xrandr package.");
+    }
+
+    /// A fake `xrandr` in a temporary directory: it logs each call, and a re-query prints the
+    /// demo capture.
+    fn fake_xrandr(tag: &str) -> (XrandrCli, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("outlay-xrandr-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (demo, log) = (dir.join("demo.txt"), dir.join("calls"));
+        std::fs::write(&demo, DEMO).unwrap();
+        let program = dir.join("xrandr");
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >>'{}'\n[ \"$*\" = '--verbose --current' ] && cat '{}'\nexit 0\n",
+            log.display(),
+            demo.display()
+        );
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cli = XrandrCli {
+            program: program.into(),
+        };
+        (cli, dir)
+    }
+
+    #[test]
+    fn a_shrinking_apply_moves_the_displays_before_the_screen_shrinks() {
+        use crate::model::layout::Layout;
+        let (cli, dir) = fake_xrandr("shrink");
+        let demo = parse_verbose(DEMO).unwrap();
+        let screen = demo.screen.as_ref().unwrap().current;
+        let calls = || std::fs::read_to_string(dir.join("calls")).unwrap();
+
+        // Only the panel stays on: the screen shrinks to its size.
+        let mut alone = Layout::inferred(&demo);
+        for name in ["HDMI-1-0", "DP-1-2"] {
+            alone
+                .turn_off(alone.names.iter().position(|n| n == name).unwrap())
+                .unwrap();
+        }
+        let plan = Plan::pending(&alone, &demo);
+        let args = command::argv(&plan).join(" ");
+        assert!(cli.apply(&plan).unwrap().success);
+        assert_eq!(
+            calls(),
+            format!(
+                "--verbose --current\n{args} --fb {}x{}\n{args}\n",
+                screen.w, screen.h
+            )
+        );
+
+        // A layout that grows the screen needs one call.
+        std::fs::remove_file(dir.join("calls")).unwrap();
+        let mut grown = Layout::inferred(&demo);
+        let lg = grown.names.iter().position(|n| n == "DP-1-3").unwrap();
+        grown.turn_on(&demo, lg).unwrap();
+        let plan = Plan::pending(&grown, &demo);
+        assert!(cli.apply(&plan).unwrap().success);
+        assert_eq!(
+            calls(),
+            format!("--verbose --current\n{}\n", command::argv(&plan).join(" "))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
