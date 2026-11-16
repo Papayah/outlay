@@ -331,25 +331,17 @@ impl Profile {
     }
 
     /// Whether this profile fits the monitors connected on `snap`, and if so the remap that puts
-    /// each entry on its monitor. With identity lines, the connected monitors must be exactly
-    /// the monitors of the lines, and every entry that turns an output on needs a line; a
-    /// monitor on another port gets a remap row. Without them, the connected outputs must be
-    /// exactly the outputs the on-entries match: a profile never turns off a monitor it does
-    /// not know.
+    /// each entry on its monitor. The connected monitors must be exactly the monitors of the
+    /// identity lines, and every entry that turns an output on needs a line; a monitor on another
+    /// port gets a remap row. A profile without identity lines (arandr's, an older outlay's) never
+    /// fits: port names alone matched scripts made for other monitors on the same ports.
     pub fn fit(&self, snap: &Snapshot) -> Option<Remap> {
+        if self.identities.is_empty() {
+            return None;
+        }
         let connected: Vec<usize> = (0..snap.outputs.len())
             .filter(|&i| snap.outputs[i].is_connected())
             .collect();
-        if self.identities.is_empty() {
-            let mut on: Vec<usize> = Vec::new();
-            for (e, found) in self.entries.iter().zip(self.matches(snap)) {
-                if e.turns_on() {
-                    on.push(found?);
-                }
-            }
-            on.sort_unstable();
-            return (on == connected).then(Vec::new);
-        }
         if connected.len() != self.identities.len() {
             return None;
         }

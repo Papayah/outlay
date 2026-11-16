@@ -20,7 +20,7 @@ PR at the end.
 | Topic | Decision |
 |---|---|
 | Wayland | Fail-safe only. kanshi stays the profile switcher. |
-| Monitor identity on X11 | Comment lines in the script: `# outlay: DP-1-3 = Dell U2720Q 7JNY5S2`. Scripts without them match by connector names. |
+| Monitor identity on X11 | Comment lines in the script: `# outlay: DP-1-3 = Dell U2720Q 7JNY5S2`. Scripts without them never fit (changed after testing: by connector names alone, old scripts made for other monitors fitted). |
 | Hand-made layout | Wins until the displays change. The service reacts to plug events only. |
 | No profile fits | Turn off unplugged outputs that are still on; change nothing else. |
 | Two profiles fit | First by name. The log names the others. |
@@ -68,7 +68,8 @@ Branch `feat/auto-layouts` from `main`. Do not run anything that changes the liv
      sits on another port. An on-entry without a line: no fit.
    - **Without identity lines:** every on-entry is matched by `matches()` (`:240`) and the
      connected outputs are exactly the outputs the on-entries match. Strict on purpose: a legacy
-     `laptop.sh` must not turn off a newly plugged monitor.
+     `laptop.sh` must not turn off a newly plugged monitor. (Superseded: such scripts never fit,
+     see Decisions.)
    - Reuse `Remap`, `matches` and `layout(snap, remap)` (`:340`). A remap row may also name an
      entry that is connected (two monitors that swapped ports).
 

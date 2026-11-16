@@ -755,14 +755,12 @@ fn fit_needs_exactly_the_saved_monitors() {
 }
 
 #[test]
-fn fit_a_legacy_script_only_on_exactly_its_outputs() {
+fn fit_never_takes_a_script_without_identity_lines() {
     let demo = capture("demo");
     let two = common::unplugged(&common::unplugged(&demo, "HDMI-1-0"), "DP-1-3");
-    let panel_off = Profile::parse("xrandr --output eDP-1 --off --output DP-1-2 --auto");
-    assert_eq!(panel_off.fit(&two), None);
+    // Its ports are exactly the connected ones, but it may have been made for other monitors.
     let both = Profile::parse(
         "xrandr --output eDP-1 --auto --output DP-1-2 --auto --output HDMI-1-0 --off",
     );
-    assert_eq!(both.fit(&two), Some(vec![]));
-    assert_eq!(both.fit(&demo), None, "a new monitor is not turned off");
+    assert_eq!(both.fit(&two), None);
 }

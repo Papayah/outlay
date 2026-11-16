@@ -193,9 +193,9 @@ picks the layout and applies it at once, with no countdown (a failed apply still
   per connected output: `# outlay: DP-1-3 = Dell DELL U2719D 7K5VQ93` (make, model, serial). It
   fits when exactly these monitors are connected, on any ports: a monitor that moved to another
   port gets the script's place for it. A script without these lines (arandr's, or an older
-  outlay's) fits when the outputs it turns on are exactly the connected ones. When several fit,
-  the first by name wins, and the log names the others. Save the script again with `w` to add
-  the lines.
+  outlay's) never fits: the same ports may have held other monitors when it was made. Open it
+  with `e` and save it again with `w` (all its monitors connected) to add the lines. When several
+  fit, the first by name wins, and the log names the others.
 - **No profile fits:** outputs whose monitor was unplugged are turned off; nothing else changes.
 - **Fail-safe:** when the laptop panel is the only display left, it is turned on at its
   preferred mode, even if a fitting profile leaves it off. A panel that was off on the desk never
