@@ -842,3 +842,15 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   modes stays on, with a log note. `tests/fixtures/xrandr/ghost-connected.txt` is a
   reconstruction from `laptop-edp-hdmi.txt`, not a capture: replace it with
   `xrandr --verbose --current` taken within seconds of such an unplug.
+
+## Xvfb refuses every RandR change but `--fbmm`
+
+- **Symptom:** a test that changes Xvfb's screen to get a RandR event fails:
+  `xrandr --output screen --mode 800x600` says `cannot find mode 800x600`; `--newmode` +
+  `--addmode` says `cannot find mode`; `--rotate inverted` is refused; `--fb 1024x768` is
+  "not large enough for output screen"; `--output screen --off` fails with BadValue on
+  `RRSetScreenSize`.
+- **Cause:** Xvfb's one output (`screen`) has one mode, the `-screen` size, and the maximum
+  screen size is that size too.
+- **Fix:** `xrandr --fbmm 300x200` (a new physical size) succeeds and sends
+  `RRScreenChangeNotify`; `tests/x11_events.rs` uses it.
