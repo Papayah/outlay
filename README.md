@@ -186,8 +186,10 @@ pass `DISPLAY` to systemd; there, start the service from the i3 config instead:
 exec --no-startup-id outlay watch
 ```
 
-Every 2 s it reads which monitors are connected. When two readings in a row show a new set, it
-picks the layout and applies it at once, with no countdown (a failed apply still reverts):
+On X11 it reads which monitors are connected whenever the X server reports a change (a RandR
+event), and every 30 s in case one was missed; on Wayland it reads every 2 s. When two readings
+in a row show a new set (on X11 half a second apart), it picks the layout and applies it at
+once, with no countdown (a failed apply still reverts):
 
 - **A profile that fits.** A script saved by outlay records the monitor on each output, one line
   per connected output: `# outlay: DP-1-3 = Dell DELL U2719D 7K5VQ93` (make, model, serial). It

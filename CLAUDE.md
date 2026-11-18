@@ -35,6 +35,9 @@ cargo test
   against headless sway (no window, a private runtime dir). Without the variable these tests
   print "skipped" and pass. `OUTLAY_TEST_KANSHI=$(command -v kanshi)` adds the kanshi interplay
   test.
+- `OUTLAY_TEST_XVFB=$(command -v Xvfb) cargo test --test x11_events -- --nocapture`: the RandR
+  events of `outlay watch` from Xvfb (no window). Without the variable the test prints
+  "skipped" and passes.
 - `OUTLAY_BIN=$PWD/target/release/outlay tools/pty_wayland.sh`: the pty scenarios against
   headless sway, with temporary config and state dirs; it needs `OUTLAY_BIN` set to a built
   binary (default `target/release/outlay`).
@@ -57,6 +60,8 @@ cargo test
 - **Headless sway** may run without asking, but only the way `tests/common/sway.rs` and
   `tools/pty_wayland.sh` run it: `WLR_BACKENDS=headless`, without `DISPLAY` or `WAYLAND_DISPLAY`,
   in a short private runtime dir. Nested sway (`WLR_BACKENDS=x11`) opens a window: ask first.
+- **Xvfb** may run without asking, but only the way `tests/common/xvfb.rs` runs it: `-displayfd`,
+  without `DISPLAY`, and every xrandr call to it with `env_clear()` plus its own `DISPLAY`.
 - **Git identity.** This rule is for the maintainer's own clone only. Before committing, run
   `git config --local user.email`:
   - `maciej.chmiest@gmail.com`: the maintainer's clone. Author and committer must be
@@ -84,8 +89,8 @@ cargo test
   `fixture.rs` `FixtureBackend` (simulates a plan on a capture, both kinds) and `DryRun`;
   `detect.rs` picks the live backend from the environment (Wayland, X11, or why neither).
 - `src/xrandr/`: `XrandrCli`, the `xrandr --verbose` parser, command generation (`Plan` → argv /
-  text), and `script.rs`: screenlayout scripts (lenient parser into the neutral profile spec,
-  save that keeps other lines).
+  text), `script.rs`: screenlayout scripts (lenient parser into the neutral profile spec,
+  save that keeps other lines), and `events.rs`: RandR events for `outlay watch`.
 - `src/wayland/`: `capture.rs` (the `wlr-randr --json` capture ↔ `Snapshot`, `dump`, the
   Wayland `revert.sh`), `client.rs` (`WlrBackend`, the `zwlr_output_manager_v1` client, and
   `hang_up` for the panic hook), `command.rs` (`Plan` → the equivalent `wlr-randr` command),
@@ -102,7 +107,8 @@ cargo test
 - `src/profile.rs`: `outlay apply` and `outlay save`; the apply reuses the editor's `Session`.
   `src/restore.rs`: the hidden `outlay restore` a Wayland `revert.sh` runs. `src/watch.rs`:
   `outlay watch`, the service that applies the first fitting profile when displays change
-  (`decide` is pure; `Watch::step` is one round of the poll), with the panel fail-safe.
+  (`decide` is pure; `Watch::step` is one round), with the panel fail-safe. On live X11 it
+  waits for RandR events (`src/xrandr/events.rs`, `x11rb` without libxcb).
 - `src/tui/`: the editor. `app.rs` holds the state and `handle_key` (pure: it returns effects),
   `session.rs` carries the effects out (test → apply → verify → countdown → keep/revert, hooks,
   OSC 52, profiles) behind the `Backend` and `Input` traits, `mod.rs` owns the terminal, signals
@@ -123,5 +129,6 @@ cargo test
   cleared environment and a sandboxed home, `tests/kanshi.rs` the kanshi configs in
   `tests/fixtures/kanshi/` (parse, criteria, remap, byte-keeping saves, the session),
   `tests/wayland_fixtures.rs` the captures in `tests/fixtures/wayland/`, `tests/watch.rs` the
-  service's decisions and its loop on `FixtureBackend::set_state`, and
-  `tests/wayland_live.rs` the backend against headless sway (`tests/common/sway.rs`).
+  service's decisions and its loop on `FixtureBackend::set_state`,
+  `tests/wayland_live.rs` the backend against headless sway (`tests/common/sway.rs`), and
+  `tests/x11_events.rs` the RandR events from Xvfb (`tests/common/xvfb.rs`).

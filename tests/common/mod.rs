@@ -4,6 +4,7 @@
 
 pub mod sway;
 pub mod wm;
+pub mod xvfb;
 
 use outlay::model::geometry::{Point, Rect, Size, effective_size};
 use outlay::model::layout::Layout;

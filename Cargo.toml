@@ -26,6 +26,7 @@ thiserror = "2"
 toml = "1.1"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+x11rb = { version = "0.14", default-features = false, features = ["randr"] }
 
 [dev-dependencies]
 insta = "1.48"

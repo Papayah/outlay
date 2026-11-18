@@ -44,12 +44,6 @@ displays." today.
   `xrandr --verbose` does not show the millimetres: it needs `XDisplayWidthMM` (the X protocol)
   or `xdpyinfo`. The cause of the 0 mm state is not known.
 
-## Automatic layouts
-
-- **RandR events through `x11rb` for `outlay watch`.** The service polls `xrandr --current` every
-  2 s. Listening to `RRScreenChangeNotify` and `RROutputChangeNotify` would react at once and
-  cost nothing while nothing changes; the two-readings debounce then becomes a short timer.
-
 ## Distribution
 
 - An AUR package, planned in its own session. It waits for the AUR account.

@@ -299,21 +299,25 @@ fn the_loop_acts_on_the_second_equal_reading_only() {
     };
     let demo = backend.query().unwrap();
     let mut w = watch(&dir);
-    w.step(&backend).unwrap();
-    w.step(&backend).unwrap();
+    assert!(
+        w.step(&backend).unwrap(),
+        "a new set waits for a second reading"
+    );
+    assert!(!w.step(&backend).unwrap(), "acted");
     assert!(backend.inner.applied().is_empty(), "the demo needs nothing");
 
     backend.inner.set_state(unplugged(&demo, "DP-1-2"));
-    w.step(&backend).unwrap();
+    assert!(w.step(&backend).unwrap(), "one reading is not enough");
     assert!(
         backend.inner.applied().is_empty(),
         "one reading is not enough"
     );
-    w.step(&backend).unwrap();
+    assert!(!w.step(&backend).unwrap(), "acted");
     assert_eq!(backend.inner.applied().len(), 1);
     let now = backend.query().unwrap();
     assert!(now.outputs[now.find("DP-1-2").unwrap()].active.is_none());
-    w.step(&backend).unwrap();
+    // The service's own apply sends RandR events: the next reading must not start another round.
+    assert!(!w.step(&backend).unwrap(), "acted on this set already");
     assert_eq!(
         backend.inner.applied().len(),
         1,
@@ -327,7 +331,7 @@ fn the_loop_acts_on_the_second_equal_reading_only() {
     backend.apply(&Plan::pending(&layout, &now)).unwrap();
     let moved = backend.query().unwrap();
     for _ in 0..3 {
-        w.step(&backend).unwrap();
+        assert!(!w.step(&backend).unwrap(), "moved by hand");
     }
     assert_eq!(backend.inner.applied().len(), 2, "only the move");
     assert_eq!(backend.query().unwrap(), moved);

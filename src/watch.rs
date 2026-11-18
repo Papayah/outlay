@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
+use crate::backend::detect::{Choice, choose};
 use crate::backend::{Backend, Plan, command_text};
 use crate::cli::Cli;
 use crate::config::Config;
@@ -20,9 +21,15 @@ use crate::tui::app::{App, Options};
 use crate::tui::confine;
 use crate::tui::session::{Settings, default_revert_file};
 use crate::wayland::built_in;
+use crate::xrandr::events::Events;
 
-/// How long to wait between two readings.
+/// How long to wait between two readings without RandR events (Wayland, fixtures).
 pub const INTERVAL: Duration = Duration::from_secs(2);
+/// With events: how long a new set must stay before the service acts (a dock brings monitors
+/// one by one).
+pub const SETTLE: Duration = Duration::from_millis(500);
+/// With events: the reading taken when no event came, in case one was missed.
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// What the service would do for one set of displays.
 #[derive(Debug)]
@@ -159,18 +166,22 @@ impl Watch {
     }
 
     /// One round: reads the displays, and acts once two readings in a row show a set of
-    /// connections it has not acted on yet. The first set counts as new.
-    pub fn step(&mut self, backend: &dyn Backend) -> Result<()> {
+    /// connections it has not acted on yet. The first set counts as new. `true` when it waits
+    /// for the second reading of a new set.
+    pub fn step(&mut self, backend: &dyn Backend) -> Result<bool> {
         let set = connections(&backend.requery()?);
         let settled = self.seen.as_ref() == Some(&set);
         self.seen = Some(set.clone());
-        if !settled || self.acted.as_ref() == Some(&set) {
-            return Ok(());
+        if self.acted.as_ref() == Some(&set) {
+            return Ok(false);
+        }
+        if !settled {
+            return Ok(true);
         }
         let snap = backend.query()?;
         // A failed apply is not tried again until the displays change.
         self.acted = Some(set);
-        self.act(backend, snap)
+        self.act(backend, snap).map(|()| false)
     }
 
     /// Decides for `snap` and applies the result, kept at once.
@@ -221,22 +232,54 @@ pub fn watch(cli: &Cli, config: &Config, once: bool) -> Result<()> {
         let backend = cli.backend()?;
         return watch.act(backend.as_ref(), backend.query()?);
     }
+    // RandR events on live X11 only; elsewhere the loop reads every INTERVAL.
+    let x11 = cli.demo.is_none()
+        && cli.from_file.is_none()
+        && choose(&|name| std::env::var(name).ok()) == Ok(Choice::X11);
+    let mut events: Option<Events> = None;
+    let mut said_polls = false;
     let mut last_error = String::new();
     while !signal.load(Ordering::SeqCst) {
+        // Listening before the reading: a change after it wakes the wait below.
+        if x11 && events.is_none() {
+            match Events::listen(None) {
+                Ok(e) => {
+                    events = Some(e);
+                    said_polls = false;
+                }
+                Err(err) if !said_polls => {
+                    say(format!("{err:#}; reading the displays every 2 s."));
+                    said_polls = true;
+                }
+                Err(_) => {}
+            }
+        }
         // A fresh backend each round: it survives a compositor restart, and on Wayland a
         // long-lived second client can make wlroots abort (MISTAKES.md).
-        match cli.backend().and_then(|b| watch.step(b.as_ref())) {
-            Ok(()) => last_error.clear(),
+        let timeout = match cli.backend().and_then(|b| watch.step(b.as_ref())) {
+            Ok(waiting) => {
+                last_error.clear();
+                if waiting { SETTLE } else { HEARTBEAT }
+            }
             Err(err) => {
                 let text = format!("{err:#}");
                 if text != last_error {
                     say(&text);
                 }
                 last_error = text;
+                INTERVAL
             }
+        };
+        match &events {
+            Some(e) => {
+                if let Err(err) = e.wait(timeout) {
+                    // The X server went away; the next round connects again.
+                    say(format!("{err:#}"));
+                    events = None;
+                }
+            }
+            None => std::thread::sleep(INTERVAL),
         }
-        // shortcut: polls every 2 s, replace with RandR events (x11rb) per ROADMAP
-        std::thread::sleep(INTERVAL);
     }
     Ok(())
 }

@@ -2,6 +2,7 @@
 //! plans as xrandr arguments, and screenlayout scripts.
 
 pub mod command;
+pub mod events;
 pub mod parse;
 pub mod script;
 

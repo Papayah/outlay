@@ -25,7 +25,7 @@ PR at the end.
 | No profile fits | Turn off unplugged outputs that are still on; change nothing else. |
 | Two profiles fit | First by name. The log names the others. |
 | Editor open | No coordination. The service applies anyway, with its own revert file. |
-| Plug detection on X11 | Poll every 2 s. RandR events through `x11rb` go to ROADMAP.md as the next step. |
+| Plug detection on X11 | Poll every 2 s. RandR events through `x11rb` go to ROADMAP.md as the next step. (Done later: RandR events.) |
 | systemd unit | `outlay watch --print-unit` prints it. README gives the two install lines. |
 
 ## Decisions taken in planning
@@ -116,8 +116,10 @@ live: never run `outlay watch` without `-n` or a fixture.
    - **Loop:** one `step()` per round, so tests drive it without a clock: read (`requery`),
      compare the connected set (name + description) with the last set acted on, wait for two
      equal readings, then a full `query()`, decide, apply, log one line. Sleep 2 s between
-     rounds, a fresh `cli.backend()` each round. Mark the poll with
-     `// shortcut: polls every 2 s, replace with RandR events (x11rb) per ROADMAP`.
+     rounds, a fresh `cli.backend()` each round. (Changed later: on live X11 the loop waits for
+     RandR events through `x11rb` (`src/xrandr/events.rs`): `SETTLE` (500 ms) after a reading of
+     a new set, else up to `HEARTBEAT` (30 s); Wayland and fixtures still sleep 2 s. `step`
+     returns whether it waits for the second reading.)
    - **Hand wins** needs no code: the compared set holds connections only, never positions.
    - **Log:** plain lines on stderr; never `eprintln!` (the `say` pattern, `src/profile.rs:26`).
    - **`--print-unit`:** the unit with `std::env::current_exe()` in `ExecStart`,
@@ -158,7 +160,7 @@ Tests:
 
 ## Not in this plan
 
-- RandR events (`x11rb`): ROADMAP, next step.
+- RandR events (`x11rb`): ROADMAP, next step (done later, see Loop).
 - Profile switching on Wayland, a lock between the editor and the service, a remembered layout
   per monitor set, config keys for the interval, a unit written by `install.sh`.
 - A release: only on the user's go-ahead.
