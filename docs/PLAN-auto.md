@@ -104,7 +104,8 @@ live: never run `outlay watch` without `-n` or a fixture.
      3. Fail-safe, on both kinds: when no external output is connected and a built-in panel is
         (`wayland::built_in`, `src/wayland/mod.rs:35`), the result must have the panel on. If it
         does not, take the fallback layout and `Layout::turn_on` (`src/model/links.rs:760`,
-        preferred mode).
+        preferred mode). On X11 an external output counts only with an EDID and modes: after an
+        unplug the NVIDIA driver can keep the port "connected" without them (`present`).
      4. An empty `layout.diff(&snap)`: nothing to do.
    - **Apply:** through `Session`, as `profile::apply` does (`src/profile.rs:89-118`); extract
      the shared part instead of copying it. Differences: `revert_seconds = 0` (kept at once; a

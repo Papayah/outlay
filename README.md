@@ -199,7 +199,8 @@ picks the layout and applies it at once, with no countdown (a failed apply still
 - **No profile fits:** outputs whose monitor was unplugged are turned off; nothing else changes.
 - **Fail-safe:** when the laptop panel is the only display left, it is turned on at its
   preferred mode, even if a fitting profile leaves it off. A panel that was off on the desk never
-  stays dark.
+  stays dark. An external display counts only when it has an EDID: a port that still reports a
+  connection after the monitor was unplugged does not, and is turned off when it has no modes.
 
 It reacts to plugging only: a layout you change by hand, in outlay or anywhere else, stays until
 a display comes or goes. It starts as if the displays had just changed, so restarting the service

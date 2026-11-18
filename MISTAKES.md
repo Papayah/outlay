@@ -257,6 +257,11 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   unplugged; every change showed up in the loop's log. The MST dock (`DP-2.x`) was not tried.
 - **Fix:** nothing to fix. If a machine turns up where only a full `xrandr` sees the plug, the
   choice is a slower full probe or the manual `R`; ask the user.
+- **Not always (2026-11-16 23:14):** with the panel off and an HDMI monitor on `HDMI-1-0` as the
+  only display, the unplug left the port `connected` for 98 s (the kernel logged `Unable to read
+  EDID`), until someone ran a full `xrandr --query`; `--current` never showed the disconnect.
+  The watch now copes with that state; see "The panel stays dark after the last monitor is
+  unplugged" below.
 
 ## A layout rebuilt from the snapshot gets the wrong display numbers
 
@@ -824,3 +829,16 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Fix:** `XrandrCli::apply` runs a shrinking apply twice: first with `--fb` big enough for both
   layouts (the displays only move), then the same call, which only shrinks the screen.
   `xrandr --dryrun --verbose …` prints the `crtc N: disable` lines without applying anything.
+
+## The panel stays dark after the last monitor is unplugged
+
+- **Symptom:** with the panel off and one HDMI monitor on, the monitor is unplugged; the watch
+  logs `No profile fits. Nothing to change.` and the laptop panel stays dark.
+- **Cause:** the NVIDIA driver kept `HDMI-1-0` `connected`, without an EDID, until the next full
+  probe (98 s later, by hand). `decide` counted every connected non-built-in output as an
+  external display, so the fail-safe never fired.
+- **Fix:** `present` in `src/watch.rs`: on X11 an external output counts only with an EDID
+  (`identity`) and modes. A ghost port without modes is turned off; one that keeps fallback
+  modes stays on, with a log note. `tests/fixtures/xrandr/ghost-connected.txt` is a
+  reconstruction from `laptop-edp-hdmi.txt`, not a capture: replace it with
+  `xrandr --verbose --current` taken within seconds of such an unplug.

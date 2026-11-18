@@ -8,6 +8,7 @@ const FIXTURES: &[&str] = &[
     "active-disconnected",
     "demo",
     "dock-mst-3",
+    "ghost-connected",
     "laptop-edp-hdmi",
     "mirror",
     "no-edid",

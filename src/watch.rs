@@ -72,10 +72,7 @@ pub fn decide(snap: &Snapshot, profiles: &[Stored]) -> Decision {
         .outputs
         .iter()
         .position(|o| o.is_connected() && built_in(&o.name));
-    let external = snap
-        .outputs
-        .iter()
-        .any(|o| o.is_connected() && !built_in(&o.name));
+    let external = snap.outputs.iter().any(|o| present(snap, o));
     if let Some(p) = panel.filter(|&p| !external && !layout.is_enabled(p)) {
         (layout, notes) = Layout::from_snapshot(snap);
         if layout.turn_on(snap, p).is_ok() {
@@ -86,10 +83,20 @@ pub fn decide(snap: &Snapshot, profiles: &[Stored]) -> Decision {
         }
         // Outputs left on after their monitor went: the panel now keeps the screen lit.
         for d in 0..layout.len() {
-            if layout.is_enabled(d) && snap.outputs[d].is_stale() && layout.turn_off(d).is_ok() {
+            let o = &snap.outputs[d];
+            let name = &o.name;
+            if d == p || !layout.is_enabled(d) {
+                continue;
+            }
+            if o.is_stale() && layout.turn_off(d).is_ok() {
+                notes.push(format!("{name} is disconnected; turning it off."));
+            } else if o.modes.is_empty() && layout.turn_off(d).is_ok() {
                 notes.push(format!(
-                    "{} is disconnected; turning it off.",
-                    layout.names[d]
+                    "{name} reports a connection but shows nothing; turning it off."
+                ));
+            } else if o.is_connected() && !built_in(&o.name) && !present(snap, o) {
+                notes.push(format!(
+                    "{name} reports a connection without an EDID; not counted as a display."
                 ));
             }
         }
@@ -100,6 +107,14 @@ pub fn decide(snap: &Snapshot, profiles: &[Stored]) -> Decision {
         layout,
         notes,
     }
+}
+
+/// Whether an external display is really there. After an unplug the NVIDIA driver can keep the
+/// port "connected", with no EDID, until the next full probe (MISTAKES.md).
+fn present(snap: &Snapshot, o: &crate::model::Output) -> bool {
+    o.is_connected()
+        && !built_in(&o.name)
+        && (snap.caps.kind != Kind::X11 || (o.identity.is_some() && !o.modes.is_empty()))
 }
 
 /// The connected outputs, by name and monitor. Positions are left out, so a layout changed by

@@ -11,6 +11,7 @@ use common::{ix, unplugged};
 use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan};
 use outlay::model::Snapshot;
 use outlay::model::layout::Layout;
+use outlay::model::validate::{Severity, validate};
 use outlay::profiles::{ProfileStore, Stored};
 use outlay::tui::app::Options;
 use outlay::tui::session::Settings;
@@ -55,6 +56,44 @@ fn panel_dark() -> Snapshot {
         snap = unplugged(&snap, name);
     }
     snap
+}
+
+/// `snap` with a monitor gone from port `name` that the driver still reports connected: no EDID,
+/// and no modes unless `keep_modes`. An output that was on stays active.
+fn ghost(snap: &Snapshot, name: &str, keep_modes: bool) -> Snapshot {
+    let mut snap = snap.clone();
+    let i = snap.find(name).unwrap();
+    let out = &mut snap.outputs[i];
+    out.edid = None;
+    out.identity = None;
+    if !keep_modes {
+        out.modes.clear();
+    }
+    snap
+}
+
+/// `panel_dark` with the HDMI monitor still plugged in, so it alone is lit.
+fn hdmi_alone() -> Snapshot {
+    let backend = FixtureBackend::demo();
+    let snap = backend.query().unwrap();
+    let mut layout = Layout::inferred(&snap);
+    for name in ["eDP-1", "DP-1-2"] {
+        layout.turn_off(ix(&layout, name)).unwrap();
+    }
+    backend.apply(&Plan::pending(&layout, &snap)).unwrap();
+    let mut snap = backend.query().unwrap();
+    for name in ["DP-1-2", "DP-1-3"] {
+        snap = unplugged(&snap, name);
+    }
+    snap
+}
+
+fn assert_valid(d: &outlay::watch::Decision, snap: &Snapshot) {
+    let errors: Vec<_> = validate(&d.layout, snap)
+        .into_iter()
+        .filter(|i| i.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 fn on(layout: &Layout, name: &str) -> bool {
@@ -129,6 +168,43 @@ fn decide_turns_the_panel_on_when_the_last_external_goes() {
         "{}",
         d.summary()
     );
+}
+
+#[test]
+fn decide_leaves_the_panel_off_while_a_real_monitor_is_there() {
+    let snap = hdmi_alone();
+    let d = decide(&snap, &[]);
+    assert!(d.layout.diff(&snap).is_empty(), "{}", d.summary());
+    assert!(!on(&d.layout, "eDP-1"));
+}
+
+#[test]
+fn decide_turns_the_panel_on_and_a_ghost_port_off() {
+    let snap = ghost(&hdmi_alone(), "HDMI-1-0", false);
+    let d = decide(&snap, &[]);
+    assert!(on(&d.layout, "eDP-1"));
+    assert!(!on(&d.layout, "HDMI-1-0"));
+    assert_eq!(
+        d.summary(),
+        "No profile fits. Only eDP-1 is connected: turning it on. \
+         HDMI-1-0 reports a connection but shows nothing; turning it off."
+    );
+    assert_valid(&d, &snap);
+}
+
+#[test]
+fn decide_turns_the_panel_on_beside_a_ghost_port_with_modes() {
+    let snap = ghost(&hdmi_alone(), "HDMI-1-0", true);
+    let d = decide(&snap, &[]);
+    assert!(on(&d.layout, "eDP-1"));
+    assert!(on(&d.layout, "HDMI-1-0"));
+    assert!(
+        d.summary()
+            .contains("HDMI-1-0 reports a connection without an EDID; not counted as a display."),
+        "{}",
+        d.summary()
+    );
+    assert_valid(&d, &snap);
 }
 
 #[test]
@@ -255,6 +331,22 @@ fn the_loop_acts_on_the_second_equal_reading_only() {
     }
     assert_eq!(backend.inner.applied().len(), 2, "only the move");
     assert_eq!(backend.query().unwrap(), moved);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn the_loop_lights_the_panel_when_the_monitor_leaves_a_ghost_port() {
+    let dir = scratch("ghost");
+    let backend = FixtureBackend::demo();
+    let lit = hdmi_alone();
+    backend.set_state(ghost(&lit, "HDMI-1-0", false));
+    let mut w = watch(&dir);
+    w.step(&backend).unwrap();
+    w.step(&backend).unwrap();
+    assert_eq!(backend.applied().len(), 1);
+    let now = backend.query().unwrap();
+    assert!(now.outputs[now.find("eDP-1").unwrap()].active.is_some());
+    assert!(now.outputs[now.find("HDMI-1-0").unwrap()].active.is_none());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
