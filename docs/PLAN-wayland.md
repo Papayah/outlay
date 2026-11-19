@@ -114,6 +114,12 @@ wlroots has served v4 since 0.17.
   - **Hyprland: the override belongs to the client's binding.** Once that client disconnects,
     Hyprland drops it at the next reload or hotplug. outlay exits after an apply, so its layout
     lasts only until then. kanshi stays connected, so its layouts last.
+  - **Hyprland: the first client wins.** For each monitor it takes the saved state of the first
+    bound client that has one (`COutputManagementProtocol::getOutputStateFor`, read by
+    `CMonitorRuleManager::get`, 0.57.2). kanshi binds at login, so while it runs, a monitor it
+    configured keeps kanshi's state: outlay's apply gets `succeeded`, and the check after it
+    reports the difference ("eDP-1 is off; it should be on"). The same override beats the
+    monitor rules, which is how kanshi's mode pinned the panel rate.
 
 ### Crates
 

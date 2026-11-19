@@ -895,3 +895,32 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   writes `mode --custom WxH` for the mode it assumes when Hyprland names none (see the entry
   above), so a profile saved in that state pins the rate. A profile line without `mode` leaves
   the rate to the monitor rule.
+
+## On Hyprland an apply succeeds, but the display stays as kanshi set it
+
+- **Symptom:** outlay turns eDP-1 on (the editor, or `outlay watch` after an undock). The
+  compositor answers `succeeded`, then the check says `eDP-1 is off; it should be on. Nothing
+  changed.` Hyprland 0.57.2 with kanshi 1.9.0 running; Hyprland's own log shows nothing.
+- **Cause:** Hyprland saves each output-management client's state per monitor and builds the
+  monitor's rule from the first bound client that has one
+  (`COutputManagementProtocol::getOutputStateFor` in `src/protocols/OutputManagement.cpp`, read by
+  `CMonitorRuleManager::get`). kanshi binds at login, so its `output eDP-1 disable` beats every
+  later client while it runs.
+- **Fix:** give kanshi a profile for each set of displays. To test what another client sends,
+  stop kanshi first. A sparse clone reads the source quickly:
+  `git clone --depth 1 --filter=blob:none --sparse -b v0.57.2 https://github.com/hyprwm/Hyprland.git`
+  then `git sparse-checkout set src/protocols src/config`.
+
+## After an undock Hyprland lists a `FALLBACK` head
+
+- **Symptom:** the panel was off and the last monitor is unplugged: `outlay watch` logged
+  `No profile fits. Nothing to change.`, and a kanshi profile with only `output eDP-1 enable` does
+  not match.
+- **Cause:** while no monitor is on, Hyprland adds a headless head `FALLBACK` (enabled,
+  1920x1080@60, no make, model or serial). outlay leaves it out (`capture::snapshot`), but kanshi
+  matches a profile only when every head is matched.
+- **Fix:** add `...output FALLBACK` to the panel-only kanshi profile (zero or more heads, left as
+  they are). To see the heads during an undock, record `outlay dump` and
+  `hyprctl -j monitors all` every 0.5 s in a background loop: the panel is dark and the state
+  lasts only until the redock. `tests/fixtures/wayland/hyprland-fallback.json` is one such
+  capture.
