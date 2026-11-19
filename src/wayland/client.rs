@@ -6,7 +6,8 @@
 //! `done`: a snapshot is taken only from the state as of the last `done`. An apply builds one
 //! configuration that names every head, as the protocol requires, and sends a mode only when it
 //! changes, so a virtual mode (a custom one, which wlroots advertises as a mode object of its
-//! own) is never sent back.
+//! own) is never sent back. The same goes for the mode of an enabled head that names no current
+//! one (Hyprland, on a mode outside its list): outlay assumes one and leaves it alone.
 
 use std::collections::HashMap;
 use std::net::Shutdown;
@@ -414,11 +415,7 @@ impl Inner {
                 (None, enabled) => enabled,
                 (Some(_), false) => true,
                 (Some(on), true) => {
-                    let current = head
-                        .current
-                        .as_ref()
-                        .and_then(|id| self.state.modes.get(id))
-                        .map(mode_key);
+                    let current = running(&report(head, &self.state.modes));
                     current != Some(planned_key(&on.mode))
                         || on.pos != head.position
                         || transform_value(on.rotation, on.reflection) != head.transform
@@ -451,11 +448,7 @@ impl Inner {
         };
         let ch = config.enable_head(&head.proxy, qh, ());
         let want = planned_key(&on.mode);
-        let current = head
-            .current
-            .as_ref()
-            .and_then(|id| self.state.modes.get(id))
-            .map(mode_key);
+        let current = running(&report(head, &self.state.modes));
         // A mode is sent only when it changes: re-sending a virtual mode can be fatal.
         if current != Some(want) {
             let real = head
@@ -484,6 +477,17 @@ fn mode_key(m: &ModeState) -> ModeKey {
 
 fn planned_key(mode: &crate::model::Mode) -> ModeKey {
     (mode.width, mode.height, mode_millihertz(mode) as i32)
+}
+
+/// The mode a head runs: its current one, else the one `capture::assumed_mode` gives it, so
+/// neither is sent back.
+fn running(head: &HeadReport) -> Option<ModeKey> {
+    head.modes
+        .iter()
+        .find(|m| m.current)
+        .copied()
+        .or_else(|| capture::assumed_mode(head))
+        .map(|m| (m.width, m.height, m.millihertz as i32))
 }
 
 fn report(head: &HeadState, modes: &HashMap<ObjectId, ModeState>) -> HeadReport {
@@ -743,6 +747,36 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ()> for State {
 mod tests {
     use super::*;
     use std::io::Read;
+
+    fn head(current: bool) -> HeadReport {
+        HeadReport {
+            name: "eDP-1".to_owned(),
+            enabled: true,
+            modes: vec![ModeReport {
+                width: 1920,
+                height: 1080,
+                millihertz: 165_010,
+                preferred: true,
+                current,
+                custom: None,
+            }],
+            scale: 1.0,
+            ..HeadReport::default()
+        }
+    }
+
+    #[test]
+    fn a_head_with_no_current_mode_runs_the_assumed_one() {
+        let bare = head(false);
+        let live = capture::output(bare.clone()).unwrap().live_mode().unwrap();
+        assert_eq!(running(&bare), Some(planned_key(&live)));
+        assert_ne!(
+            running(&bare),
+            Some((1920, 1080, 165_010)),
+            "the listed mode is not the one it runs"
+        );
+        assert_eq!(running(&head(true)), Some((1920, 1080, 165_010)));
+    }
 
     #[test]
     fn hanging_up_ends_the_live_connection_without_closing_it() {

@@ -369,6 +369,17 @@ fn a_wayland_capture_shows_logical_sizes_and_percentages() {
 }
 
 #[test]
+fn a_wayland_head_with_no_current_mode_lists() {
+    let (ok, stdout, stderr) =
+        outlay(&["list", "--from-file", &wayland_fixture("no-current-mode")]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        "1  eDP-1  connected \u{b7} AU Optronics 0x5895 \u{b7} 340x190 mm \u{b7} 143 dpi\n    1920x1080  165.01+  0.00*\n"
+    );
+}
+
+#[test]
 fn a_wayland_list_has_no_section_for_outputs_not_connected() {
     let (ok, stdout, stderr) = outlay(&["list", "--from-file", &wayland_fixture("disabled-head")]);
     assert!(ok, "{stderr}");

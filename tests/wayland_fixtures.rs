@@ -12,6 +12,7 @@ const FIXTURES: &[&str] = &[
     "disabled-head",
     "headless-sway",
     "laptop-scaled",
+    "no-current-mode",
     "no-serial",
     "rotated",
 ];
@@ -105,6 +106,20 @@ fn the_demo() {
     assert!(lg.active.is_none() && lg.is_relevant());
     assert_eq!(lg.adaptive_sync, None, "a disabled head has none");
     assert_eq!(snap.numbered(), [0, 1, 2, 3], "every head is connected");
+}
+
+#[test]
+fn a_head_that_names_no_current_mode_runs_the_preferred_size() {
+    let snap = load("no-current-mode");
+    let edp = output(&snap, "eDP-1");
+    assert_eq!(edp.modes.len(), 2, "the listed mode and the assumed one");
+    let listed = &edp.modes[0];
+    assert_eq!(listed.id, ModeId::wayland(1920, 1080, 165_010));
+    assert!(listed.preferred && !listed.custom);
+    let current = edp.current_mode().unwrap();
+    assert_eq!(current.id, ModeId::wayland(1920, 1080, 0));
+    assert!(current.custom && !current.preferred);
+    assert_eq!(edp.active.as_ref().unwrap().size, Size::new(1920, 1080));
 }
 
 #[test]

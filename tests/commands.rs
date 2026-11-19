@@ -444,6 +444,7 @@ fn a_state_restores_onto_itself_without_mismatches() {
         "laptop-scaled",
         "rotated",
         "disabled-head",
+        "no-current-mode",
     ] {
         let snap = wayland_fixture(name);
         assert!(restore_mismatches(&snap, &snap).is_empty(), "{name}");

@@ -6,7 +6,9 @@
 //! `name`, `description`, `make`, `model`, `serial`, `physical_size`, `enabled` and `modes`
 //! (`width`, `height`, `refresh` in Hz, `preferred`, `current`); an enabled head also has
 //! `position`, `transform`, `scale` and `adaptive_sync`. Unknown keys are ignored and missing
-//! optional ones tolerated. outlay adds `custom` to a mode the head does not advertise.
+//! optional ones tolerated. outlay adds `custom` to a mode the head does not advertise. An enabled
+//! head with no `"current": true` mode (Hyprland, on a mode outside its list) is read as running
+//! the preferred size at rate 0.
 
 use std::fmt::Write as _;
 
@@ -248,10 +250,33 @@ pub fn identity(make: Option<&str>, model: Option<&str>, serial: Option<&str>) -
     })
 }
 
+/// The mode an enabled head is taken to run when the compositor names none as current. Hyprland
+/// names none for a mode the head does not advertise. The size is the preferred mode's, else
+/// the first one's; the rate is 0, unknown.
+// shortcut: a custom mode of another size is drawn at the preferred size; wl_output's current mode has the real one.
+pub fn assumed_mode(head: &HeadReport) -> Option<ModeReport> {
+    if !head.enabled || head.modes.iter().any(|m| m.current) {
+        return None;
+    }
+    let sized = || head.modes.iter().filter(|m| m.width > 0 && m.height > 0);
+    let base = sized().find(|m| m.preferred).or_else(|| sized().next())?;
+    Some(ModeReport {
+        millihertz: 0,
+        preferred: false,
+        current: true,
+        custom: Some(true),
+        ..*base
+    })
+}
+
 /// The output a head report describes. Modes are merged by size and rate; a duplicate the head
 /// runs keeps its own `custom`. A mode of no size is left out: wlroots 0.17 gives a client that
-/// binds while a custom-mode head is off a virtual mode whose size it never sends.
-pub fn output(head: HeadReport) -> Result<Output, CaptureError> {
+/// binds while a custom-mode head is off a virtual mode whose size it never sends. An enabled
+/// head with no current mode runs the [`assumed_mode`].
+pub fn output(mut head: HeadReport) -> Result<Output, CaptureError> {
+    if let Some(m) = assumed_mode(&head) {
+        head.modes.push(m);
+    }
     let name = head.name;
     let mut modes: Vec<Mode> = Vec::new();
     let mut current = None;
@@ -545,6 +570,43 @@ mod tests {
             parse(off).unwrap().outputs[0].modes.is_empty(),
             "a mode wlroots 0.17 never sized"
         );
+    }
+
+    #[test]
+    fn a_head_with_no_current_mode_runs_the_preferred_size_at_rate_0() {
+        let text = |preferred: &str, enabled: bool| {
+            format!(
+                r#"[{{"name":"eDP-1","enabled":{enabled},"scale":1.5,"transform":"90","modes":[
+                {{"width":1280,"height":720,"refresh":60.0}},
+                {{"width":1920,"height":1080,"refresh":165.009995,"preferred":{preferred}}}]}}]"#
+            )
+        };
+        let snap = parse(&text("true", true)).unwrap();
+        let out = &snap.outputs[0];
+        assert_eq!(out.modes.len(), 3);
+        let active = out.active.as_ref().unwrap();
+        assert_eq!(active.mode, ModeId::wayland(1920, 1080, 0));
+        let current = out.current_mode().unwrap();
+        assert!(current.custom && !current.preferred);
+        assert_eq!(active.size, Size::new(720, 1280));
+        assert_eq!(out.preferred_mode().unwrap().refresh, 165.01);
+        let written = write(&snap);
+        assert_eq!(parse(&written).unwrap(), snap);
+        assert!(
+            written.contains("\"current\": true,\n        \"custom\": true"),
+            "{written}"
+        );
+
+        let first = parse(&text("false", true)).unwrap();
+        assert_eq!(
+            first.outputs[0].active.as_ref().unwrap().mode,
+            ModeId::wayland(1280, 720, 0),
+            "no preferred mode: the first one"
+        );
+
+        let off = parse(&text("true", false)).unwrap();
+        assert_eq!(off.outputs[0].modes.len(), 2);
+        assert!(off.outputs[0].active.is_none());
     }
 
     #[test]

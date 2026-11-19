@@ -1,0 +1,30 @@
+[
+  {
+    "name": "eDP-1",
+    "description": "AU Optronics 0x5895  (eDP-1)",
+    "make": "AU Optronics",
+    "model": "0x5895",
+    "serial": null,
+    "physical_size": {
+      "width": 340,
+      "height": 190
+    },
+    "enabled": true,
+    "modes": [
+      {
+        "width": 1920,
+        "height": 1080,
+        "refresh": 165.009995,
+        "preferred": true,
+        "current": false
+      }
+    ],
+    "position": {
+      "x": 0,
+      "y": 0
+    },
+    "transform": "normal",
+    "scale": 1.000000,
+    "adaptive_sync": false
+  }
+]

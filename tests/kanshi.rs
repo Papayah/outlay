@@ -377,6 +377,19 @@ fn heads_without_a_full_identity_are_named() {
 }
 
 #[test]
+fn a_head_with_no_current_mode_saves_a_custom_mode_without_a_rate() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wayland/no-current-mode.json");
+    let snap = FixtureBackend::from_file(&path).unwrap().query().unwrap();
+    let layout = Layout::inferred(&snap);
+    let (_, text) = kanshi::save(None, Path::new("/k/config"), "h", &layout, &snap);
+    assert!(
+        text.contains("    output eDP-1 enable mode --custom 1920x1080 position 0,0 scale 1 transform normal\n"),
+        "{text}"
+    );
+}
+
+#[test]
 fn layouts_survive_the_round_trip_through_a_block() {
     for name in [
         "demo",
@@ -384,6 +397,7 @@ fn layouts_survive_the_round_trip_through_a_block() {
         "rotated",
         "disabled-head",
         "custom-mode",
+        "no-current-mode",
         "no-serial",
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
