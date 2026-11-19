@@ -86,6 +86,11 @@ wlroots has served v4 since 0.17.
   - outlay assumes the preferred mode's size at rate 0, marked custom, in `capture::output`; the
     client compares against the same mode (`running`), so it never sends one for that head.
   - It still fails when no mode has a size.
+- **Hyprland lists a stand-in head while no monitor is on.** After an undock that leaves the
+  laptop panel off, the heads are the panel (off) and `FALLBACK`: enabled, 1920x1080@60, no make,
+  model or serial (`hyprland-fallback.json`). `capture::snapshot` leaves it out, so `outlay watch`
+  sees the panel alone and turns it on. The client still sends it back as it is, like any head
+  outside the plan, and Hyprland drops it once a real output is on.
 - **A stale serial gives `cancelled`** (wlroots, niri). Create a new configuration with the new
   serial and try again. Hyprland never checks the serial.
 - **`test` is only advisory.** On Hyprland it is a stub that always succeeds; niri rejects only
@@ -383,7 +388,8 @@ pub struct On {
   meant for bug reports and fixtures.
 - **Fixtures** (`tests/fixtures/wayland/`): `demo.json`, `laptop-scaled.json` (1.25 and 1.5),
   `rotated.json` (90 and flipped-270), `disabled-head.json`, `custom-mode.json`, `no-current-mode.json`, `no-serial.json`,
-  `panel-off-alone.json` (Hyprland after an undock: the panel is the only head, and off).
+  `panel-off-alone.json` (the panel is the only head, and off), `hyprland-fallback.json`
+  (Hyprland after an undock: the panel off and its `FALLBACK` head).
   W6 adds `headless-sway.json`.
 - **Wayland snapshots in the editor need this phase's gating.**
   - **The keymap table:**

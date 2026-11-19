@@ -240,6 +240,9 @@ What differs from X11:
 - **The compositor checks a layout first.** One it rejects is never applied. (Hyprland accepts
   every check.)
 - **Variable refresh is shown, never changed.**
+- **Hyprland's `FALLBACK` output is not a display.** Hyprland lists it while no monitor is on,
+  for example after an undock that left the laptop panel off. outlay leaves it out, so
+  `outlay watch` turns the panel on.
 - **A display on a mode outside its list has no known rate.** Hyprland names no current mode
   for it. outlay shows the preferred size at `0.00`, leaves that mode alone on apply, and saves
   `mode --custom WxH` without a rate. A custom mode of another size is drawn at the preferred

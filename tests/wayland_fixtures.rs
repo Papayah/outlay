@@ -11,6 +11,7 @@ const FIXTURES: &[&str] = &[
     "demo",
     "disabled-head",
     "headless-sway",
+    "hyprland-fallback",
     "laptop-scaled",
     "no-current-mode",
     "no-serial",
@@ -121,6 +122,14 @@ fn a_head_that_names_no_current_mode_runs_the_preferred_size() {
     assert_eq!(current.id, ModeId::wayland(1920, 1080, 0));
     assert!(current.custom && !current.preferred);
     assert_eq!(edp.active.as_ref().unwrap().size, Size::new(1920, 1080));
+}
+
+#[test]
+fn hyprlands_fallback_head_is_left_out() {
+    let snap = load("hyprland-fallback");
+    assert_eq!(names(&snap), ["eDP-1"]);
+    assert!(output(&snap, "eDP-1").active.is_none());
+    assert_eq!(snap, load("panel-off-alone"), "the panel alone and off");
 }
 
 #[test]

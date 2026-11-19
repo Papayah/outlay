@@ -150,14 +150,25 @@ pub fn parse(text: &str) -> Result<Snapshot, CaptureError> {
     Ok(snapshot(outputs))
 }
 
-/// The Wayland snapshot of these outputs, in [`head_order`].
+/// The Wayland snapshot of these outputs, in [`head_order`], without Hyprland's stand-in
+/// ([`is_fallback`]).
 pub fn snapshot(mut outputs: Vec<Output>) -> Snapshot {
+    outputs.retain(|o| !is_fallback(o));
     outputs.sort_by(|a, b| head_order(&a.name, &b.name));
     Snapshot {
         screen: None,
         outputs,
         caps: Caps::wayland(),
     }
+}
+
+/// Hyprland's stand-in while no monitor is on: a headless head named `FALLBACK`, enabled, with
+/// no make, model or serial. After an undock that leaves the laptop panel off, it is the only
+/// enabled head, and it would count as an external display. It is not one, so a snapshot leaves
+/// it out. An apply still sends it back as it is (a head outside the plan), and Hyprland drops
+/// it once a real output is on.
+fn is_fallback(o: &Output) -> bool {
+    o.name == "FALLBACK" && o.identity.is_none()
 }
 
 fn report(head: Head) -> Result<HeadReport, CaptureError> {

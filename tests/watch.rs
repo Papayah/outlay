@@ -188,6 +188,21 @@ fn decide_turns_on_a_panel_that_is_the_only_output_and_off() {
 }
 
 #[test]
+fn decide_turns_the_panel_on_beside_hyprlands_fallback_head() {
+    // The real undock on Hyprland: besides the dark panel, Hyprland lists its enabled
+    // `FALLBACK` head. It used to count as an external display, so nothing changed.
+    let snap = capture("wayland/hyprland-fallback.json");
+    let d = decide(&snap, &[]);
+    let p = ix(&d.layout, "eDP-1");
+    assert!(d.layout.is_enabled(p));
+    assert_eq!(d.layout.rect(p), Rect::new(0, 0, 1920, 1080));
+    assert_eq!(
+        d.summary(),
+        "No profile fits. Only eDP-1 is connected: turning it on."
+    );
+}
+
+#[test]
 fn decide_leaves_the_panel_off_while_a_real_monitor_is_there() {
     let snap = hdmi_alone();
     let d = decide(&snap, &[]);
