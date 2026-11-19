@@ -802,19 +802,28 @@ impl Layout {
                     .enabled()
                     .into_iter()
                     .filter(|&i| !self.is_mirror_child(i))
-                    .max_by_key(|&i| (self.rect(i).right(), Reverse(self.rect(i).y), Reverse(i)))
-                    .expect("another display is on");
-                let r = self.rect(rightmost);
+                    .max_by_key(|&i| (self.rect(i).right(), Reverse(self.rect(i).y), Reverse(i)));
                 let state = &mut self.outputs[d];
                 state.enabled = true;
                 state.mode = Some(mode);
-                state.pos = Point::new(r.right(), r.y);
-                self.links[d] = Some(Link {
-                    parent: rightmost,
-                    side: Side::RightOf,
-                    align: Align::Start,
-                    offset: 0,
-                });
+                // With no other display on (the laptop panel after an undock that left it
+                // off), the output starts the desktop at the origin, linked to nothing.
+                match rightmost {
+                    Some(parent) => {
+                        let r = self.rect(parent);
+                        self.outputs[d].pos = Point::new(r.right(), r.y);
+                        self.links[d] = Some(Link {
+                            parent,
+                            side: Side::RightOf,
+                            align: Align::Start,
+                            offset: 0,
+                        });
+                    }
+                    None => {
+                        self.outputs[d].pos = Point::new(0, 0);
+                        self.links[d] = None;
+                    }
+                }
             }
         }
         Ok(self.commit(&before, EditKind::Relink))

@@ -334,3 +334,21 @@ fn history_keeps_the_last_200_steps() {
     while history.undo(&mut layout) {}
     assert_eq!(rect(&layout, "B").y, 50, "the oldest 50 steps are gone");
 }
+
+#[test]
+fn turning_on_the_only_display_puts_it_at_the_origin() {
+    // The laptop panel after an undock that left it off: no other display is on to place it
+    // beside. The editor's toggle and the watch fail-safe both turned it on with a panic.
+    let snap = desk(&[off("eDP-1", 1920, 1080)]);
+    let mut layout = Layout::inferred(&snap);
+    let p = ix(&layout, "eDP-1");
+    layout.toggle(&snap, p).unwrap();
+    assert!(layout.is_enabled(p));
+    assert_eq!(layout.rect(p), Rect::new(0, 0, 1920, 1080));
+    assert_eq!(layout.links[p], None);
+    let issues = validate(&layout, &snap);
+    assert!(
+        issues.iter().all(|i| i.severity == Severity::Info),
+        "{issues:?}"
+    );
+}

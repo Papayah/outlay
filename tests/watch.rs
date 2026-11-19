@@ -10,6 +10,7 @@ use anyhow::Result;
 use common::{ix, unplugged};
 use outlay::backend::{ApplyOutcome, Backend, FixtureBackend, Plan};
 use outlay::model::Snapshot;
+use outlay::model::geometry::Rect;
 use outlay::model::layout::Layout;
 use outlay::model::validate::{Severity, validate};
 use outlay::profiles::{ProfileStore, Stored};
@@ -168,6 +169,22 @@ fn decide_turns_the_panel_on_when_the_last_external_goes() {
         "{}",
         d.summary()
     );
+}
+
+#[test]
+fn decide_turns_on_a_panel_that_is_the_only_output_and_off() {
+    // Hyprland after an undock: the panel is the only head left, still off, and no other
+    // display is on to place it beside.
+    let snap = capture("wayland/panel-off-alone.json");
+    let d = decide(&snap, &[]);
+    let p = ix(&d.layout, "eDP-1");
+    assert!(d.layout.is_enabled(p));
+    assert_eq!(d.layout.rect(p), Rect::new(0, 0, 1920, 1080));
+    assert_eq!(
+        d.summary(),
+        "No profile fits. Only eDP-1 is connected: turning it on."
+    );
+    assert_valid(&d, &snap);
 }
 
 #[test]

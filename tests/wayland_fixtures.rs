@@ -14,6 +14,7 @@ const FIXTURES: &[&str] = &[
     "laptop-scaled",
     "no-current-mode",
     "no-serial",
+    "panel-off-alone",
     "rotated",
 ];
 

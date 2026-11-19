@@ -382,7 +382,8 @@ pub struct On {
 - **`outlay dump`** prints `backend.dump()`: raw `xrandr --verbose` on X11, JSON on Wayland. It is
   meant for bug reports and fixtures.
 - **Fixtures** (`tests/fixtures/wayland/`): `demo.json`, `laptop-scaled.json` (1.25 and 1.5),
-  `rotated.json` (90 and flipped-270), `disabled-head.json`, `custom-mode.json`, `no-current-mode.json`, `no-serial.json`.
+  `rotated.json` (90 and flipped-270), `disabled-head.json`, `custom-mode.json`, `no-current-mode.json`, `no-serial.json`,
+  `panel-off-alone.json` (Hyprland after an undock: the panel is the only head, and off).
   W6 adds `headless-sway.json`.
 - **Wayland snapshots in the editor need this phase's gating.**
   - **The keymap table:**

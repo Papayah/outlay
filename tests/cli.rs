@@ -689,6 +689,33 @@ fn watch_once_n_prints_the_decision_and_the_command() {
 }
 
 #[test]
+fn watch_once_n_turns_on_a_lone_panel_that_is_off() {
+    let dir = layouts("watch-lone-panel", &[]);
+    let kanshi = dir.join("kanshi.conf");
+    let capture = wayland_fixture("panel-off-alone");
+    let args = [
+        "--from-file",
+        &capture,
+        "--kanshi-config",
+        kanshi.to_str().unwrap(),
+        "-n",
+        "watch",
+        "--once",
+    ];
+    let (ok, stdout, stderr) = outlay(&args);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stderr,
+        "No profile fits. Only eDP-1 is connected: turning it on.\n"
+    );
+    assert_eq!(
+        stdout,
+        "wlr-randr --output eDP-1 --on --mode 1920x1080@165.010Hz --pos 0,0 --transform normal --scale 1\n"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn watch_prints_a_systemd_unit() {
     let (ok, stdout, stderr) = outlay(&["watch", "--print-unit"]);
     assert!(ok, "{stderr}");
