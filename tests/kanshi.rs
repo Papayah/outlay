@@ -16,6 +16,7 @@ use outlay::model::geometry::Rect;
 use outlay::model::layout::Layout;
 use outlay::model::profile::{ModeRequest, Profile, Target};
 use outlay::model::{Identity, Reflection, Rotation, Scaling, Snapshot};
+use outlay::profiles::ProfileStore;
 use outlay::tui::app::{App, Options, UiMode};
 use outlay::tui::session::{Input, Session, Settings};
 use outlay::wayland::kanshi::{self, Config};
@@ -376,17 +377,95 @@ fn heads_without_a_full_identity_are_named() {
     assert!(text.contains("    output HEADLESS-2 enable mode --custom 1280x720 position 0,0"));
 }
 
+fn no_current_mode_text() -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wayland/no-current-mode.json"),
+    )
+    .unwrap()
+}
+
+/// The panel of `no-current-mode.json` on a custom mode Hyprland does not name (`assumed`), or
+/// on its listed 165.01 Hz mode.
+fn no_current_mode(assumed: bool) -> Snapshot {
+    let mut text = no_current_mode_text();
+    if !assumed {
+        assert_eq!(text.matches("\"current\": false").count(), 1);
+        text = text.replace("\"current\": false", "\"current\": true");
+    }
+    FixtureBackend::from_text(text).unwrap().query().unwrap()
+}
+
+const PANEL_WITHOUT_MODE: &str = "    output eDP-1 enable position 0,0 scale 1 transform normal\n";
+
 #[test]
-fn a_head_with_no_current_mode_saves_a_custom_mode_without_a_rate() {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wayland/no-current-mode.json");
-    let snap = FixtureBackend::from_file(&path).unwrap().query().unwrap();
+fn a_head_with_no_current_mode_saves_no_mode() {
+    let snap = no_current_mode(true);
     let layout = Layout::inferred(&snap);
     let (_, text) = kanshi::save(None, Path::new("/k/config"), "h", &layout, &snap);
+    assert!(text.contains(PANEL_WITHOUT_MODE), "{text}");
+    assert!(!text.contains(" mode "), "{text}");
+}
+
+#[test]
+fn an_old_line_with_the_assumed_mode_is_saved_without_it() {
+    let dir = std::env::temp_dir().join(format!("outlay-kanshi-assumed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("config");
+    let old = "profile laptop {\n    \
+               output eDP-1 enable mode --custom 1920x1080 position 0,0 scale 1 transform normal\n\
+               }\n";
+    std::fs::write(&main, old).unwrap();
+    let store = ProfileStore::Kanshi(main.clone());
+    let snap = no_current_mode(true);
+    let stored = store.read("laptop").unwrap();
+    let remap = stored.profile.default_remap(&snap);
+    let (layout, notes) = stored.profile.layout(&snap, &remap);
+    assert!(notes.is_empty(), "{notes:?}");
     assert!(
-        text.contains("    output eDP-1 enable mode --custom 1920x1080 position 0,0 scale 1 transform normal\n"),
-        "{text}"
+        layout.outputs[0].mode.as_ref().unwrap().assumed,
+        "mode --custom 1920x1080 is the mode outlay assumed"
     );
+    let save = store.save("laptop", &layout, &snap).unwrap();
+    assert_eq!(save.path, main);
+    assert_eq!(save.old.as_deref(), Some(old));
+    assert!(save.text.contains(PANEL_WITHOUT_MODE), "{}", save.text);
+    assert!(!save.text.contains("--custom"), "{}", save.text);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_line_without_mode_keeps_the_mode_the_panel_runs() {
+    let text = "profile laptop {\n    \
+                output eDP-1 enable position 0,0 scale 1 transform normal\n\
+                }\n";
+    let config = kanshi::parse(Path::new("/k/config"), text);
+    let p = &config.find("laptop").unwrap().profile;
+    for assumed in [true, false] {
+        let snap = no_current_mode(assumed);
+        let (layout, notes) = p.layout(&snap, &p.default_remap(&snap));
+        assert!(notes.is_empty(), "{notes:?}");
+        let mode = layout.outputs[0].mode.as_ref().unwrap();
+        assert_eq!(Some(mode), snap.outputs[0].current_mode(), "{assumed}");
+        assert_eq!(mode.assumed, assumed);
+        let expected = if assumed { 0.0 } else { 165.01 };
+        assert_eq!(mode.refresh, expected);
+        let (_, saved) = kanshi::save(
+            Some(&config),
+            Path::new("/k/config"),
+            "laptop",
+            &layout,
+            &snap,
+        );
+        if assumed {
+            assert!(saved.contains(PANEL_WITHOUT_MODE), "{saved}");
+        } else {
+            assert!(
+                saved.contains(" enable mode 1920x1080@165.01Hz position 0,0"),
+                "{saved}"
+            );
+        }
+    }
 }
 
 #[test]

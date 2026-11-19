@@ -84,6 +84,7 @@ fn mode(xid: u32, (w, h, refresh): (i32, i32, f64), preferred: bool) -> Mode {
         double_scan: false,
         preferred,
         custom: false,
+        assumed: false,
     }
 }
 

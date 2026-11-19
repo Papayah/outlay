@@ -245,8 +245,9 @@ What differs from X11:
   `outlay watch` turns the panel on.
 - **A display on a mode outside its list has no known rate.** Hyprland names no current mode
   for it. outlay shows the preferred size at `0.00`, leaves that mode alone on apply, and saves
-  `mode --custom WxH` without a rate. A custom mode of another size is drawn at the preferred
-  size. A revert cannot bring back the unknown rate once you changed that display's mode.
+  its kanshi line without `mode`, so kanshi sends none and the compositor's monitor rule keeps
+  control of the rate. A custom mode of another size is drawn at the preferred size. A revert
+  cannot bring back the unknown rate once you changed that display's mode.
 
 ![Scale picker on Wayland: each scale with the logical size it gives](docs/screenshots/scale-picker.png)
 

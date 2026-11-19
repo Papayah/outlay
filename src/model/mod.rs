@@ -288,6 +288,7 @@ impl Output {
             double_scan: false,
             preferred: false,
             custom: false,
+            assumed: false,
         })
     }
 
@@ -399,6 +400,9 @@ pub struct Mode {
     pub preferred: bool,
     /// A mode the output does not advertise, set by size and rate.
     pub custom: bool,
+    /// The mode outlay takes an enabled head to run when the compositor names none; never sent
+    /// and never saved.
+    pub assumed: bool,
 }
 
 impl Mode {
@@ -420,6 +424,7 @@ impl Mode {
             double_scan: false,
             preferred,
             custom,
+            assumed: false,
         }
     }
 

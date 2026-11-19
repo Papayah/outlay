@@ -8,7 +8,7 @@
 //! `position`, `transform`, `scale` and `adaptive_sync`. Unknown keys are ignored and missing
 //! optional ones tolerated. outlay adds `custom` to a mode the head does not advertise. An enabled
 //! head with no `"current": true` mode (Hyprland, on a mode outside its list) is read as running
-//! the preferred size at rate 0.
+//! the preferred size at rate 0, a mode marked `assumed`; `write` leaves that mode out again.
 
 use std::fmt::Write as _;
 
@@ -18,7 +18,8 @@ use thiserror::Error;
 use super::{head_order, parse_transform, transform_name};
 use crate::model::geometry::{Point, Size, effective_size};
 use crate::model::{
-    ActiveConfig, Caps, Connection, Identity, Mode, Output, Reflection, Rotation, Scaling, Snapshot,
+    ActiveConfig, Caps, Connection, Identity, Mode, ModeId, Output, Reflection, Rotation, Scaling,
+    Snapshot,
 };
 
 #[derive(Debug, Error)]
@@ -283,11 +284,14 @@ pub fn assumed_mode(head: &HeadReport) -> Option<ModeReport> {
 /// The output a head report describes. Modes are merged by size and rate; a duplicate the head
 /// runs keeps its own `custom`. A mode of no size is left out: wlroots 0.17 gives a client that
 /// binds while a custom-mode head is off a virtual mode whose size it never sends. An enabled
-/// head with no current mode runs the [`assumed_mode`].
+/// head with no current mode runs the [`assumed_mode`], marked `assumed`.
 pub fn output(mut head: HeadReport) -> Result<Output, CaptureError> {
-    if let Some(m) = assumed_mode(&head) {
-        head.modes.push(m);
-    }
+    let assumed = assumed_mode(&head);
+    let assumed_id = assumed.as_ref().and_then(|m| {
+        let (w, h) = (u16::try_from(m.width).ok()?, u16::try_from(m.height).ok()?);
+        Some(ModeId::wayland(w, h, m.millihertz))
+    });
+    head.modes.extend(assumed);
     let name = head.name;
     let mut modes: Vec<Mode> = Vec::new();
     let mut current = None;
@@ -317,6 +321,9 @@ pub fn output(mut head: HeadReport) -> Result<Output, CaptureError> {
         if m.current && current.is_none() {
             current = Some(id);
         }
+    }
+    if let Some(m) = modes.iter_mut().find(|m| Some(m.id) == assumed_id) {
+        m.assumed = true;
     }
     let active = if head.enabled {
         let Some(id) = current else {
@@ -406,7 +413,9 @@ pub fn write(snap: &Snapshot) -> String {
             o.active.is_some(),
         );
         let current = o.active.as_ref().map(|a| a.mode);
-        for (j, m) in o.modes.iter().enumerate() {
+        // An assumed mode is left out, as the compositor leaves it out; `parse` assumes it again.
+        let modes = || o.modes.iter().filter(|m| !m.assumed);
+        for (j, m) in modes().enumerate() {
             if j > 0 {
                 out.push(',');
             }
@@ -425,7 +434,7 @@ pub fn write(snap: &Snapshot) -> String {
             }
             out.push_str("\n      }");
         }
-        if !o.modes.is_empty() {
+        if modes().next().is_some() {
             out.push_str("\n    ");
         }
         out.push(']');
@@ -549,6 +558,12 @@ mod tests {
     #[test]
     fn writes_what_it_reads() {
         let snap = parse(HEADLESS).unwrap();
+        let modes = || snap.outputs.iter().flat_map(|o| &o.modes);
+        assert!(modes().any(|m| m.custom && m.refresh == 0.0));
+        assert!(
+            modes().all(|m| !m.assumed),
+            "a custom mode named current is not assumed"
+        );
         let text = write(&snap);
         assert_eq!(parse(&text).unwrap(), snap);
         assert!(text.contains("\"refresh\": 0.000000,"), "{text}");
@@ -598,14 +613,26 @@ mod tests {
         let active = out.active.as_ref().unwrap();
         assert_eq!(active.mode, ModeId::wayland(1920, 1080, 0));
         let current = out.current_mode().unwrap();
-        assert!(current.custom && !current.preferred);
+        assert!(current.custom && !current.preferred && current.assumed);
+        assert_eq!(
+            out.modes.iter().filter(|m| m.assumed).count(),
+            1,
+            "only the added mode is assumed"
+        );
         assert_eq!(active.size, Size::new(720, 1280));
         assert_eq!(out.preferred_mode().unwrap().refresh, 165.01);
         let written = write(&snap);
-        assert_eq!(parse(&written).unwrap(), snap);
-        assert!(
-            written.contains("\"current\": true,\n        \"custom\": true"),
-            "{written}"
+        assert_eq!(
+            parse(&written).unwrap(),
+            snap,
+            "parse assumes the mode again"
+        );
+        assert!(!written.contains("\"current\": true"), "{written}");
+        assert!(!written.contains("\"custom\": true"), "{written}");
+        assert_eq!(
+            written.matches("\"width\": ").count(),
+            1 + 2,
+            "physical_size and the two listed modes: {written}"
         );
 
         let first = parse(&text("false", true)).unwrap();

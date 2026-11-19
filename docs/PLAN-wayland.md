@@ -83,8 +83,12 @@ wlroots has served v4 since 0.17.
     value.
 - **An enabled head may name no current mode.** Hyprland sends `current_mode` only for a mode
   the head advertises, so a custom rate (`hl.monitor({ mode = '1920x1080@60.01' })`) leaves it out.
-  - outlay assumes the preferred mode's size at rate 0, marked custom, in `capture::output`; the
-    client compares against the same mode (`running`), so it never sends one for that head.
+  - outlay assumes the preferred mode's size at rate 0, marked custom and `assumed`, in
+    `capture::output`; the client compares against the same mode (`running`), so it never sends
+    one for that head.
+  - The kanshi writer saves that head's line without `mode`, so kanshi sends none and the
+    compositor's monitor rule keeps the rate; `capture::write` leaves the mode out, as Hyprland
+    does. A mode the user picks is listed, not assumed, and is saved as before.
   - It still fails when no mode has a size.
 - **Hyprland lists a stand-in head while no monitor is on.** After an undock that leaves the
   laptop panel off, the heads are the panel (off) and `FALLBACK`: enabled, 1920x1080@60, no make,

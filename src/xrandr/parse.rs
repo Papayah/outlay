@@ -513,6 +513,7 @@ impl ModeBuilder {
             double_scan: self.double_scan,
             preferred: self.preferred,
             custom: false,
+            assumed: false,
         })
     }
 }

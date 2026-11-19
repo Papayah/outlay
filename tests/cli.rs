@@ -447,6 +447,42 @@ fn dump_prints_the_capture_a_fixture_came_from() {
     );
 }
 
+#[test]
+fn a_mode_outlay_only_assumed_is_neither_dumped_nor_saved() {
+    let path = wayland_fixture("no-current-mode");
+    let (ok, stdout, stderr) = outlay(&["dump", "--from-file", &path]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        std::fs::read_to_string(&path).unwrap(),
+        "no current mode, as Hyprland gives it"
+    );
+
+    let dir = std::env::temp_dir().join(format!("outlay-cli-assumed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config");
+    let c = config.to_str().unwrap();
+    let (ok, stdout, stderr) = outlay(&[
+        "--from-file",
+        &path,
+        "--kanshi-config",
+        c,
+        "save",
+        "laptop",
+        "-n",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.ends_with(
+            "\nprofile laptop {\n    output eDP-1 enable position 0,0 scale 1 transform normal\n}\n"
+        ),
+        "{stdout}"
+    );
+    assert!(!config.exists(), "-n writes nothing");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A copy of the kanshi fixtures in a fresh directory.
 fn kanshi_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("outlay-cli-kanshi-{tag}-{}", std::process::id()));

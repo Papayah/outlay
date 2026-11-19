@@ -891,10 +891,18 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Cause:** Hyprland keeps the mode an output-management client set for as long as that client
   is connected, and it overrides the monitor rule. `--custom WxH` sends `set_custom_mode(w, h, 0)`,
   "keep the running rate", so the rate that ran when kanshi applied the profile stays.
-- **Fix:** stopping kanshi frees it: the next monitor rule takes effect within 2 s. `outlay save`
-  writes `mode --custom WxH` for the mode it assumes when Hyprland names none (see the entry
-  above), so a profile saved in that state pins the rate. A profile line without `mode` leaves
-  the rate to the monitor rule.
+- **Fix:** stopping kanshi frees it: the next monitor rule takes effect within 2 s. outlay marks
+  the mode it assumes when Hyprland names none (`Mode::assumed`, see the entry above), and
+  `kanshi::output_line` writes that output's line without `mode`:
+  `output eDP-1 enable position 0,0 scale 1 transform normal`. An old line with
+  `mode --custom 1920x1080` loads onto the same assumed mode, so the next save drops it.
+- **Source fact:** kanshi 1.9.0 sends a mode only when the profile output has the
+  `KANSHI_OUTPUT_MODE` field (`main.c:305`, the `set_custom_mode` at :308 and the `set_mode`s at
+  :317 and :331). The field comes from the `mode` keyword (`config.c:147`) or from a global
+  `output` default block of the same criteria (`apply_output_defaults`, `config.c:486`, :502), so a
+  global `output eDP-1 mode …` brings the pin back. `head->mode` is assigned (`main.c:439-455`)
+  but never read. To read the source: `git clone --depth 1 --branch v1.9.0
+  https://gitlab.freedesktop.org/emersion/kanshi.git` (the web pages block fetchers).
 
 ## On Hyprland an apply succeeds, but the display stays as kanshi set it
 
