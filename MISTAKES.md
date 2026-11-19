@@ -932,3 +932,15 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   `hyprctl -j monitors all` every 0.5 s in a background loop: the panel is dark and the state
   lasts only until the redock. `tests/fixtures/wayland/hyprland-fallback.json` is one such
   capture.
+
+## A live kanshi check on Hyprland depends on which client bound first
+
+- **Symptom:** a kanshi started for a test changes nothing, or a monitor ignores the monitor rule
+  (`panel-rate`), although kanshi logs `configuration for profile '…' applied`.
+- **Cause:** Hyprland builds each monitor's rule from the saved state of the first bound
+  output-management client that has one for it. Another kanshi from login, or an `outlay watch`
+  that applied a layout, can be that client.
+- **Fix:** `pgrep -a kanshi`, then stop `outlay.service` and every kanshi, start the kanshi under
+  test (`WAYLAND_DEBUG=1 kanshi 2> kanshi-debug.log`), and only then start `outlay.service`.
+  `grep -E 'set_mode|set_custom_mode' kanshi-debug.log` shows the modes it sent. Undo it in the
+  same order with a plain kanshi.
