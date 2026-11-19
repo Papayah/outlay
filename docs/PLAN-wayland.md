@@ -81,6 +81,11 @@ wlroots has served v4 since 0.17.
   protocol error; wlroots does not enforce it.
   - wlroots' `enable_head` copies the head's current state, so a property you don't set keeps its
     value.
+- **An enabled head may name no current mode.** Hyprland sends `current_mode` only for a mode
+  the head advertises, so a custom rate (`hl.monitor({ mode = '1920x1080@60.01' })`) leaves it out.
+  - outlay assumes the preferred mode's size at rate 0, marked custom, in `capture::output`; the
+    client compares against the same mode (`running`), so it never sends one for that head.
+  - It still fails when no mode has a size.
 - **A stale serial gives `cancelled`** (wlroots, niri). Create a new configuration with the new
   serial and try again. Hyprland never checks the serial.
 - **`test` is only advisory.** On Hyprland it is a stub that always succeeds; niri rejects only
@@ -377,7 +382,7 @@ pub struct On {
 - **`outlay dump`** prints `backend.dump()`: raw `xrandr --verbose` on X11, JSON on Wayland. It is
   meant for bug reports and fixtures.
 - **Fixtures** (`tests/fixtures/wayland/`): `demo.json`, `laptop-scaled.json` (1.25 and 1.5),
-  `rotated.json` (90 and flipped-270), `disabled-head.json`, `custom-mode.json`, `no-serial.json`.
+  `rotated.json` (90 and flipped-270), `disabled-head.json`, `custom-mode.json`, `no-current-mode.json`, `no-serial.json`.
   W6 adds `headless-sway.json`.
 - **Wayland snapshots in the editor need this phase's gating.**
   - **The keymap table:**

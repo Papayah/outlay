@@ -854,3 +854,19 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   screen size is that size too.
 - **Fix:** `xrandr --fbmm 300x200` (a new physical size) succeeds and sends
   `RRScreenChangeNotify`; `tests/x11_events.rs` uses it.
+
+## Hyprland sends no `current_mode` for a mode the head does not list
+
+- **Symptom:** `outlay` stops with `eDP-1 is enabled, but none of its modes is current`, and the
+  displays popup closes at once. It happens when the panel runs a custom rate, for example
+  `hyprctl eval "hl.monitor({ mode = '1920x1080@60.01', … })"` on a panel whose EDID lists only
+  1920x1080@165.01.
+- **Cause:** Hyprland 0.57.2 sends `current_mode` only when an advertised mode object equals the
+  running mode (`OutputManagement.cpp`, `sendAllData` and `updateMode`). A custom mode gets its
+  own object only for a head that lists no modes. The head comes out enabled, with modes and none
+  current. `wl_output.mode` has the real size and rate, but outlay does not bind `wl_output`.
+- **Fix:** `capture::assumed_mode` takes the preferred mode's size (else the first sized mode) at
+  rate 0, marked custom, and `output()` adds it as the current mode. `client::running` uses the
+  same mode, so an apply sends no `set_mode`; a parse-only fix would send `set_custom_mode(w, h, 0)`.
+  `NoCurrentMode` remains for a head with no sized mode. Reproduce without a display:
+  `outlay --from-file /dev/stdin list < tests/fixtures/wayland/no-current-mode.json`.
