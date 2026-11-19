@@ -870,3 +870,28 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
   same mode, so an apply sends no `set_mode`; a parse-only fix would send `set_custom_mode(w, h, 0)`.
   `NoCurrentMode` remains for a head with no sized mode. Reproduce without a display:
   `outlay --from-file /dev/stdin list < tests/fixtures/wayland/no-current-mode.json`.
+
+## A live apply of the layout as it is sends nothing
+
+- **Symptom:** a live check of what the Wayland client sends (`WAYLAND_DEBUG=1`) gets no
+  configuration at all: `outlay apply <profile>` prints `Nothing to change: the layout is <profile>
+  already.` A profile that moves a lone display (`position 10,0`) says the same, because a layout
+  is shifted so that its top left corner is 0,0.
+- **Cause:** `profile::apply` returns before the backend when `layout.diff(&snap)` is empty.
+- **Fix:** `outlay dump > state.json`, then `WAYLAND_DEBUG=1 outlay restore state.json`. The
+  hidden `restore` always sends a full configuration (every head, through `add_head`) and reads
+  the state back, and the layout stays as it was. Filter the log with
+  `grep -E -- '-> zwlr_output_(configuration|configuration_head)_v1'`.
+
+## kanshi's `mode --custom WxH` pins the rate on Hyprland
+
+- **Symptom:** after kanshi applied a profile with `output eDP-1 enable mode --custom 1920x1080 …`,
+  `hyprctl eval "hl.monitor({ mode = '1920x1080@165.01', … })"` (the dotfiles' `panel-rate`) has
+  no effect: the panel stays at 60.01 Hz. Checked live on Hyprland 0.57.2 with kanshi 1.9.0.
+- **Cause:** Hyprland keeps the mode an output-management client set for as long as that client
+  is connected, and it overrides the monitor rule. `--custom WxH` sends `set_custom_mode(w, h, 0)`,
+  "keep the running rate", so the rate that ran when kanshi applied the profile stays.
+- **Fix:** stopping kanshi frees it: the next monitor rule takes effect within 2 s. `outlay save`
+  writes `mode --custom WxH` for the mode it assumes when Hyprland names none (see the entry
+  above), so a profile saved in that state pins the rate. A profile line without `mode` leaves
+  the rate to the monitor rule.
