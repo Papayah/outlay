@@ -323,7 +323,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
 4. **Verify.**
    - xrandr exits 0 even for `warning: output X not found; ignoring`, so the exit code is not enough.
    - Re-query with `xrandr --verbose --current` and compare with the request: enabled set, XIDs, rectangles, orientation (rotation and reflection, as the same picture), primary. A turn by 180° or a reflection keeps the rectangle, so only the orientation shows that it was ignored.
-   - A mismatch or a non-zero exit is a failure: show stderr and the diff, and revert if the live state changed.
+   - A mismatch or a non-zero exit is a failure: show stderr and the diff, and always revert (the restore is idempotent; a compositor's read-back can lag, so an unchanged read-back proves nothing).
 5. **Countdown.**
    - A popup with a shrinking `LineGauge`: "Keep this layout? y keep · n/Esc revert · 15s".
    - After xrandr returns, **drain queued input and ignore keys for 1 s**, so a key pressed while the screens were black cannot confirm.
@@ -344,7 +344,7 @@ For `Same` (mirror), switch F to T's resolution if F supports it (nearest rate).
    - **Hooks.** Run each `post_apply` hook with `sh -c` after every change outlay makes to the screens:
      - once an apply passes verification, **before** the countdown; the input drain, the 1 s block and the countdown start when the hooks are done;
      - after **every** revert: timeout, `n`/`Esc`, Ctrl-C, a signal, the revert on exit, and the automatic revert after a failed apply (even when the revert itself fails);
-     - **not** on keep (nothing changes), and **not** after a failed apply that changed nothing.
+     - **not** on keep (nothing changes), and **not** when the `test` rejected the plan (nothing was sent).
      - **not** after an emergency revert: the hang-up watchdog's (see 7), like the panic hook's, runs only `revert.sh`, with no hooks and no read-back. A failed revert leaves `revert.sh` armed, so a hang-up while "Revert failed" is on screen runs it once more, as a last try.
    - Each hook runs with no terminal, stdin and stdout discarded, and a `post_apply_timeout` limit (10 s by default). Do not wait for background programs a hook leaves holding stderr: after the hook exits, give its stderr 200 ms, then move on.
    - Report failures (the first stderr line) after the status line's text, or as extra lines in an "Apply failed"/"Revert failed" report.

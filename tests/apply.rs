@@ -40,6 +40,8 @@ enum Next {
     Unplugs(&'static str),
     /// Applies it, but the read-back that follows fails.
     Unread,
+    /// Applies it, but the next re-query still shows the screens as they were before.
+    Lags,
 }
 
 /// A backend that records every plan, counts full probes and re-queries, and misbehaves on
@@ -56,6 +58,8 @@ struct Fake {
     blind: Mutex<usize>,
     /// Runs on every apply, as the window manager reacts to the changed screens.
     on_apply: Option<Box<dyn Fn() + Send>>,
+    /// A snapshot the next `requery` returns instead of the real state, once.
+    stale: Mutex<Option<Snapshot>>,
 }
 
 impl Fake {
@@ -69,6 +73,7 @@ impl Fake {
             requeries: Mutex::new(0),
             blind: Mutex::new(0),
             on_apply: None,
+            stale: Mutex::new(None),
         }
     }
 
@@ -127,6 +132,9 @@ impl Backend for Fake {
             *blind -= 1;
             return Err(anyhow!("the display server hung up"));
         }
+        if let Some(old) = self.stale.lock().unwrap().take() {
+            return Ok(old);
+        }
         self.inner.requery()
     }
 
@@ -165,6 +173,10 @@ impl Backend for Fake {
                 Ok(outcome)
             }
             Next::Breaks => Err(anyhow!("xrandr crashed")),
+            Next::Lags => {
+                *self.stale.lock().unwrap() = Some(self.inner.requery()?);
+                self.inner.apply(plan)
+            }
             Next::Rounds(by) => {
                 let mut rounded = plan.clone();
                 for on in rounded.outputs.iter_mut().filter_map(|p| p.on.as_mut()) {
@@ -428,28 +440,150 @@ fn a_failed_apply_that_changed_the_screens_is_reverted() {
         "{message}"
     );
     assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
+    assert!(!rig.session.awaiting_answer());
     rig.press("<Esc>");
     assert_eq!(rig.app().mode, UiMode::Normal);
 }
 
 #[test]
-fn a_failed_apply_that_changed_nothing_is_not_reverted() {
+fn a_failed_apply_that_changed_nothing_is_still_reverted() {
     let backend = Fake::demo().then(Next::Fails {
         stderr: "xrandr: cannot find mode\n",
         changes: false,
     });
+    let before = backend.query().unwrap();
     let mut rig = Rig::new(&backend, Settings::default());
     rig.press("3<A-l>a<Enter>");
-    assert_eq!(backend.calls().len(), 1);
-    assert!(rig.message().contains("Nothing changed."));
+    assert_eq!(backend.calls().len(), 2, "apply, then revert");
+    assert_eq!(backend.calls()[1], Plan::restore(&before));
+    let message = rig.message();
+    assert!(!message.contains("Nothing changed."), "{message}");
+    assert!(
+        message.ends_with("Reverted to the previous layout."),
+        "{message}"
+    );
 
     let backend = Fake::demo().then(Next::Breaks);
     let mut rig = Rig::new(&backend, Settings::default());
     rig.press("3<A-l>a<Enter>");
+    let message = rig.message();
     assert!(
-        rig.message()
-            .contains("Could not run xrandr: xrandr crashed")
+        message.contains("Could not run xrandr: xrandr crashed"),
+        "{message}"
     );
+    assert!(!message.contains("Nothing changed."), "{message}");
+    assert!(
+        message.ends_with("Reverted to the previous layout."),
+        "{message}"
+    );
+    assert!(!rig.session.awaiting_answer());
+}
+
+#[test]
+fn a_read_back_that_lags_still_reverts() {
+    for (backend, keys) in [
+        (Fake::wayland(), "1<lt><lt>a<Enter>"),
+        (Fake::demo(), "3<A-l>a<Enter>"),
+    ] {
+        let backend = backend.then(Next::Lags);
+        let before = backend.query().unwrap();
+        let mut rig = Rig::new(&backend, Settings::default());
+        rig.press(keys);
+        assert_eq!(backend.calls().len(), 2, "apply, then revert");
+        assert_eq!(backend.calls()[1], Plan::restore(&before));
+        assert_eq!(backend.query().unwrap(), before);
+        let message = rig.message();
+        assert!(
+            message.contains("The layout did not come out as asked:"),
+            "{message}"
+        );
+        assert!(!message.contains("Nothing changed."), "{message}");
+        assert!(
+            message.ends_with("Reverted to the previous layout."),
+            "{message}"
+        );
+        assert_eq!(rig.app().pending().len(), 1);
+        assert!(!rig.session.awaiting_answer());
+    }
+}
+
+#[test]
+fn a_read_back_error_after_the_apply_reverts() {
+    let counter = Counter::new("read-error");
+    let backend = Fake::demo().then(Next::Unread);
+    let before = backend.query().unwrap();
+    let mut rig = Rig::new(&backend, counter.settings());
+    rig.press("3<A-l>a<Enter>");
+    assert_eq!(backend.calls().len(), 2, "apply, then revert");
+    assert_eq!(backend.calls()[1], Plan::restore(&before));
+    let message = rig.message();
+    assert!(message.starts_with("Apply failed"), "{message}");
+    let read = message
+        .find("Could not read the state back: the display server hung up")
+        .unwrap_or_else(|| panic!("{message}"));
+    let reverted = message
+        .find("Reverted to the previous layout.")
+        .unwrap_or_else(|| panic!("{message}"));
+    assert!(read < reverted, "{message}");
+    assert!(!message.contains("Nothing changed."), "{message}");
+    assert!(message.ends_with(BROKEN_TEXT), "{message}");
+    assert_eq!(counter.runs(), 1, "hooks run once");
+    assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
+    assert!(!rig.session.awaiting_answer());
+}
+
+#[test]
+fn a_failed_apply_that_reverts_disarms_the_panic_revert() {
+    let scratch = Scratch::new("failed-reverted");
+    let backend = Fake::demo().then(Next::Fails {
+        stderr: "Configure crtc 2 failed\n",
+        changes: true,
+    });
+    let mut rig = Rig::new(&backend, scratch.settings());
+    rig.press("3<A-l>a<Enter>");
+    assert_eq!(backend.calls().len(), 2, "apply, then revert");
+    assert!(
+        rig.message().ends_with("Reverted to the previous layout."),
+        "{}",
+        rig.message()
+    );
+    assert_eq!(rig.session.panic_revert(), None);
+}
+
+#[test]
+fn a_failed_revert_is_reported_with_one_full_stop() {
+    let backend = Fake::wayland().then(Next::Rounds(0.25)).then(Next::Fails {
+        stderr: "The compositor said no.\n",
+        changes: false,
+    });
+    let mut rig = Rig::new(&backend, Settings::default());
+    rig.press("1<lt><lt>a<Enter>");
+    assert_eq!(
+        backend.calls().len(),
+        2,
+        "apply, then the revert that fails"
+    );
+    let message = rig.message();
+    assert!(message.starts_with("Apply failed"), "{message}");
+    let asked = message
+        .find("The layout did not come out as asked:")
+        .unwrap_or_else(|| panic!("{message}"));
+    assert!(
+        message.contains("eDP-1 is at 175% instead of 150%."),
+        "{message}"
+    );
+    let failed = message
+        .find("The revert failed: ")
+        .unwrap_or_else(|| panic!("{message}"));
+    assert!(asked < failed, "{message}");
+    assert!(
+        !message.contains("Reverted to the previous layout."),
+        "{message}"
+    );
+    assert!(!message.contains(".."), "{message}");
+    assert!(!message.contains("Nothing changed."), "{message}");
+    assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
+    assert!(!rig.session.awaiting_answer());
 }
 
 #[test]
@@ -474,6 +608,7 @@ fn verification_catches_what_xrandr_ignored() {
         message.contains("Reverted to the previous layout."),
         "{message}"
     );
+    assert!(!rig.session.awaiting_answer());
 }
 
 #[test]
@@ -483,7 +618,7 @@ fn verification_catches_an_ignored_turn() {
     let mut rig = Rig::new(&backend, Settings::default());
     let before = backend.query().unwrap();
     rig.press("3:rotate inverted<Enter>a<Enter>");
-    assert_eq!(backend.calls().len(), 1, "nothing to revert");
+    assert_eq!(backend.calls().len(), 2, "apply, then revert");
     assert_eq!(backend.query().unwrap(), before);
     let message = rig.message();
     assert!(message.starts_with("Apply failed"), "{message}");
@@ -491,7 +626,12 @@ fn verification_catches_an_ignored_turn() {
         message.contains("eDP-1 is normal instead of inverted."),
         "{message}"
     );
-    assert!(message.contains("Nothing changed."), "{message}");
+    assert!(!message.contains("Nothing changed."), "{message}");
+    assert!(
+        message.ends_with("Reverted to the previous layout."),
+        "{message}"
+    );
+    assert!(!rig.session.awaiting_answer());
     assert_eq!(rig.app().pending().len(), 1, "the edit is still pending");
 }
 
@@ -709,8 +849,12 @@ fn hooks_run_after_the_revert_of_a_failed_apply_only() {
     });
     let mut rig = Rig::new(&backend, counter.settings());
     rig.press("3<A-l>a<Enter>");
-    assert!(rig.message().contains("Nothing changed."));
-    assert_eq!(counter.runs(), 0, "nothing changed, nothing to redraw");
+    let message = rig.message();
+    assert!(
+        message.contains("Reverted to the previous layout."),
+        "{message}"
+    );
+    assert_eq!(counter.runs(), 1, "after the revert");
 }
 
 #[test]
@@ -814,12 +958,14 @@ fn the_focus_goes_back_after_the_revert_of_a_failed_apply() {
     });
     let mut rig = focus_rig(&backend, &wm);
     rig.press("3<A-l>a<Enter>");
-    assert!(rig.message().contains("Nothing changed."));
-    assert_eq!(
-        wm.log(),
-        ["get_tree"],
-        "nothing changed, nothing to put back"
+    let message = rig.message();
+    assert!(!message.contains("Nothing changed."), "{message}");
+    assert!(
+        message.ends_with("Reverted to the previous layout."),
+        "{message}"
     );
+    assert_eq!(wm.log(), ["get_tree", "hook", "[con_id=7] focus"]);
+    assert_eq!(wm.focused(), 7, "the focus is still on the editor");
 }
 
 #[test]
@@ -1227,7 +1373,10 @@ fn a_cancelled_wayland_apply_says_so_in_its_own_words() {
         message.starts_with("Apply failed: The outputs changed while applying. | "),
         "{message}"
     );
-    assert!(message.ends_with(" | Nothing changed."), "{message}");
+    assert!(
+        message.ends_with(" | Reverted to the previous layout."),
+        "{message}"
+    );
     assert!(!message.contains("xrandr"), "{message}");
 }
 
@@ -1548,6 +1697,11 @@ fn a_failed_apply_and_a_failed_revert_make_one_report() {
         )
     );
     assert!(!rig.session.awaiting_answer());
+    assert_eq!(
+        rig.session.panic_revert(),
+        Some(scratch.revert_file().as_path()),
+        "a panic still runs revert.sh"
+    );
 }
 
 #[test]

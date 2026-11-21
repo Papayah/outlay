@@ -439,39 +439,25 @@ impl<'a> Session<'a> {
             );
         }
         let failed_run = !matches!(&outcome, Ok(o) if o.success);
-        let after = match after {
-            Ok(snap) => snap,
+        let mismatches = match &after {
+            Ok(snap) => request.layout.mismatches(snap),
             Err(err) => {
                 problems.push(format!("Could not read the state back: {err:#}"));
-                // Assume the worst: something changed.
-                let applied = Applied {
-                    before: before.clone(),
-                    after: before,
-                };
-                self.revert_after_failure(applied, focused, &mut problems);
+                Vec::new()
+            }
+        };
+        let after = match after {
+            Ok(snap) if !failed_run && mismatches.is_empty() => snap,
+            _ => {
+                if !mismatches.is_empty() {
+                    problems.push("The layout did not come out as asked:".to_owned());
+                    problems.extend(mismatches.iter().map(|m| format!("  {m}")));
+                }
+                self.revert_after_failure(&before, focused, &mut problems);
                 self.app.report("Apply failed", problems);
                 return;
             }
         };
-        let mismatches = request.layout.mismatches(&after);
-        if failed_run || !mismatches.is_empty() {
-            if !mismatches.is_empty() {
-                problems.push("The layout did not come out as asked:".to_owned());
-                problems.extend(mismatches.iter().map(|m| format!("  {m}")));
-            }
-            if after != before {
-                let applied = Applied {
-                    before,
-                    after: after.clone(),
-                };
-                self.revert_after_failure(applied, focused, &mut problems);
-            } else {
-                self.arm_panic_revert(None);
-                problems.push("Nothing changed.".to_owned());
-            }
-            self.app.report("Apply failed", problems);
-            return;
-        }
 
         self.applied = Some(Applied { before, after });
         // Redraw the wallpaper first, so the layout is judged as it will look.
@@ -493,15 +479,16 @@ impl<'a> Session<'a> {
         self.warn(&failures);
     }
 
-    /// The automatic revert after a failed apply that changed the screens; what happened goes
-    /// into the report. `focused` had the keyboard focus before the apply.
+    /// The automatic revert after a failed apply; what happened goes into the report. It always
+    /// runs: the read-back can lag the compositor, so it cannot prove that nothing changed.
+    /// `focused` had the keyboard focus before the apply.
     fn revert_after_failure(
         &mut self,
-        applied: Applied,
+        before: &Snapshot,
         focused: Option<Focus>,
         problems: &mut Vec<String>,
     ) {
-        let reverted = self.revert_quietly(applied);
+        let reverted = self.revert_quietly(before);
         let failures = self.redraw(focused);
         match reverted {
             Ok((snap, notes)) => {
@@ -554,16 +541,16 @@ impl<'a> Session<'a> {
     /// wrong and how to restore by hand, and the panic hook still runs `revert.sh`.
     fn revert_quietly(
         &mut self,
-        applied: Applied,
+        before: &Snapshot,
     ) -> Result<(Snapshot, Vec<String>), RevertFailure> {
-        let outcome = self.backend.apply(&Plan::restore(&applied.before));
+        let outcome = self.backend.apply(&Plan::restore(before));
         let after = self.backend.requery();
         let (mut lines, snap) = match (outcome, after) {
             (Ok(o), Ok(snap)) if o.success => {
-                let mismatches = restore_mismatches(&applied.before, &snap);
+                let mismatches = restore_mismatches(before, &snap);
                 if mismatches.is_empty() {
                     self.arm_panic_revert(None);
-                    let notes = unplugged(&applied.before, &snap)
+                    let notes = unplugged(before, &snap)
                         .iter()
                         .map(|name| format!("{name} was unplugged, so it is not back."))
                         .collect();
@@ -584,7 +571,10 @@ impl<'a> Session<'a> {
                     Ok(o) => o.stderr.trim().to_owned(),
                     Err(err) => format!("{err:#}"),
                 };
-                (vec![format!("The revert failed: {why}.")], after.ok())
+                (
+                    vec![format!("The revert failed: {}.", why.trim_end_matches('.'))],
+                    after.ok(),
+                )
             }
         };
         if let Some(path) = &self.settings.revert_file {
@@ -604,7 +594,7 @@ impl<'a> Session<'a> {
             RevertReason::Signal => None,
             RevertReason::Timeout | RevertReason::Declined => self.focused(),
         };
-        let reverted = self.revert_quietly(applied);
+        let reverted = self.revert_quietly(&applied.before);
         // Even a failed revert may have changed the screens.
         let failures = self.redraw(focused);
         match reverted {
