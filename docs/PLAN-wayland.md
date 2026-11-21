@@ -101,7 +101,12 @@ wlroots has served v4 since 0.17.
   "all outputs off".
   - Even after `succeeded` the state may differ (for example a rounded scale), so outlay keeps its
     own verification.
-  - After `succeeded`, the new head state arrives as head events and then `done`.
+  - The new head state arrives as head events and then `done`: before `succeeded` on sway.
+    **Hyprland 0.57 (2026-11-21) never updates an existing binding:** it sends no head events and
+    no `done` after a configuration change, whether the binding's own or another client's. Only a
+    new binding sees the current state (a fresh `wlr-randr --json` shows it at once). So outlay
+    opens a new connection for every operation, and after `succeeded` polls new connections until
+    the heads show the plan, up to 1 s.
 - **Positions are in logical (scaled) coordinates** in sway, Hyprland and niri. A 2560x1440 output at
   scale 2 takes 1280x720 of the layout.
 - **No mirroring and no primary** in the protocol. Hyprland, Wayfire and COSMIC mirror only through
@@ -116,8 +121,9 @@ wlroots has served v4 since 0.17.
   - sway: until `swaymsg reload`. This is likely but was not tested at run time.
   - niri: until the `output` sections of its config file change.
   - **Hyprland: the override belongs to the client's binding.** Once that client disconnects,
-    Hyprland drops it at the next reload or hotplug. outlay exits after an apply, so its layout
-    lasts only until then. kanshi stays connected, so its layouts last.
+    Hyprland drops it at the next reload or hotplug. outlay closes its binding after each
+    operation, so Hyprland may drop the layout at a reload or hotplug even while the editor
+    runs. kanshi stays connected, so its layouts last.
   - **Hyprland: the first client wins.** For each monitor it takes the saved state of the first
     bound client that has one (`COutputManagementProtocol::getOutputStateFor`, read by
     `CMonitorRuleManager::get`, 0.57.2). kanshi binds at login, so while it runs, a monitor it
@@ -158,14 +164,16 @@ All are pure Rust with an MSRV of at most 1.91:
   - wlroots accepts `set_mode` with a virtual mode (it keeps the custom mode); "mode doesn't
     belong to head" is only for another head's real mode. outlay still sends a mode only when it
     changes, and a mode no head object has as `set_custom_mode`.
-  - On sway the new head state and `done` arrive **before** `succeeded`; outlay waits for a
-    `done` only when none came yet.
+  - On sway the new head state and `done` arrive **before** `succeeded`, so the first poll of an
+    apply (a new connection) already shows the plan and a wait costs nothing. Sway cannot
+    reproduce the Hyprland behaviour above.
   - The logical size is **truncated** (1366x768 at 150 % is 910x512 in `swaymsg -t get_outputs`).
   - **wlroots ≤ 0.20.2 aborts** (`head_send_state: Assertion 'found' failed`) when a client that
     bound while a custom-mode head was disabled enables it again while another client still holds
     that head's old virtual mode. Fixed upstream by wlroots 40640950 (2026-09-30, unreleased).
-    Since session F, the panic hook hangs up on the compositor before it runs `revert.sh`, whose
-    `outlay restore` is such a client (`wayland::client::hang_up`, with a live test).
+    The panic hook does not hang up: the editor holds no connection between operations, so
+    `revert.sh`, whose `outlay restore` is such a client, runs against a compositor with no other
+    outlay binding (a live test reproduces the abort if a connection is kept).
 - **CI runners:**
   - Ubuntu 24.04 has sway 1.9 with wlroots 0.17 (protocol v4).
   - **`ubuntu-latest` moves to 26.04 between 2026-10-19 and 2026-11-19,** so the Wayland job pins
@@ -437,14 +445,15 @@ pub struct On {
   - The manager's `head` and a head's `mode` events create objects, so their dispatch needs
     `event_created_child!`.
 - **State.**
-  - There is one persistent connection behind a `Mutex`, the same pattern as `FixtureBackend`, and
-    no thread.
-  - `query` and `requery` do a roundtrip and build a Snapshot from the heads as of the last `done`.
+  - The backend holds no connection and there is no thread: every operation opens a new
+    connection, works and closes it (Hyprland never updates an existing binding).
+  - `query` and `requery` open a new connection, do a roundtrip and build a Snapshot from the
+    heads as of the last `done`.
   - The existing 2 s watch (`WATCH_INTERVAL`) sees hotplugs without changes: a new head, or a
     `finished` one.
   - A `finished` manager or a protocol error becomes "Lost the connection to the compositor."
 - **Apply and test:**
-  1. Roundtrip to get the latest serial. If a planned head is gone:
+  1. Open a new connection (its roundtrip gets the latest serial). If a planned head is gone:
      - an apply fails with "The outputs changed while applying." (the text `mismatches` already
        uses);
      - a restore skips that head with a warning.
@@ -457,9 +466,15 @@ pub struct On {
        matching its current state.
   3. `apply` or `test`. Dispatch until `succeeded`, `failed` or `cancelled`, then destroy the
      configuration.
-  4. **After `succeeded`,** wait for the manager's next `done` (up to 1 s; skip the wait when the plan
-     equals the current state). This way `Session::apply`'s immediate re-query
-     (`src/tui/session.rs:334`) sees the final state and does not revert by mistake.
+  4. **After `succeeded`,** keep the configuring connection open and poll new ones (every 50 ms,
+     each closed before the next opens) until the heads show the plan, up to 1 s; no wait when they
+     already do (sway sends the state before `succeeded`). Then close the configuring connection.
+     Hyprland keeps a change only for the binding that made it and reloads its outputs after
+     `succeeded`, so closing at once could race that. This is safe for the wlroots abort below: the
+     poll bindings never configure, and no `revert.sh` runs during an operation. Hyprland 0.57
+     shows a change only to a new binding. A poll that cannot connect ends the polling without
+     failing the apply. This way the re-query right after the apply in `Session::apply` sees the final
+     state and does not report a mismatch by mistake.
   5. **`cancelled`:** roundtrip. If the head names are unchanged, retry once; otherwise fail as in
      step 1.
   6. **Never send `set_adaptive_sync`.** VRR stays as it is; the details panel shows it.
@@ -897,7 +912,7 @@ The unscheduled work (mirroring, VRR, custom modes, shikane, profiles on GNOME a
 | The direction of Wayland `90` and the flip order, against X11 | W4 (sway-output(5), wlroots source, cited in a comment) | Fix the mapping table; W5 checks the axes live |
 | wlroots' virtual modes make `set_mode` fatal | Start of W5 (dump the event sequence) | Already designed around: set the mode only on a change |
 | The logical size rounds instead of truncating | W5 (`swaymsg` rect at 1.25, 1.5, 1.75) | A rounding field in `Caps` that `detect` sets per compositor |
-| State arrives after `succeeded`, and verification reverts by mistake | W5 (live apply test) | Already designed around: wait for `done` |
+| State arrives after `succeeded`, and verification reverts by mistake | W5 (live apply test) | Already designed around: the state comes before `succeeded` on sway, and Hyprland 0.57 shows it only to a new binding; outlay opens a connection per operation and polls new connections until the heads show the plan, up to 1 s |
 | Headless sway does not start in CI | Start of W5/W6 | labwc headless; or rely on the fake backend plus capture fixtures |
 | `wayland-client` links libwayland, so the build is not static | W5 (`release.yml` on the PR) | `cargo tree -e features -i wayland-sys` and turn off the feature responsible |
 | W2 changes an X11 golden | W2 | Fix the renderer, never the golden |

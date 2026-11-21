@@ -1,6 +1,7 @@
 //! [`WlrBackend`]: a `zwlr_output_manager_v1` client, the way outlay talks to sway, Hyprland,
-//! niri, river and the other wlroots-style compositors. One connection lives as long as the
-//! backend, behind a mutex; there is no thread.
+//! niri, river and the other wlroots-style compositors. Each operation opens its own connection:
+//! Hyprland sends nothing more to a binding after a configuration change, so only a new binding
+//! sees the current state. There is no thread.
 //!
 //! What the compositor reports arrives as head and mode events, made atomic by the manager's
 //! `done`: a snapshot is taken only from the state as of the last `done`. An apply builds one
@@ -10,15 +11,11 @@
 //! one (Hyprland, on a mode outside its list): outlay assumes one and leaves it alone.
 
 use std::collections::HashMap;
-use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::backend::ObjectId;
 use wayland_client::globals::{BindError, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_output::Transform;
@@ -39,9 +36,13 @@ use super::{transform_from_value, transform_value};
 use crate::backend::{ApplyOutcome, Backend, Plan, PlanForm, Planned, Verdict};
 use crate::model::Snapshot;
 use crate::model::geometry::{Point, Size};
+use crate::model::layout::LOGICAL_TOLERANCE;
 
-/// How long an apply waits for the state it caused, once the compositor said it succeeded.
-const SETTLE: Duration = Duration::from_secs(1);
+/// How long an apply polls for the heads to show it, once the compositor said it succeeded.
+pub const SETTLE: Duration = Duration::from_secs(1);
+
+/// The pause between two polls of an apply.
+const POLL: Duration = Duration::from_millis(50);
 
 /// The same text `Layout::mismatches` uses, so both failures read alike.
 const OUTPUTS_CHANGED: &str = "The outputs changed while applying.";
@@ -98,9 +99,8 @@ enum Answer {
 struct State {
     heads: Vec<HeadState>,
     modes: HashMap<ObjectId, ModeState>,
-    /// The serial of the last `done`, and how many there have been.
+    /// The serial of the last `done`.
     serial: Option<u32>,
-    dones: u64,
     /// The heads as of the last `done`.
     committed: Vec<HeadState>,
     committed_modes: HashMap<ObjectId, ModeState>,
@@ -122,45 +122,78 @@ struct Inner {
     manager: ZwlrOutputManagerV1,
 }
 
-/// The compositor, through `zwlr_output_manager_v1`.
+/// The compositor, through `zwlr_output_manager_v1`. It holds no connection: every operation
+/// opens its own and closes it when done.
 pub struct WlrBackend {
-    inner: Mutex<Inner>,
-    /// A second handle on the connection's socket, to hang up with.
-    socket: UnixStream,
-    /// Which backend [`LIVE`] belongs to.
-    id: usize,
-}
-
-/// The socket of the backend connected last, for [`hang_up`], with that backend's id. It is a
-/// second handle, so the backend's drop takes it out: it would keep the connection open.
-static LIVE: Mutex<Option<(usize, UnixStream)>> = Mutex::new(None);
-
-static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
-/// Ends the connection of the backend connected last, if it still exists, so the compositor
-/// drops this client and everything it holds. The panic hook calls it before `revert.sh`, whose
-/// `outlay restore` is another client: up to wlroots 0.20.2, a client that turns a custom-mode
-/// head back on aborts the compositor while another client still holds that head's old virtual
-/// mode. Only shuts the socket down, never closes it, and never waits for a lock.
-pub fn hang_up() {
-    if let Ok(live) = LIVE.try_lock()
-        && let Some((_, socket)) = live.as_ref()
-    {
-        let _ = socket.shutdown(Shutdown::Both);
-    }
+    path: PathBuf,
 }
 
 impl WlrBackend {
-    /// Connects to the compositor whose socket is at `path` and reads the outputs.
+    /// Checks that the compositor whose socket is at `path` offers output management.
     pub fn connect(path: &Path) -> Result<Self, ConnectError> {
+        Inner::open(path)?;
+        Ok(Self {
+            path: path.to_owned(),
+        })
+    }
+
+    fn open(&self) -> Result<Inner> {
+        Inner::open(&self.path).map_err(|err| match err {
+            ConnectError::NoCompositor(why) => lost(why),
+            ConnectError::NoOutputManagement | ConnectError::TooOld(_) => {
+                lost("it no longer offers output management.")
+            }
+        })
+    }
+
+    /// Carries out or tests `plan` on a connection whose serial `between` makes stale, by
+    /// letting another client change the outputs first. Not for anything else.
+    #[doc(hidden)]
+    pub fn configure_after(
+        &self,
+        plan: &Plan,
+        test: bool,
+        between: impl FnOnce(),
+    ) -> Result<Configured> {
+        let mut inner = self.open()?;
+        between();
+        inner.configure(plan, test)
+    }
+
+    /// Polls new connections until the heads show `plan`, for up to [`SETTLE`]. The compositor
+    /// may report the change late, and Hyprland only to a new binding. Best effort: a poll that
+    /// cannot connect ends it.
+    fn settle(&self, plan: &Plan) {
+        let deadline = Instant::now() + SETTLE;
+        loop {
+            let Ok(inner) = self.open() else { return };
+            if !inner.changes(plan) || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+}
+
+fn lost(err: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("Lost the connection to the compositor: {err}")
+}
+
+/// What a configuration came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Configured {
+    pub answer: Result<(), String>,
+    /// Warnings, such as heads a restore skipped.
+    pub warnings: Vec<String>,
+    /// How many times the compositor cancelled it for a stale serial.
+    pub cancelled: u32,
+}
+
+impl Inner {
+    /// Connects to the socket at `path` and reads the outputs. Dropping it closes the connection.
+    fn open(path: &Path) -> Result<Self, ConnectError> {
         let stream =
             UnixStream::connect(path).map_err(|err| ConnectError::NoCompositor(err.to_string()))?;
-        let second = || {
-            stream
-                .try_clone()
-                .map_err(|err| ConnectError::NoCompositor(err.to_string()))
-        };
-        let (socket, live) = (second()?, second()?);
         let conn = Connection::from_socket(stream)
             .map_err(|err| ConnectError::NoCompositor(err.to_string()))?;
         let (globals, mut queue) = registry_queue_init::<State>(&conn)
@@ -184,70 +217,22 @@ impl WlrBackend {
         queue
             .roundtrip(&mut state)
             .map_err(|err| ConnectError::NoCompositor(err.to_string()))?;
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, live));
         Ok(Self {
-            inner: Mutex::new(Inner {
-                queue,
-                state,
-                manager,
-            }),
-            socket,
-            id,
+            queue,
+            state,
+            manager,
         })
-    }
-
-    /// Ends this connection, as [`hang_up`] does for the one connected last.
-    pub fn hang_up(&self) {
-        let _ = self.socket.shutdown(Shutdown::Both);
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Carries out or tests `plan` on the state as last read, without a fresh roundtrip first,
-    /// so a test can make the serial stale. Not for anything else.
-    #[doc(hidden)]
-    pub fn configure_without_roundtrip(&self, plan: &Plan, test: bool) -> Result<Configured> {
-        let mut inner = self.lock();
-        inner.configure(plan, test, false)
-    }
-}
-
-impl Drop for WlrBackend {
-    fn drop(&mut self) {
-        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
-        if live.as_ref().is_some_and(|(id, _)| *id == self.id) {
-            *live = None;
-        }
-    }
-}
-
-/// What a configuration came to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Configured {
-    pub answer: Result<(), String>,
-    /// Warnings, such as heads a restore skipped.
-    pub warnings: Vec<String>,
-    /// How many times the compositor cancelled it for a stale serial.
-    pub cancelled: u32,
-}
-
-impl Inner {
-    fn lost(&self, err: impl std::fmt::Display) -> anyhow::Error {
-        anyhow!("Lost the connection to the compositor: {err}")
     }
 
     /// A roundtrip: every event the compositor sent before it is handled.
     fn sync(&mut self) -> Result<()> {
         if self.state.finished {
-            bail!("Lost the connection to the compositor: it stopped reporting outputs.");
+            return Err(lost("it stopped reporting outputs."));
         }
         let Inner { queue, state, .. } = self;
-        queue.roundtrip(state).map_err(|err| self.lost(err))?;
+        queue.roundtrip(state).map_err(lost)?;
         if self.state.finished {
-            bail!("Lost the connection to the compositor: it stopped reporting outputs.");
+            return Err(lost("it stopped reporting outputs."));
         }
         Ok(())
     }
@@ -270,59 +255,14 @@ impl Inner {
                 return Ok(answer);
             }
             let Inner { queue, state, .. } = self;
-            queue
-                .blocking_dispatch(state)
-                .map_err(|err| self.lost(err))?;
+            queue.blocking_dispatch(state).map_err(lost)?;
         }
-    }
-
-    /// Waits up to `limit` for a `done` beyond the `dones`-th.
-    fn settle(&mut self, dones: u64, limit: Duration) -> Result<()> {
-        let deadline = Instant::now() + limit;
-        while self.state.dones <= dones {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Ok(());
-            }
-            let Inner { queue, state, .. } = self;
-            queue
-                .dispatch_pending(state)
-                .map_err(|err| self.lost(err))?;
-            if self.state.dones > dones {
-                break;
-            }
-            self.queue.flush().map_err(|err| self.lost(err))?;
-            let Some(guard) = self.queue.prepare_read() else {
-                continue;
-            };
-            let timeout = Timespec {
-                tv_sec: left.as_secs() as i64,
-                tv_nsec: i64::from(left.subsec_nanos()),
-            };
-            let ready = {
-                let fd = guard.connection_fd();
-                let mut fds = [PollFd::new(&fd, PollFlags::IN)];
-                poll(&mut fds, Some(&timeout)).unwrap_or(0)
-            };
-            if ready > 0 {
-                guard.read().map_err(|err| self.lost(err))?;
-            }
-        }
-        let Inner { queue, state, .. } = self;
-        queue
-            .dispatch_pending(state)
-            .map_err(|err| self.lost(err))?;
-        Ok(())
     }
 
     /// Builds, sends and answers one configuration for `plan`. Every head is in it: a planned
-    /// head as planned, any other as it is. With `fresh`, a roundtrip first gets the latest
-    /// serial. A cancelled configuration (a stale serial) is tried once more after a roundtrip,
-    /// if the heads are the same.
-    fn configure(&mut self, plan: &Plan, test: bool, fresh: bool) -> Result<Configured> {
-        if fresh {
-            self.sync()?;
-        }
+    /// head as planned, any other as it is. A cancelled configuration (a stale serial) is tried
+    /// once more after a roundtrip, if the heads are the same.
+    fn configure(&mut self, plan: &Plan, test: bool) -> Result<Configured> {
         let mut warnings = Vec::new();
         let mut cancelled = 0;
         loop {
@@ -350,7 +290,6 @@ impl Inner {
             let Some(serial) = self.state.serial else {
                 bail!("The compositor has not reported its outputs yet.");
             };
-            let changes = self.changes(plan);
             let qh = self.queue.handle();
             let config = self.manager.create_configuration(serial, &qh, ());
             for head in &self.state.heads {
@@ -361,15 +300,10 @@ impl Inner {
             } else {
                 config.apply();
             }
-            let dones = self.state.dones;
             let answer = self.answer(&config);
             config.destroy();
             match answer? {
                 Answer::Succeeded => {
-                    // The new state may come after `succeeded` (it comes before it on sway).
-                    if !test && changes {
-                        self.settle(dones, SETTLE)?;
-                    }
                     return Ok(Configured {
                         answer: Ok(()),
                         warnings,
@@ -405,9 +339,9 @@ impl Inner {
         }
     }
 
-    /// Whether `plan` changes anything about the heads as they are.
+    /// Whether `plan` differs from the heads as of the last `done`.
     fn changes(&self, plan: &Plan) -> bool {
-        self.state.heads.iter().any(|head| {
+        self.state.committed.iter().any(|head| {
             let Some(planned) = plan.find(&head.name) else {
                 return false;
             };
@@ -415,11 +349,12 @@ impl Inner {
                 (None, enabled) => enabled,
                 (Some(_), false) => true,
                 (Some(on), true) => {
-                    let current = running(&report(head, &self.state.modes));
+                    let current = running(&report(head, &self.state.committed_modes));
                     current != Some(planned_key(&on.mode))
                         || on.pos != head.position
                         || transform_value(on.rotation, on.reflection) != head.transform
-                        || (on.scaling.factor().unwrap_or(1.0) - head.scale).abs() > 1e-6
+                        || (on.scaling.factor().unwrap_or(1.0) - head.scale).abs()
+                            > LOGICAL_TOLERANCE
                 }
             }
         })
@@ -523,14 +458,11 @@ fn report(head: &HeadState, modes: &HashMap<ObjectId, ModeState>) -> HeadReport 
 
 impl Backend for WlrBackend {
     fn query(&self) -> Result<Snapshot> {
-        let mut inner = self.lock();
-        inner.sync()?;
-        inner.snapshot()
+        self.open()?.snapshot()
     }
 
     fn test(&self, plan: &Plan) -> Result<Verdict> {
-        let mut inner = self.lock();
-        let done = inner.configure(plan, true, true)?;
+        let done = self.open()?.configure(plan, true)?;
         Ok(match done.answer {
             Ok(()) => Verdict::Accepted,
             Err(why) => Verdict::Rejected(why),
@@ -538,8 +470,14 @@ impl Backend for WlrBackend {
     }
 
     fn apply(&self, plan: &Plan) -> Result<ApplyOutcome> {
-        let mut inner = self.lock();
-        let done = inner.configure(plan, false, true)?;
+        let mut inner = self.open()?;
+        let done = inner.configure(plan, false)?;
+        // Hyprland keeps a protocol change only for the binding that made it, and reloads its
+        // outputs after `succeeded`: closing at once could race that.
+        if done.answer.is_ok() {
+            self.settle(plan);
+        }
+        drop(inner);
         let mut stderr: String = done.warnings.iter().map(|w| format!("{w}\n")).collect();
         if let Err(why) = &done.answer {
             stderr.push_str(why);
@@ -601,7 +539,6 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for State {
             }),
             zwlr_output_manager_v1::Event::Done { serial } => {
                 state.serial = Some(serial);
-                state.dones += 1;
                 state.committed = state.heads.clone();
                 state.committed_modes = state.modes.clone();
             }
@@ -746,7 +683,6 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ()> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
 
     fn head(current: bool) -> HeadReport {
         HeadReport {
@@ -776,24 +712,5 @@ mod tests {
             "the listed mode is not the one it runs"
         );
         assert_eq!(running(&head(true)), Some((1920, 1080, 165_010)));
-    }
-
-    #[test]
-    fn hanging_up_ends_the_live_connection_without_closing_it() {
-        let (ours, mut theirs) = UnixStream::pair().unwrap();
-        *LIVE.lock().unwrap() = Some((usize::MAX, ours.try_clone().unwrap()));
-        hang_up();
-        let mut buf = [0u8; 1];
-        assert_eq!(
-            theirs.read(&mut buf).unwrap(),
-            0,
-            "the other end sees the end"
-        );
-        assert!(
-            ours.try_clone().is_ok(),
-            "the descriptor is still open: its owner closes it"
-        );
-        *LIVE.lock().unwrap() = None;
-        hang_up();
     }
 }

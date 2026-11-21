@@ -279,11 +279,11 @@ A layout outlay applies is the compositor's state until something replaces it:
 - **sway** keeps it until `swaymsg reload`, which applies the `output` lines of sway's config
   again.
 - **niri** keeps it until the `output` sections of its config change.
-- **Hyprland** ties it to the client that made it. outlay disconnects when it exits, and Hyprland
-  drops the change at its next config reload or hotplug. To keep a layout there, save it as a
-  kanshi profile (kanshi stays connected) or write it into Hyprland's config. While kanshi runs,
-  the layout it applied wins over outlay's for the displays it set: outlay then reports that the
-  layout did not come out as asked.
+- **Hyprland** ties it to the client that made it. outlay disconnects after each operation, so
+  Hyprland may drop an applied layout at its next config reload or hotplug, even while the editor
+  is open. To keep a layout there, save it as a kanshi profile (kanshi stays connected) or write it
+  into Hyprland's config. While kanshi runs, the layout it applied wins over outlay's for the
+  displays it set: outlay then reports that the layout did not come out as asked.
 - **kanshi** keeps the profile it applied while the same displays stay connected, so it lets an
   outlay apply stand, countdown included. It applies its profile again when a display is plugged
   in or out, and on `kanshictl reload`. To keep a layout across hotplugs, save it with `w` and

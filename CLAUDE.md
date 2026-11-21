@@ -92,8 +92,8 @@ cargo test
   text), `script.rs`: screenlayout scripts (lenient parser into the neutral profile spec,
   save that keeps other lines), and `events.rs`: RandR events for `outlay watch`.
 - `src/wayland/`: `capture.rs` (the `wlr-randr --json` capture ↔ `Snapshot`, `dump`, the
-  Wayland `revert.sh`), `client.rs` (`WlrBackend`, the `zwlr_output_manager_v1` client, and
-  `hang_up` for the panic hook), `command.rs` (`Plan` → the equivalent `wlr-randr` command),
+  Wayland `revert.sh`), `client.rs` (`WlrBackend`, the `zwlr_output_manager_v1` client; one
+  connection per operation), `command.rs` (`Plan` → the equivalent `wlr-randr` command),
   `kanshi.rs` (kanshi config reader and block writer that keeps every other byte).
 - `src/model/`: snapshot types (with `Caps` and `Kind`, X11 or Wayland), geometry, the layout
   and its stick links, movement, validation, undo history, `profile.rs` (the neutral profile spec: targets by name, description glob or

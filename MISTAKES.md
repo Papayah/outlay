@@ -473,8 +473,9 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 
 - **Symptom:** waiting for a `done` after `succeeded` timed out (a full second) on every apply.
 - **Cause:** sway sends the head events and `done` first, then `succeeded`.
-- **Fix:** count `done`s before sending `apply`, and after `succeeded` wait only while no new one
-  has come (`Inner::settle` in `src/wayland/client.rs`).
+- **Fix:** after `succeeded`, `WlrBackend::settle` in `src/wayland/client.rs` polls new
+  connections (every 50 ms, up to `SETTLE`) until `changes(plan)` is false on their committed
+  heads, so it does not wait when the state is already there.
 
 ## 1280x720 cannot tell truncation from rounding
 
@@ -491,8 +492,9 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Cause:** a wlroots bug up to 0.20.2 (fixed upstream by 40640950, 2026-09-30, unreleased): a
   client that bound while a custom-mode head was disabled enables it again while another client
   still holds that head's old virtual mode, and the compositor aborts.
-- **Fix:** nothing outlay can do for other clients. Tests close their own `WlrBackend` before
-  they run `revert.sh`. On a broken pipe, read sway's log before debugging outlay.
+- **Fix:** nothing outlay can do for other clients. outlay holds no connection between
+  operations, so there is nothing of its own to hang up before `revert.sh`. On a broken pipe, read
+  sway's log before debugging outlay.
 
 ## Headless sway accepts every `test`
 
@@ -647,9 +649,10 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Symptom:** see "`outlay restore` loses the connection": the same abort, but from a panic
   during the countdown, whose `revert.sh` runs `outlay restore` while the editor is still
   connected.
-- **Fix:** since session F the panic hook calls `wayland::client::hang_up()` (a socket shutdown,
-  never a close) before `revert.sh`. `hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on`
-  in `tests/wayland_live.rs` reproduces the abort on sway 1.12 if you remove its `hang_up()` line.
+- **Fix:** outlay holds no connection between operations, so the panic hook has nothing to hang
+  up before `revert.sh`.
+  `revert_sh_turns_a_custom_mode_head_back_on_while_the_editor_runs` in `tests/wayland_live.rs`
+  reproduces the abort on sway 1.12 if a connection is kept.
 
 ## The kanshi live test cannot run in CI on Ubuntu 24.04
 
@@ -938,9 +941,24 @@ Each entry: symptom → cause → the fix that worked. Append new ones; keep ent
 - **Symptom:** a kanshi started for a test changes nothing, or a monitor ignores the monitor rule
   (`panel-rate`), although kanshi logs `configuration for profile '…' applied`.
 - **Cause:** Hyprland builds each monitor's rule from the saved state of the first bound
-  output-management client that has one for it. Another kanshi from login, or an `outlay watch`
-  that applied a layout, can be that client.
-- **Fix:** `pgrep -a kanshi`, then stop `outlay.service` and every kanshi, start the kanshi under
-  test (`WAYLAND_DEBUG=1 kanshi 2> kanshi-debug.log`), and only then start `outlay.service`.
-  `grep -E 'set_mode|set_custom_mode' kanshi-debug.log` shows the modes it sent. Undo it in the
-  same order with a plain kanshi.
+  output-management client that has one for it. Another kanshi from login can be that client, or
+  an outlay operation in progress (outlay binds only while one runs).
+- **Fix:** `pgrep -a kanshi`, then stop every kanshi and start the kanshi under test
+  (`WAYLAND_DEBUG=1 kanshi 2> kanshi-debug.log`) while no outlay operation runs.
+  `grep -E 'set_mode|set_custom_mode' kanshi-debug.log` shows the modes it sent. Undo it by
+  stopping it and starting a plain kanshi.
+
+## Hyprland never updates an existing binding
+
+- **Symptom:** every changing apply reads back the old state: "DP-1 is at 2560x1440+2256+0
+  instead of 2560x1440+2256+10" for a nudge Hyprland did apply. `R` and the watch miss external
+  changes too.
+- **Cause:** Hyprland 0.57 sends nothing more to a binding after a configuration, its own or
+  another client's: no head events and no `done`. A fresh `wlr-randr --json` sees the change at
+  once.
+- **Fix:** one connection per operation (`WlrBackend` holds only the socket path), and an apply
+  polls new connections until the heads show the plan. sway can't reproduce it.
+- **Side effect:** outlay's binding exists only while an operation runs, so Hyprland's
+  first-client rule (see "On Hyprland an apply succeeds, but the display stays as kanshi set it")
+  still lets a running kanshi win for the monitors it configured; and Hyprland can drop an
+  applied layout at a reload or hotplug while the editor is open.

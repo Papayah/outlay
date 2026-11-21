@@ -254,8 +254,7 @@ pub fn watch(cli: &Cli, config: &Config, once: bool) -> Result<()> {
                 Err(_) => {}
             }
         }
-        // A fresh backend each round: it survives a compositor restart, and on Wayland a
-        // long-lived second client can make wlroots abort (MISTAKES.md).
+        // A fresh backend each round: it survives a compositor restart.
         let timeout = match cli.backend().and_then(|b| watch.step(b.as_ref())) {
             Ok(waiting) => {
                 last_error.clear();

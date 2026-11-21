@@ -85,8 +85,7 @@ fn restore_terminal(pop_keyboard_flags: bool) {
     let _ = execute!(stdout(), LeaveAlternateScreen);
 }
 
-/// Runs the armed `revert.sh`, if any. Before it, it hangs up on a Wayland compositor (see
-/// [`crate::wayland::client::hang_up`]). It never prints, and does not touch the terminal.
+/// Runs the armed `revert.sh`, if any. It never prints, and does not touch the terminal.
 /// Returns false when an armed `revert.sh` failed or could not run.
 fn run_armed_revert() -> bool {
     let armed = PANIC_REVERT
@@ -96,7 +95,6 @@ fn run_armed_revert() -> bool {
     let Some(script) = armed else {
         return true;
     };
-    crate::wayland::client::hang_up();
     Command::new("sh")
         .arg(script)
         .stdin(Stdio::null())

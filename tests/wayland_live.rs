@@ -163,8 +163,6 @@ fn a_stale_serial_is_cancelled_and_tried_once_more() {
     let Some(sway) = Sway::start(2) else { return };
     let backend = connect(&sway);
     let snap = backend.query().unwrap();
-    // A change outlay has not read yet: its serial is stale now.
-    sway.swaymsg(&["output", "HEADLESS-2", "pos", "2000", "0"]);
     let current = head(&snap, "HEADLESS-1").current_mode().unwrap().clone();
     let p = plan(vec![on(
         "HEADLESS-1",
@@ -173,7 +171,12 @@ fn a_stale_serial_is_cancelled_and_tried_once_more() {
         Rotation::Normal,
         1.0,
     )]);
-    let done = backend.configure_without_roundtrip(&p, false).unwrap();
+    // A change outlay has not read yet: its serial is stale by the time it configures.
+    let done = backend
+        .configure_after(&p, false, || {
+            sway.swaymsg(&["output", "HEADLESS-2", "pos", "2000", "0"]);
+        })
+        .unwrap();
     assert_eq!(done.cancelled, 1, "{done:?}");
     assert_eq!(done.answer, Ok(()));
     let after = backend.query().unwrap();
@@ -226,12 +229,11 @@ fn revert_sh_restores_the_layout_from_before() {
         "300",
     ]);
     sway.swaymsg(&["output", "HEADLESS-2", "disable"]);
-    // No other client stays connected: up to wlroots 0.20.2, enabling a head in a custom mode
-    // aborts the compositor when another client still holds that head's old virtual mode
-    // (fixed by wlroots 40640950; see MISTAKES.md).
+    // Up to wlroots 0.20.2, enabling a head in a custom mode aborts the compositor when
+    // another client still holds that head's old virtual mode (fixed by wlroots 40640950; see
+    // MISTAKES.md). The backend holds no connection between operations, so none does here.
     let backend = connect(&sway);
     assert_ne!(backend.query().unwrap(), before);
-    drop(backend);
 
     let out = sway.command("sh").arg(&script).output().unwrap();
     assert!(
@@ -582,25 +584,24 @@ fn kanshi_lets_an_apply_stand_until_a_hotplug_or_a_reload() {
 
 /// Up to wlroots 0.20.2, a client that bound while a custom-mode head was off aborts the
 /// compositor when it turns that head on again while another client still holds the head's old
-/// virtual mode. `revert.sh` runs `outlay restore`, such a client, so the panic hook hangs up
-/// on the compositor first.
+/// virtual mode. The backend keeps no connection between operations, so `revert.sh` (`outlay
+/// restore`) can run while the editor is alive.
 #[test]
-fn hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on() {
+fn revert_sh_turns_a_custom_mode_head_back_on_while_the_editor_runs() {
     let Some(sway) = Sway::start(2) else { return };
     let backend = connect(&sway);
     let before = backend.query().unwrap();
     let script = sway.runtime.join("revert.sh");
     let program = std::path::Path::new(env!("CARGO_BIN_EXE_outlay"));
     std::fs::write(&script, outlay::wayland::revert_script(program, &before)).unwrap();
-    // The editor turns HEADLESS-2 off and still holds its virtual mode.
+    // The backend holds nothing after the apply, so revert.sh can turn the custom-mode head
+    // back on while the editor runs.
     assert!(
         backend
             .apply(&plan(vec![off("HEADLESS-2")]))
             .unwrap()
             .success
     );
-    // Without this, sway 1.12 (wlroots 0.20.2) dies: head_send_state: Assertion `found' failed.
-    backend.hang_up();
     let out = sway.command("sh").arg(&script).output().unwrap();
     assert!(
         out.status.success(),
@@ -608,7 +609,124 @@ fn hanging_up_first_lets_revert_sh_turn_a_custom_mode_head_back_on() {
         String::from_utf8_lossy(&out.stderr),
         sway.log()
     );
-    assert_eq!(connect(&sway).query().unwrap(), before, "{}", sway.log());
+    assert_eq!(backend.query().unwrap(), before, "{}", sway.log());
+}
+
+/// Sway sends the state before `succeeded`, so this only guards that sway pays no wait; the
+/// waiting branch (Hyprland's silent binding) can't be reproduced headless.
+#[test]
+fn an_apply_returns_once_the_heads_show_it() {
+    use outlay::wayland::client::SETTLE;
+    use std::time::Instant;
+
+    let Some(sway) = Sway::start(2) else { return };
+    let backend = connect(&sway);
+    let m = head(&backend.query().unwrap(), "HEADLESS-1")
+        .current_mode()
+        .unwrap()
+        .clone();
+    let timed = |p: &Plan| {
+        let start = Instant::now();
+        let outcome = backend.apply(p).unwrap();
+        let elapsed = start.elapsed();
+        assert!(outcome.success, "{outcome:?}\n{}", sway.log());
+        assert!(
+            elapsed < SETTLE,
+            "apply took {elapsed:?}, SETTLE is {SETTLE:?}"
+        );
+    };
+    let active = |name: &str| {
+        head(&backend.query().unwrap(), name)
+            .active
+            .clone()
+            .unwrap()
+    };
+    let both = |one: Planned, two: Planned| plan(vec![one, two]);
+
+    // Pin the positions: sway versions order headless heads differently.
+    timed(&both(
+        on("HEADLESS-1", m.clone(), (0, 0), Rotation::Normal, 1.0),
+        on("HEADLESS-2", m.clone(), (1280, 0), Rotation::Normal, 1.0),
+    ));
+
+    timed(&both(
+        on("HEADLESS-1", m.clone(), (100, 50), Rotation::Normal, 1.0),
+        on("HEADLESS-2", m.clone(), (1280, 0), Rotation::Normal, 1.0),
+    ));
+    assert_eq!(active("HEADLESS-1").pos, Point::new(100, 50), "moved");
+
+    timed(&both(
+        on(
+            "HEADLESS-1",
+            m.clone(),
+            (100, 50),
+            Rotation::Normal,
+            4.0 / 3.0,
+        ),
+        on("HEADLESS-2", m.clone(), (1280, 0), Rotation::Normal, 1.0),
+    ));
+    match active("HEADLESS-1").scaling {
+        Scaling::Logical(s) => assert!((s - 4.0 / 3.0).abs() < 0.01, "scale {s}"),
+        other => panic!("unexpected scaling {other:?}"),
+    }
+
+    let before = backend.query().unwrap();
+    timed(&Plan::restore(&before));
+    assert_eq!(backend.query().unwrap(), before, "a no-op changes nothing");
+
+    timed(&both(
+        on(
+            "HEADLESS-1",
+            m.clone(),
+            (100, 50),
+            Rotation::Inverted,
+            4.0 / 3.0,
+        ),
+        on("HEADLESS-2", m.clone(), (1280, 0), Rotation::Normal, 1.0),
+    ));
+    assert_eq!(active("HEADLESS-1").rotation, Rotation::Inverted, "turned");
+
+    let off_head = |name: &str| head(&backend.query().unwrap(), name).active.is_none();
+    let one_moved = on("HEADLESS-1", m.clone(), (100, 50), Rotation::Normal, 1.0);
+
+    timed(&both(one_moved.clone(), off("HEADLESS-2")));
+    assert!(off_head("HEADLESS-2"), "turned off");
+    assert_eq!(
+        active("HEADLESS-1").rotation,
+        Rotation::Normal,
+        "turned back"
+    );
+
+    timed(&both(
+        one_moved,
+        on("HEADLESS-2", m.clone(), (1400, 30), Rotation::Normal, 1.0),
+    ));
+    assert!(!off_head("HEADLESS-2"), "turned on");
+    assert_eq!(active("HEADLESS-2").pos, Point::new(1400, 30), "placed");
+    assert_eq!(active("HEADLESS-2").size, Size::new(1280, 720), "sized");
+
+    timed(&plan(vec![on(
+        "HEADLESS-1",
+        m.clone(),
+        (20, 10),
+        Rotation::Normal,
+        1.0,
+    )]));
+    assert_eq!(
+        active("HEADLESS-1").pos,
+        Point::new(20, 10),
+        "only one moved"
+    );
+    assert_eq!(active("HEADLESS-2").pos, Point::new(1400, 30), "untouched");
+
+    let mut gone = both(
+        on("HEADLESS-1", m.clone(), (30, 10), Rotation::Normal, 1.0),
+        off("HEADLESS-9"),
+    );
+    gone.form = PlanForm::Restore;
+    timed(&gone);
+    assert_eq!(active("HEADLESS-1").pos, Point::new(30, 10), "a gone head");
+    assert_eq!(active("HEADLESS-2").pos, Point::new(1400, 30), "untouched");
 }
 
 #[test]
