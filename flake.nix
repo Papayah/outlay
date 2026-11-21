@@ -40,6 +40,8 @@
               --bash <($out/bin/outlay completions bash) \
               --zsh <($out/bin/outlay completions zsh) \
               --fish <($out/bin/outlay completions fish)
+            mkdir -p $out/lib/systemd/user
+            $out/bin/outlay watch --print-unit > $out/lib/systemd/user/outlay.service
           '';
           # --suffix, so a user's own xrandr still wins.
           postFixup = ''
@@ -58,6 +60,33 @@
         default = outlay;
       }
     );
+
+    nixosModules.default = {
+      config,
+      lib,
+      pkgs,
+      ...
+    }: let
+      cfg = config.services.outlay;
+    in {
+      options.services.outlay = {
+        enable = lib.mkEnableOption "outlay watch, which applies the saved monitor layout that fits when displays change";
+        package = lib.mkOption {
+          type = lib.types.package;
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          defaultText = lib.literalExpression "outlay.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+          description = "The outlay package to run.";
+        };
+      };
+      config = lib.mkIf cfg.enable {
+        systemd.packages = [cfg.package];
+        systemd.user.services.outlay = {
+          wantedBy = ["graphical-session.target"];
+          # Otherwise NixOS sets PATH to coreutils & co., hiding the session's, and post_apply hooks fail.
+          enableDefaultPath = false;
+        };
+      };
+    };
 
     devShells = forAllSystems (pkgs: {
       default = pkgs.mkShell {
